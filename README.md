@@ -87,7 +87,7 @@ Input shaping is a feedforward control technique that shapes commanded inputs to
 - [x] Core shaper library (ZV/ZVD/ZVDD/EI)
 - [x] Unit tests and validation
 - [x] Robustness analysis
-- [ ] Multi-mode shaping (cascaded + simultaneous)
+- [x] Multi-mode shaping (cascaded + simultaneous)
 - [ ] Basilisk spacecraft model with flexible solar arrays
 - [ ] Comet tracking mission scenario
 - [ ] LQR comparison
