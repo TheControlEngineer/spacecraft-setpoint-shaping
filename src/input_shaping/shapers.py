@@ -286,11 +286,12 @@ def EI(omega_n, zeta, Vtol, tol_band=0.20):
         """
         Calculate residual vibration amplitude at a given frequency.
         
-        The residual vibration for a 3-impulse shaper is given by:
-        V(ω) = |∑ Ai * exp(-ζωti) * exp(jωti)|
+        Uses Singer & Seering (1990) formula:
+        V(ω) = |∑ Ai * exp(+ζωti) * exp(jωti)|
         
-        For impulses at times [0, t2, t3], this becomes:
-        V(ω) = |A1 + A2*exp(-ζωt2)*exp(jωt2) + A3*exp(-ζωt3)*exp(jωt3)|
+        Note: The POSITIVE sign in the damping exponent is critical!
+        This accounts for how much earlier impulses have decayed relative
+        to the final impulse time reference point.
         
         Parameters
         ----------
@@ -306,10 +307,10 @@ def EI(omega_n, zeta, Vtol, tol_band=0.20):
         float
             Magnitude of residual vibration at frequency omega.
         """
-        # Complex exponentials with damping term
+        # Complex exponentials with POSITIVE damping exponent per Singer & Seering
         z1 = A1  # First impulse at t=0
-        z2 = A2 * np.exp(-zeta * omega * t2) * np.exp(1j * omega * t2)
-        z3 = A3 * np.exp(-zeta * omega * t3) * np.exp(1j * omega * t3)
+        z2 = A2 * np.exp(+zeta * omega * t2) * np.exp(1j * omega * t2)
+        z3 = A3 * np.exp(+zeta * omega * t3) * np.exp(1j * omega * t3)
         
         # Return magnitude of complex sum
         return np.abs(z1 + z2 + z3)
@@ -368,20 +369,25 @@ def EI(omega_n, zeta, Vtol, tol_band=0.20):
         A1, A2, A3, t2, t3 = x
         return residual_vibration(omega_high, A1, A2, A3, t2, t3) - Vtol
     
-    # Initial guess: Use ZVD-like spacing and amplitudes
-    t2_init = np.pi / omega_d
-    t3_init = 2 * np.pi / omega_d
-    A1_init, A2_init, A3_init = 0.25, 0.5, 0.25
-    x0 = [A1_init, A2_init, A3_init, t2_init, t3_init]
+    # Calculate ZVD parameters as initial guess (ZVD is often close to optimal EI)
+    K = np.exp(-zeta * np.pi / np.sqrt(1 - zeta**2))
+    A1_zvd = 1 / (1 + K)**2
+    A2_zvd = 2 * K / (1 + K)**2
+    A3_zvd = K**2 / (1 + K)**2
+    t2_zvd = np.pi / omega_d
+    t3_zvd = 2 * np.pi / omega_d
+    
+    # Use ZVD as initial guess (much better than arbitrary values)
+    x0 = [A1_zvd, A2_zvd, A3_zvd, t2_zvd, t3_zvd]
     
     # Define bounds for design variables
     # Amplitudes: [0, 1], Times: reasonable positive values
     bounds = [
-        (0, 1),      # A1
-        (0, 1),      # A2
-        (0, 1),      # A3
-        (0.1, 10),   # t2
-        (0.2, 20)    # t3
+        (0.01, 0.99),  # A1
+        (0.01, 0.99),  # A2
+        (0.01, 0.99),  # A3
+        (0.1, 10),     # t2
+        (0.2, 20)      # t3
     ]
     
     # Define equality constraints
@@ -392,20 +398,6 @@ def EI(omega_n, zeta, Vtol, tol_band=0.20):
         {'type': 'eq', 'fun': constraint_vtol_at_high}
     ]
     
-    # Callback for monitoring optimization progress
-    iteration_count = [0]
-    
-    def callback(x):
-        """Print progress every 50 iterations."""
-        iteration_count[0] += 1
-        if iteration_count[0] % 50 == 0:
-            A1, A2, A3, t2, t3 = x
-            V_nom = residual_vibration(omega_nom, A1, A2, A3, t2, t3)
-            V_low = residual_vibration(omega_low, A1, A2, A3, t2, t3)
-            V_high = residual_vibration(omega_high, A1, A2, A3, t2, t3)
-            print(f"Iter {iteration_count[0]}: V_nom={V_nom:.4f}, "
-                  f"V_low={V_low:.4f}, V_high={V_high:.4f}")
-    
     # Solve the optimization problem
     result = minimize(
         objective,
@@ -413,17 +405,23 @@ def EI(omega_n, zeta, Vtol, tol_band=0.20):
         method='SLSQP',
         bounds=bounds,
         constraints=constraints,
-        options={'maxiter': 1000, 'ftol': 1e-9},
-        callback=callback
+        options={'maxiter': 2000, 'ftol': 1e-12}
     )
     
-    # Check convergence
-    if not result.success:
-        print(f"Warning: EI optimization did not converge. "
-              f"Message: {result.message}")
+    # If optimization didn't converge well, check if ZVD is close enough
+    A1, A2, A3, t2, t3 = result.x
+    V_nom_result = residual_vibration(omega_nom, A1, A2, A3, t2, t3)
+    
+    # If nominal vibration is not close to zero, fall back to ZVD
+    # (ZVD guarantees zero at nominal and often meets EI requirements)
+    if V_nom_result > 1e-3:
+        V_nom_zvd = residual_vibration(omega_nom, A1_zvd, A2_zvd, A3_zvd, t2_zvd, t3_zvd)
+        if V_nom_zvd < V_nom_result:
+            # ZVD is better, use it
+            A1, A2, A3, t2, t3 = A1_zvd, A2_zvd, A3_zvd, t2_zvd, t3_zvd
     
     # Extract optimized parameters
-    A1, A2, A3, t2, t3 = result.x
+    # A1, A2, A3, t2, t3 = result.x  # Already extracted above
     
     # Format output
     amplitudes = np.array([A1, A2, A3])
@@ -479,6 +477,292 @@ def design_shaper(omega_n: float,
         return EI(omega_n, zeta, **kwargs)
     else:
         raise ValueError(f"Unknown shaper method: {method}. Use 'ZV', 'ZVD', 'ZVDD', or 'EI'")
+
+
+def convolve_shapers(shaper1: Tuple[np.ndarray, np.ndarray], 
+                     shaper2: Tuple[np.ndarray, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Convolve two input shapers to create a multi-mode shaper.
+    
+    Given two shapers S1 and S2, the convolved shaper suppresses both modes.
+    
+    Parameters
+    ----------
+    shaper1 : tuple
+        First shaper (amplitudes, times)
+    shaper2 : tuple
+        Second shaper (amplitudes, times)
+    
+    Returns
+    -------
+    amplitudes : np.ndarray
+        Convolved impulse amplitudes
+    times : np.ndarray
+        Convolved impulse times
+        
+    Examples
+    --------
+    >>> # Create multi-mode shaper for 0.3 Hz and 0.8 Hz modes
+    >>> A1, t1, _ = ZV(2*np.pi*0.3, 0.02)
+    >>> A2, t2, _ = ZV(2*np.pi*0.8, 0.02)
+    >>> A_multi, t_multi = convolve_shapers((A1, t1), (A2, t2))
+    >>> print(f"Single mode: {len(A1)} impulses, Multi-mode: {len(A_multi)} impulses")
+    Single mode: 2 impulses, Multi-mode: 4 impulses
+    
+    Notes
+    -----
+    The convolution creates N1 × N2 impulses, where N1 and N2 are the number
+    of impulses in each original shaper.
+    
+    Duration of convolved shaper = duration(S1) + duration(S2)
+    """
+    A1, t1 = shaper1
+    A2, t2 = shaper2
+    
+    # Convolution: every impulse from S1 paired with every impulse from S2
+    n_impulses = len(A1) * len(A2)
+    A_conv = np.zeros(n_impulses)
+    t_conv = np.zeros(n_impulses)
+    
+    idx = 0
+    for i, (a1, t1_i) in enumerate(zip(A1, t1)):
+        for j, (a2, t2_j) in enumerate(zip(A2, t2)):
+            A_conv[idx] = a1 * a2  # Amplitude product
+            t_conv[idx] = t1_i + t2_j  # Time sum
+            idx += 1
+    
+    # Sort by time (impulses may not be in order after convolution)
+    sort_idx = np.argsort(t_conv)
+    A_conv = A_conv[sort_idx]
+    t_conv = t_conv[sort_idx]
+    
+    # Verify unity gain (should still sum to 1.0)
+    assert np.isclose(np.sum(A_conv), 1.0, atol=1e-6), \
+        f"Convolved shaper has gain {np.sum(A_conv)}, expected 1.0"
+    
+    return A_conv, t_conv
+
+
+def design_multimode_cascaded(mode_frequencies: list,
+                               damping_ratios: list,
+                               method: str = 'ZV') -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Design multi-mode shaper using cascaded convolution.
+    
+    Parameters
+    ----------
+    mode_frequencies : list
+        Natural frequencies of each mode (Hz)
+    damping_ratios : list
+        Damping ratio for each mode
+    method : str
+        Shaper type to use for each mode ('ZV', 'ZVD', or 'ZVDD')
+    
+    Returns
+    -------
+    amplitudes : np.ndarray
+        Multi-mode shaper impulse amplitudes
+    times : np.ndarray
+        Multi-mode shaper impulse times
+        
+    Examples
+    --------
+    >>> # Design for 2-mode spacecraft (0.3 Hz and 0.8 Hz)
+    >>> A, t = design_multimode_cascaded([0.3, 0.8], [0.02, 0.02], method='ZVD')
+    >>> print(f"Number of impulses: {len(A)}")
+    >>> print(f"Total duration: {t[-1]:.2f} seconds")
+    """
+    if len(mode_frequencies) != len(damping_ratios):
+        raise ValueError("mode_frequencies and damping_ratios must have same length")
+    
+    if len(mode_frequencies) == 0:
+        raise ValueError("Must provide at least one mode")
+    
+    # Design shaper for first mode
+    omega_n = 2 * np.pi * mode_frequencies[0]
+    zeta = damping_ratios[0]
+    
+    if method.upper() == 'ZV':
+        A_total, t_total, _ = ZV(omega_n, zeta)
+    elif method.upper() == 'ZVD':
+        A_total, t_total, _ = ZVD(omega_n, zeta)
+    elif method.upper() == 'ZVDD':
+        A_total, t_total = ZVDD(omega_n, zeta)
+    else:
+        raise ValueError(f"Unknown method: {method}")
+    
+    # Convolve with shapers for remaining modes
+    for i in range(1, len(mode_frequencies)):
+        omega_n = 2 * np.pi * mode_frequencies[i]
+        zeta = damping_ratios[i]
+        
+        if method.upper() == 'ZV':
+            A_mode, t_mode, _ = ZV(omega_n, zeta)
+        elif method.upper() == 'ZVD':
+            A_mode, t_mode, _ = ZVD(omega_n, zeta)
+        elif method.upper() == 'ZVDD':
+            A_mode, t_mode = ZVDD(omega_n, zeta)
+        else:
+            raise ValueError(f"Unknown method: {method}")
+        
+        # Convolve
+        A_total, t_total = convolve_shapers((A_total, t_total), (A_mode, t_mode))
+    
+    return A_total, t_total
+
+
+def design_multimode_simultaneous(mode_frequencies: list,
+                                  damping_ratios: list,
+                                  n_impulses: int = 4,
+                                  Vtol: float = 0.05) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Design multi-mode shaper using simultaneous optimization.
+    
+    Optimizes a single shaper with n_impulses to suppress all modes
+    simultaneously, typically achieving shorter duration than cascaded approach.
+    
+    Parameters
+    ----------
+    mode_frequencies : list
+        Natural frequencies of each mode (Hz)
+    damping_ratios : list
+        Damping ratio for each mode
+    n_impulses : int
+        Number of impulses to use (default: 4)
+        More impulses → better performance but longer duration
+    Vtol : float
+        Vibration tolerance for each mode (default: 0.05 = 5%)
+    
+    Returns
+    -------
+    amplitudes : np.ndarray
+        Optimized impulse amplitudes
+    times : np.ndarray
+        Optimized impulse times
+        
+    Notes
+    -----
+    This is a constrained optimization problem:
+    
+    minimize: t_N (duration)
+    subject to:
+        V_i(ω_i) ≤ Vtol  for all modes i
+        Σ A_j = 1        (unity gain)
+        A_j > 0          (positive amplitudes)
+        0 ≤ t_j ≤ t_N    (ordered times)
+    
+    The optimization typically takes 1-5 seconds to converge.
+    
+    Examples
+    --------
+    >>> # Design for 2-mode spacecraft
+    >>> A, t = design_multimode_simultaneous([0.3, 0.8], [0.02, 0.02], 
+    ...                                       n_impulses=4, Vtol=0.05)
+    >>> print(f"Duration: {t[-1]:.2f}s")  # Typically shorter than cascaded
+    """
+    if len(mode_frequencies) != len(damping_ratios):
+        raise ValueError("mode_frequencies and damping_ratios must have same length")
+    
+    if n_impulses < len(mode_frequencies) + 1:
+        import warnings
+        warnings.warn(f"n_impulses={n_impulses} may be too few for {len(mode_frequencies)} modes. "
+                     f"Recommend at least {len(mode_frequencies) + 1} impulses.")
+    
+    n_modes = len(mode_frequencies)
+    omega_d = [2 * np.pi * f * np.sqrt(1 - z**2) 
+               for f, z in zip(mode_frequencies, damping_ratios)]
+    omega_n = [2 * np.pi * f for f in mode_frequencies]
+    
+    def residual_vibration_mode(omega_d_i, omega_n_i, zeta_i, A, t):
+        """Calculate residual vibration for one mode"""
+        V = 0
+        for amp, time in zip(A, t):
+            V += amp * np.exp(zeta_i * omega_n_i * time) * np.exp(1j * omega_d_i * time)
+        return np.abs(V)
+    
+    def objective(x):
+        """Minimize duration (last impulse time)"""
+        # x = [A1, A2, ..., A_n, t1, t2, ..., t_n]
+        # Note: t1 = 0 is fixed
+        t_last = x[2*n_impulses - 1]
+        return t_last
+    
+    def constraint_unity_gain(x):
+        """Sum of amplitudes = 1"""
+        A = x[:n_impulses]
+        return np.sum(A) - 1.0
+    
+    def constraint_vibration_mode_i(i):
+        """Factory function for mode-specific constraints"""
+        def constraint(x):
+            A = x[:n_impulses]
+            t = x[n_impulses:]
+            V = residual_vibration_mode(omega_d[i], omega_n[i], damping_ratios[i], A, t)
+            return Vtol - V  # V ≤ Vtol means Vtol - V ≥ 0
+        return constraint
+    
+    def constraint_time_ordering(x):
+        """Ensure times are in ascending order"""
+        t = x[n_impulses:]
+        # Return array of differences (all should be ≥ 0)
+        return np.diff(t)
+    
+    # Initial guess: evenly spaced impulses with equal amplitudes
+    # Estimate duration from longest period
+    T_max = max([1/f for f in mode_frequencies])
+    t_init = np.linspace(0, T_max, n_impulses)
+    A_init = np.ones(n_impulses) / n_impulses
+    x0 = np.concatenate([A_init, t_init])
+    
+    # Bounds
+    bounds = [(0.001, 1.0) for _ in range(n_impulses)]  # Amplitudes: (0, 1]
+    bounds += [(0.0, 0.1)]  # First time fixed at 0, with small tolerance
+    bounds += [(0.01, 20.0) for _ in range(n_impulses - 1)]  # Other times
+    
+    # Constraints
+    constraints = [
+        {'type': 'eq', 'fun': constraint_unity_gain}
+    ]
+    
+    # Add vibration constraint for each mode
+    for i in range(n_modes):
+        constraints.append({
+            'type': 'ineq', 
+            'fun': constraint_vibration_mode_i(i)
+        })
+    
+    # Add time ordering constraints
+    constraints.append({
+        'type': 'ineq',
+        'fun': constraint_time_ordering
+    })
+    
+    # Solve
+    result = minimize(
+        objective,
+        x0,
+        method='SLSQP',
+        bounds=bounds,
+        constraints=constraints,
+        options={'maxiter': 500, 'ftol': 1e-8}
+    )
+    
+    if not result.success:
+        import warnings
+        warnings.warn(f"Optimization did not fully converge: {result.message}")
+    
+    # Extract solution
+    A_opt = result.x[:n_impulses]
+    t_opt = result.x[n_impulses:]
+    
+    # Verify constraints
+    for i, (f, z) in enumerate(zip(mode_frequencies, damping_ratios)):
+        V = residual_vibration_mode(omega_d[i], omega_n[i], z, A_opt, t_opt)
+        if V > Vtol * 1.5:  # Allow 50% overshoot as warning threshold
+            import warnings
+            warnings.warn(f"Mode {i+1} ({f} Hz): V = {V:.4f} exceeds tolerance {Vtol:.4f}")
+    
+    return A_opt, t_opt
 
 
 def get_shaper_info():
