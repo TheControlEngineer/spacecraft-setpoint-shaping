@@ -1,0 +1,16 @@
+category,method,controller,metric1,metric2,metric3
+feedforward,unshaped,,7.4580,12.9154,0.2663
+feedforward,zvd,,8.3304,16.2685,0.0020
+feedforward,fourth,,8.1146,16.5167,0.0067
+control,,standard_pd,inf,64.93,
+control,,filtered_pd,inf,64.10,
+control,,avc,inf,64.31,
+pointing,unshaped_standard_pd,,1.6973,3.539492,
+pointing,unshaped_filtered_pd,,2.8604,3.913732,
+pointing,unshaped_avc,,2.8604,3.913732,
+pointing,zvd_standard_pd,,0.6136,3.521559,
+pointing,zvd_filtered_pd,,0.8351,3.814122,
+pointing,zvd_avc,,0.8351,3.814122,
+pointing,fourth_standard_pd,,0.5773,3.548140,
+pointing,fourth_filtered_pd,,0.7951,3.840907,
+pointing,fourth_avc,,0.7951,3.840907,

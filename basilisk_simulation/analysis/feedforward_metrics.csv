@@ -1,0 +1,4 @@
+method,rms_torque_nm,peak_torque_nm,rms_vibration_mm,peak_vibration_mm
+unshaped,7.4580,12.9154,0.2663,0.6688
+zvd,8.3304,16.2685,0.0020,0.0048
+fourth,8.1146,16.5167,0.0067,0.0155

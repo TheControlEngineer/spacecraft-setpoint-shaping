@@ -11,7 +11,17 @@ Tests verify:
 
 import numpy as np
 import pytest
-from input_shaping import ZV, ZVD, ZVDD, EI, design_shaper
+import input_shaping.shapers as shaper_module
+from input_shaping import (
+    ZV,
+    ZVD,
+    ZVDD,
+    EI,
+    design_shaper,
+    convolve_shapers,
+    design_multimode_cascaded,
+    design_multimode_simultaneous,
+)
 
 
 class TestZVShaper:
@@ -295,6 +305,95 @@ class TestEdgeCases:
         
         assert np.isclose(np.sum(A_zv), 1.0)
         assert np.isclose(np.sum(A_zvd), 1.0)
+
+
+def test_convolve_shapers_properties():
+    omega1 = 2 * np.pi * 0.4
+    omega2 = 2 * np.pi * 0.9
+    A1, t1, _ = ZV(omega1, 0.02)
+    A2, t2, _ = ZV(omega2, 0.02)
+
+    A_conv, t_conv = convolve_shapers((A1, t1), (A2, t2))
+
+    assert len(A_conv) == len(A1) * len(A2)
+    assert np.isclose(np.sum(A_conv), 1.0, atol=1e-6)
+    assert np.all(np.diff(t_conv) >= 0.0)
+
+
+def test_design_multimode_cascaded_errors():
+    with pytest.raises(ValueError):
+        design_multimode_cascaded([0.4], [0.02, 0.02])
+
+    with pytest.raises(ValueError):
+        design_multimode_cascaded([], [])
+
+    with pytest.raises(ValueError):
+        design_multimode_cascaded([0.4], [0.02], method="INVALID")
+
+
+def test_design_multimode_cascaded_two_modes():
+    A, t = design_multimode_cascaded([0.4, 1.0], [0.02, 0.02], method="ZVD")
+
+    assert len(A) == 9
+    assert np.isclose(np.sum(A), 1.0, atol=1e-6)
+    assert np.all(np.diff(t) >= 0.0)
+
+
+def test_design_multimode_simultaneous_runs():
+    with pytest.warns(UserWarning):
+        A, t = design_multimode_simultaneous([0.4, 0.8], [0.02, 0.02], n_impulses=2, Vtol=0.2)
+
+    assert len(A) == len(t) == 2
+    assert np.isclose(np.sum(A), 1.0, atol=1e-2)
+
+
+def test_get_shaper_info_contains_methods():
+    info = shaper_module.get_shaper_info()
+
+    assert "ZV" in info
+    assert "ZVD" in info
+    assert "ZVDD" in info
+    assert "EI" in info
+
+
+def test_design_multimode_simultaneous_warns_on_low_impulses():
+    import warnings
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        design_multimode_simultaneous(
+            [0.5, 0.8],
+            [0.02, 0.02],
+            n_impulses=2,
+            Vtol=0.2,
+        )
+
+    assert any("too few" in str(w.message) for w in captured)
+
+
+def test_design_multimode_simultaneous_warns_on_failed_optimization(monkeypatch):
+    import warnings
+
+    class DummyResult:
+        success = False
+        message = "forced failure"
+        x = np.array([0.5, 0.5, 0.0, 1.0])
+
+    def fake_minimize(*args, **kwargs):
+        return DummyResult()
+
+    monkeypatch.setattr(shaper_module, "minimize", fake_minimize)
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        design_multimode_simultaneous(
+            [0.5],
+            [0.02],
+            n_impulses=2,
+            Vtol=0.2,
+        )
+
+    assert any("did not fully converge" in str(w.message) for w in captured)
 
 
 # Run tests with: pytest tests/test_shapers.py -v
