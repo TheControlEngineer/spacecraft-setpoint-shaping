@@ -21,7 +21,7 @@ wheels/
 *.egg
 
 # Virtual environments
-venv/
+
 venv_basilisk/
 env/
 ENV/
