@@ -1,0 +1,11 @@
+type,method,controller,band_hz,rms_torque_nm
+ff,unshaped,,0.00-10.00,4.702411e+00
+ff,fourth,,0.00-10.00,5.500489e+00
+fb,unshaped,standard_pd,0.00-10.00,4.145202e-01
+total,unshaped,standard_pd,0.00-10.00,4.718634e+00
+fb,unshaped,filtered_pd,0.00-10.00,4.920658e-01
+total,unshaped,filtered_pd,0.00-10.00,4.728066e+00
+fb,fourth,standard_pd,0.00-10.00,6.455499e-02
+total,fourth,standard_pd,0.00-10.00,5.519382e+00
+fb,fourth,filtered_pd,0.00-10.00,6.770260e-02
+total,fourth,filtered_pd,0.00-10.00,5.520053e+00

@@ -314,6 +314,19 @@ def _compute_psd(time: np.ndarray, signal_data: np.ndarray) -> Tuple[np.ndarray,
     return freq, psd
 
 
+def _compute_band_rms(freq: np.ndarray, psd: np.ndarray, fmin: float, fmax: float) -> float:
+    """Compute band-limited RMS from a PSD."""
+    if len(freq) == 0 or len(psd) == 0:
+        return float("nan")
+    mask = (freq >= fmin) & (freq <= fmax) & np.isfinite(psd) & (psd >= 0)
+    if not np.any(mask):
+        return float("nan")
+    freq_sel = freq[mask]
+    psd_sel = psd[mask]
+    df = np.gradient(freq_sel)
+    return float(np.sqrt(np.sum(psd_sel * df)))
+
+
 def _compute_psd_asd(
     time: np.ndarray,
     signal_data: np.ndarray,
@@ -1018,23 +1031,34 @@ def _collect_feedback_data(
 
             time = np.array(npz_data.get("time", []), dtype=float)
             torque_vec = npz_data.get("fb_torque")
+            total_vec = npz_data.get("total_torque")
+            if total_vec is not None and len(total_vec) == 0:
+                total_vec = None
             if torque_vec is None or len(torque_vec) == 0:
-                torque_vec = npz_data.get("total_torque")
+                torque_vec = total_vec
             mode1_acc = npz_data.get("mode1_acc")
             mode2_acc = npz_data.get("mode2_acc")
             if mode1_acc is not None and len(mode1_acc) == 0:
                 mode1_acc = None
             if mode2_acc is not None and len(mode2_acc) == 0:
                 mode2_acc = None
-            torque_axis = _project_axis_torque(torque_vec, axis)
+            torque_axis = _project_axis_torque(torque_vec, axis) if torque_vec is not None else np.array([])
+            torque_total = _project_axis_torque(total_vec, axis) if total_vec is not None else np.array([])
             time, aligned = _align_series(
-                time, torque_axis, npz_data.get("mode1"), npz_data.get("mode2"), mode1_acc, mode2_acc
+                time,
+                torque_axis if len(torque_axis) > 0 else None,
+                torque_total if len(torque_total) > 0 else None,
+                npz_data.get("mode1"),
+                npz_data.get("mode2"),
+                mode1_acc,
+                mode2_acc,
             )
-            torque_axis = aligned[0]
-            mode1 = aligned[1]
-            mode2 = aligned[2]
-            mode1_acc = aligned[3] if len(aligned) > 3 else np.array([])
-            mode2_acc = aligned[4] if len(aligned) > 4 else np.array([])
+            torque_axis = aligned[0] if aligned[0] is not None else np.array([])
+            torque_total = aligned[1] if aligned[1] is not None else np.array([])
+            mode1 = aligned[2]
+            mode2 = aligned[3]
+            mode1_acc = aligned[4] if len(aligned) > 4 else np.array([])
+            mode2_acc = aligned[5] if len(aligned) > 5 else np.array([])
 
             displacement = _combine_modal_displacement(mode1, mode2)
             displacement = displacement[: len(time)] if len(time) > 0 else displacement
@@ -1050,6 +1074,7 @@ def _collect_feedback_data(
                 "displacement": displacement,
                 "acceleration": acceleration,
                 "torque": torque_axis,
+                "torque_total": torque_total,
                 "psd_freq": psd_freq,
                 "psd": psd_vals,
                 "method": npz_data.get("method", method),
@@ -2537,6 +2562,480 @@ def _plot_psd_comparison(
     return plot_path
 
 
+def _plot_torque_command_time(
+    feedback_vibration: Dict[str, Dict[str, object]],
+    out_dir: str,
+) -> Optional[str]:
+    """Plot commanded torque vs time for combined FF+FB runs."""
+    if not feedback_vibration:
+        return None
+
+    plt.rcParams.update({
+        "font.size": 10,
+        "axes.labelsize": 11,
+        "axes.titlesize": 12,
+        "legend.fontsize": 9,
+    })
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+    plot_entries = []
+
+    for method in METHODS:
+        for controller in CONTROLLERS:
+            key = f"{method}_{controller}"
+            data = feedback_vibration.get(key)
+            if not data:
+                continue
+            run_mode = str(data.get("run_mode", "")).lower()
+            if run_mode and run_mode != "combined":
+                continue
+            time = data.get("time", np.array([]))
+            torque = data.get("torque_total")
+            if torque is None or len(torque) == 0:
+                torque = data.get("torque", np.array([]))
+            if len(time) == 0 or len(torque) == 0:
+                continue
+            time, aligned = _align_series(time, torque)
+            torque = aligned[0]
+            if len(time) == 0:
+                continue
+
+            plot_entries.append({
+                "time": time,
+                "torque": torque,
+                "label": _combo_label(method, controller),
+                "linestyle": "-",
+                "color": _combo_color(method, controller),
+            })
+
+    if not plot_entries:
+        plt.close(fig)
+        return None
+
+    for entry in plot_entries:
+        color = entry.get("color", "#555555")
+        ax.plot(
+            entry["time"],
+            entry["torque"],
+            color=color,
+            label=entry["label"],
+            linewidth=1.5,
+            linestyle=entry["linestyle"],
+        )
+
+    ax.set_title("Torque Command vs Time", fontweight="bold")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Commanded Torque (N·m)")
+    ax.grid(True, alpha=0.3, which="both")
+    ax.legend(loc="upper right")
+
+    plt.tight_layout()
+    _ensure_dir(out_dir)
+    plot_path = os.path.abspath(os.path.join(out_dir, "mission_torque_command.png"))
+    plt.savefig(plot_path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return plot_path
+
+
+def _plot_torque_command_psd(
+    feedback_vibration: Dict[str, Dict[str, object]],
+    out_dir: str,
+) -> Optional[str]:
+    """Plot commanded torque PSD for combined FF+FB runs (semilogx)."""
+    if not feedback_vibration:
+        return None
+
+    plt.rcParams.update({
+        "font.size": 12,
+        "axes.labelsize": 14,
+        "axes.titlesize": 15,
+        "legend.fontsize": 11,
+        "xtick.labelsize": 11,
+        "ytick.labelsize": 11,
+    })
+
+    fig, ax = plt.subplots(1, 1, figsize=(16, 10))
+    plot_entries = []
+    psd_min_db = None
+    psd_max_db = None
+
+    for method in METHODS:
+        for controller in CONTROLLERS:
+            key = f"{method}_{controller}"
+            data = feedback_vibration.get(key)
+            if not data:
+                continue
+            run_mode = str(data.get("run_mode", "")).lower()
+            if run_mode and run_mode != "combined":
+                continue
+
+            time = data.get("time", np.array([]))
+            torque = data.get("torque_total")
+            if torque is None or len(torque) == 0:
+                torque = data.get("torque", np.array([]))
+            if len(time) == 0 or len(torque) == 0:
+                continue
+            time, aligned = _align_series(time, torque)
+            torque = aligned[0]
+            if len(time) == 0:
+                continue
+            psd_freq, psd_vals = _compute_psd(time, torque)
+            if len(psd_freq) == 0:
+                continue
+
+            mask = (psd_freq > 0) & (psd_freq <= 10.0) & np.isfinite(psd_vals) & (psd_vals > 0)
+            if not np.any(mask):
+                continue
+
+            freq_filtered = psd_freq[mask]
+            psd_filtered = psd_vals[mask]
+            psd_db = 10.0 * np.log10(psd_filtered)
+
+            psd_min_db = float(np.min(psd_db)) if psd_min_db is None else min(psd_min_db, float(np.min(psd_db)))
+            psd_max_db = float(np.max(psd_db)) if psd_max_db is None else max(psd_max_db, float(np.max(psd_db)))
+
+            plot_entries.append({
+                "freq": freq_filtered,
+                "psd_db": psd_db,
+                "label": _combo_label(method, controller),
+                "linestyle": "-",
+                "color": _combo_color(method, controller),
+            })
+
+    if not plot_entries:
+        plt.close(fig)
+        return None
+
+    for entry in plot_entries:
+        color = entry.get("color", "#555555")
+        ax.plot(
+            entry["freq"],
+            entry["psd_db"],
+            color=color,
+            linestyle=entry["linestyle"],
+            linewidth=2.0,
+            alpha=0.9,
+            label=entry["label"],
+        )
+
+    ax.set_title("Torque Command PSD (Combined Feedforward + Feedback)", fontweight="bold", fontsize=16, pad=15)
+    ax.set_xlabel("Frequency (Hz)", fontsize=14, fontweight="bold")
+    ax.set_ylabel(r"PSD (dB re N$^2$m$^2$/Hz)", fontsize=14, fontweight="bold")
+    ax.grid(True, alpha=0.6, which="major", linestyle="-", linewidth=0.8, color="gray")
+    ax.grid(True, alpha=0.3, which="minor", linestyle="-", linewidth=0.4, color="lightgray")
+
+    ax.legend(loc="upper right", framealpha=0.95, ncol=1, fontsize=11,
+              fancybox=True, shadow=True)
+
+    plt.tight_layout()
+    _ensure_dir(out_dir)
+    plot_path = os.path.abspath(os.path.join(out_dir, "mission_torque_command_psd.png"))
+    plt.savefig(plot_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return plot_path
+
+
+def _plot_torque_psd_split(
+    feedforward_torque: Dict[str, Dict[str, np.ndarray]],
+    feedback_vibration: Dict[str, Dict[str, object]],
+    out_dir: str,
+) -> Optional[str]:
+    """Plot feedforward vs feedback torque PSDs in separate subplots."""
+    if not feedforward_torque and not feedback_vibration:
+        return None
+
+    plt.rcParams.update({
+        "font.size": 12,
+        "axes.labelsize": 14,
+        "axes.titlesize": 15,
+        "legend.fontsize": 11,
+        "xtick.labelsize": 11,
+        "ytick.labelsize": 11,
+    })
+
+    fig, (ax_ff, ax_fb) = plt.subplots(2, 1, figsize=(16, 12), sharex=True)
+
+    def _plot_psd_lines(ax, entries):
+        for entry in entries:
+            color = entry.get("color", "#555555")
+            ax.plot(
+                entry["freq"],
+                entry["psd_db"],
+                color=color,
+                linestyle=entry["linestyle"],
+                linewidth=2.0,
+                alpha=0.9,
+                label=entry["label"],
+            )
+
+    ff_entries = []
+    for method in METHODS:
+        data = feedforward_torque.get(method)
+        if not data:
+            continue
+        time = data.get("time", np.array([]))
+        torque = data.get("torque", np.array([]))
+        if len(time) == 0 or len(torque) == 0:
+            continue
+        time, aligned = _align_series(time, torque)
+        torque = aligned[0]
+        if len(time) == 0:
+            continue
+        freq, psd = _compute_psd(time, torque)
+        if len(freq) == 0:
+            continue
+        mask = (freq > 0) & (freq <= 10.0) & np.isfinite(psd) & (psd > 0)
+        if not np.any(mask):
+            continue
+        freq = freq[mask]
+        psd_db = 10.0 * np.log10(psd[mask])
+        ff_entries.append({
+            "freq": freq,
+            "psd_db": psd_db,
+            "label": f"FF: {METHOD_LABELS.get(method, method)}",
+            "linestyle": "-",
+            "color": METHOD_COLORS.get(method, "#555555"),
+        })
+
+    fb_entries = []
+    for method in METHODS:
+        for controller in CONTROLLERS:
+            key = f"{method}_{controller}"
+            data = feedback_vibration.get(key)
+            if not data:
+                continue
+            run_mode = str(data.get("run_mode", "")).lower()
+            if run_mode and run_mode != "combined":
+                continue
+            time = data.get("time", np.array([]))
+            torque = data.get("torque", np.array([]))
+            if len(time) == 0 or len(torque) == 0:
+                continue
+            time, aligned = _align_series(time, torque)
+            torque = aligned[0]
+            if len(time) == 0:
+                continue
+            freq, psd = _compute_psd(time, torque)
+            if len(freq) == 0:
+                continue
+            mask = (freq > 0) & (freq <= 10.0) & np.isfinite(psd) & (psd > 0)
+            if not np.any(mask):
+                continue
+            freq = freq[mask]
+            psd_db = 10.0 * np.log10(psd[mask])
+            fb_entries.append({
+                "freq": freq,
+                "psd_db": psd_db,
+                "label": _combo_label(method, controller),
+                "linestyle": "-",
+                "color": _combo_color(method, controller),
+            })
+
+    if not ff_entries and not fb_entries:
+        plt.close(fig)
+        return None
+
+    if ff_entries:
+        _plot_psd_lines(ax_ff, ff_entries)
+        ax_ff.set_title("Feedforward Torque Command PSD", fontweight="bold")
+        ax_ff.set_ylabel(r"PSD (dB re N$^2$m$^2$/Hz)")
+        ax_ff.grid(True, alpha=0.6, which="major", linestyle="-", linewidth=0.8, color="gray")
+        ax_ff.grid(True, alpha=0.3, which="minor", linestyle="-", linewidth=0.4, color="lightgray")
+        ax_ff.legend(loc="upper right", framealpha=0.95, fontsize=10, fancybox=True, shadow=True)
+
+    if fb_entries:
+        _plot_psd_lines(ax_fb, fb_entries)
+        ax_fb.set_title("Feedback Torque Command PSD", fontweight="bold")
+        ax_fb.set_xlabel("Frequency (Hz)")
+        ax_fb.set_ylabel(r"PSD (dB re N$^2$m$^2$/Hz)")
+        ax_fb.grid(True, alpha=0.6, which="major", linestyle="-", linewidth=0.8, color="gray")
+        ax_fb.grid(True, alpha=0.3, which="minor", linestyle="-", linewidth=0.4, color="lightgray")
+        ax_fb.legend(loc="upper right", framealpha=0.95, fontsize=10, fancybox=True, shadow=True, ncol=1)
+
+    plt.tight_layout()
+    _ensure_dir(out_dir)
+    plot_path = os.path.abspath(os.path.join(out_dir, "mission_torque_psd_split.png"))
+    plt.savefig(plot_path, dpi=400, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return plot_path
+
+
+def _plot_torque_psd_coherence(
+    feedforward_torque: Dict[str, Dict[str, np.ndarray]],
+    feedback_vibration: Dict[str, Dict[str, object]],
+    out_dir: str,
+) -> Optional[str]:
+    """Plot magnitude-squared coherence between FF and FB torque commands."""
+    if not feedforward_torque or not feedback_vibration:
+        return None
+
+    plt.rcParams.update({
+        "font.size": 10,
+        "axes.labelsize": 11,
+        "axes.titlesize": 12,
+        "legend.fontsize": 9,
+    })
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=True, sharey=True)
+    axes = axes.flatten()
+    plot_count = 0
+
+    def _common_time_series(
+        time_a: np.ndarray, sig_a: np.ndarray, time_b: np.ndarray, sig_b: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if len(time_a) == 0 or len(time_b) == 0:
+            return np.array([]), np.array([]), np.array([])
+        t0 = max(float(time_a[0]), float(time_b[0]))
+        t1 = min(float(time_a[-1]), float(time_b[-1]))
+        if t1 <= t0:
+            return np.array([]), np.array([]), np.array([])
+        dt_a = float(np.median(np.diff(time_a))) if len(time_a) > 1 else UNIFIED_SAMPLE_DT
+        dt_b = float(np.median(np.diff(time_b))) if len(time_b) > 1 else UNIFIED_SAMPLE_DT
+        dt_target = min(dt_a, dt_b, UNIFIED_SAMPLE_DT)
+        if not np.isfinite(dt_target) or dt_target <= 0:
+            dt_target = UNIFIED_SAMPLE_DT
+        t_common = np.arange(t0, t1 + 0.5 * dt_target, dt_target)
+        a_interp = np.interp(t_common, time_a, sig_a)
+        b_interp = np.interp(t_common, time_b, sig_b)
+        return t_common, a_interp, b_interp
+
+    for method in METHODS:
+        ff_data = feedforward_torque.get(method)
+        if not ff_data:
+            continue
+        ff_time = ff_data.get("time", np.array([]))
+        ff_torque = ff_data.get("torque", np.array([]))
+        if len(ff_time) == 0 or len(ff_torque) == 0:
+            continue
+
+        for controller in CONTROLLERS:
+            key = f"{method}_{controller}"
+            data = feedback_vibration.get(key)
+            if not data:
+                continue
+            run_mode = str(data.get("run_mode", "")).lower()
+            if run_mode and run_mode != "combined":
+                continue
+            fb_time = data.get("time", np.array([]))
+            fb_torque = data.get("torque", np.array([]))
+            if len(fb_time) == 0 or len(fb_torque) == 0:
+                continue
+
+            time, ff_sig, fb_sig = _common_time_series(ff_time, ff_torque, fb_time, fb_torque)
+            if len(time) == 0:
+                continue
+
+            params = _choose_psd_params(time, ff_sig)
+            if not params:
+                continue
+            freq, coh = signal.coherence(
+                ff_sig,
+                fb_sig,
+                fs=params["fs"],
+                window=params["window"],
+                nperseg=params["nperseg"],
+                noverlap=params["noverlap"],
+                detrend=params["detrend"],
+            )
+            mask = (freq >= 0) & (freq <= 10.0) & np.isfinite(coh)
+            if not np.any(mask):
+                continue
+
+            ax = axes[plot_count]
+            ax.plot(freq[mask], coh[mask], color="#1f77b4", linewidth=2.0, label="Coherence (FF vs FB)")
+            ax.set_title(_combo_label(method, controller), fontweight="bold")
+            ax.set_ylim(0.0, 1.0)
+            ax.grid(True, alpha=0.3, which="both")
+            ax.legend(loc="upper right", fontsize=8)
+            plot_count += 1
+            if plot_count >= len(axes):
+                break
+        if plot_count >= len(axes):
+            break
+
+    for extra_ax in axes[plot_count:]:
+        extra_ax.axis("off")
+
+    if plot_count == 0:
+        plt.close(fig)
+        return None
+
+    fig.suptitle("Torque Coherence: Feedforward vs Feedback", fontweight="bold")
+    fig.supxlabel("Frequency (Hz)")
+    fig.supylabel("Magnitude-Squared Coherence")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    _ensure_dir(out_dir)
+    plot_path = os.path.abspath(os.path.join(out_dir, "mission_torque_psd_coherence.png"))
+    plt.savefig(plot_path, dpi=400, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return plot_path
+
+
+def _export_torque_psd_rms(
+    feedforward_torque: Dict[str, Dict[str, np.ndarray]],
+    feedback_vibration: Dict[str, Dict[str, object]],
+    out_dir: str,
+    fmin: float = 0.0,
+    fmax: float = 10.0,
+) -> Optional[str]:
+    """Export band-limited RMS torque from PSDs for FF, FB, and total."""
+    rows: List[List[str]] = []
+
+    for method in METHODS:
+        data = feedforward_torque.get(method)
+        if not data:
+            continue
+        time = data.get("time", np.array([]))
+        torque = data.get("torque", np.array([]))
+        if len(time) == 0 or len(torque) == 0:
+            continue
+        time, aligned = _align_series(time, torque)
+        torque = aligned[0]
+        if len(time) == 0:
+            continue
+        freq, psd = _compute_psd(time, torque)
+        rms = _compute_band_rms(freq, psd, fmin, fmax)
+        rows.append(["ff", method, "", f"{fmin:.2f}-{fmax:.2f}", f"{rms:.6e}"])
+
+    for method in METHODS:
+        for controller in CONTROLLERS:
+            key = f"{method}_{controller}"
+            data = feedback_vibration.get(key)
+            if not data:
+                continue
+            run_mode = str(data.get("run_mode", "")).lower()
+            if run_mode and run_mode != "combined":
+                continue
+            time = data.get("time", np.array([]))
+            fb_torque = data.get("torque", np.array([]))
+            total_torque = data.get("torque_total")
+            if total_torque is None or len(total_torque) == 0:
+                total_torque = fb_torque
+            if len(time) == 0 or len(fb_torque) == 0:
+                continue
+            time, aligned = _align_series(time, fb_torque, total_torque)
+            fb_torque = aligned[0]
+            total_torque = aligned[1]
+            if len(time) == 0:
+                continue
+            freq_fb, psd_fb = _compute_psd(time, fb_torque)
+            freq_total, psd_total = _compute_psd(time, total_torque)
+            rms_fb = _compute_band_rms(freq_fb, psd_fb, fmin, fmax)
+            rms_total = _compute_band_rms(freq_total, psd_total, fmin, fmax)
+            rows.append(["fb", method, controller, f"{fmin:.2f}-{fmax:.2f}", f"{rms_fb:.6e}"])
+            rows.append(["total", method, controller, f"{fmin:.2f}-{fmax:.2f}", f"{rms_total:.6e}"])
+
+    if not rows:
+        return None
+
+    _ensure_dir(out_dir)
+    path = os.path.abspath(os.path.join(out_dir, "torque_psd_rms.csv"))
+    _write_csv(path, ["type", "method", "controller", "band_hz", "rms_torque_nm"], rows)
+    print(f"Wrote torque PSD RMS CSV: {path}")
+    return path
+
+
 def _format_margin_label(margins: Dict[str, float]) -> str:
     """Format stability margins for legend."""
     gm = margins.get("gain_margin_db", float("inf"))
@@ -3074,6 +3573,7 @@ def run_mission_simulation(
         _export_sensitivity_csv(ctrl_data, out_dir)
         _export_nyquist_csv(ctrl_data, out_dir)
         _export_mission_summary_csv(ff_metrics, ctrl_metrics, pointing_metrics, out_dir)
+        _export_torque_psd_rms(feedforward_torque, feedback_vibration, out_dir)
 
     # Generate plots
     plot_paths: List[str] = []
@@ -3089,6 +3589,10 @@ def run_mission_simulation(
         disturbance_plot = _plot_disturbance_transfer(ctrl_data, config, out_dir)
         noise_torque_plot = _plot_noise_to_torque(ctrl_data, out_dir)
         loop_component_plots = _plot_loop_components(ctrl_data, config, out_dir)
+        torque_cmd_plot = _plot_torque_command_time(feedback_vibration, out_dir)
+        torque_cmd_psd_plot = _plot_torque_command_psd(feedback_vibration, out_dir)
+        torque_psd_split_plot = _plot_torque_psd_split(feedforward_torque, feedback_vibration, out_dir)
+        torque_psd_coherence_plot = _plot_torque_psd_coherence(feedforward_torque, feedback_vibration, out_dir)
 
         for plot in [
             vibration_plot,
@@ -3099,6 +3603,10 @@ def run_mission_simulation(
             nyquist_plot,
             disturbance_plot,
             noise_torque_plot,
+            torque_cmd_plot,
+            torque_cmd_psd_plot,
+            torque_psd_split_plot,
+            torque_psd_coherence_plot,
         ]:
             if plot:
                 plot_paths.append(plot)
