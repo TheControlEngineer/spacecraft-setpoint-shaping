@@ -32,7 +32,7 @@ FINDINGS:
 
 4. FEEDFORWARD IMPACT:
    During the slew (0-30s), the feedforward torque excites modes.
-   The unshaped bang-bang profile excites modes more than ZVD or fourth-order.
+   The unshaped bang-bang profile excites modes more than fourth-order.
    Standard PD's faster rate feedback provides better modal damping during this phase.
 
 5. WHY IS THIS ACTUALLY CORRECT BEHAVIOR?
@@ -56,12 +56,10 @@ FINDINGS:
       
    b) For real hardware:
       - Use filtered_pd to avoid noise-induced excitation
-      - OR use AVC with active PPF damping (currently disabled with gains=[0,0])
       
    c) To improve filtered_pd performance:
       - OPTION 1: Use a notch filter at modal frequencies instead of LP filter
       - OPTION 2: Use a higher cutoff (0.5-1.0 Hz) but add notch at modes
-      - OPTION 3: Enable AVC with PPF gains > 0 for active modal damping
 
 SUMMARY:
 ========
@@ -82,13 +80,8 @@ print("-" * 60)
 configs = [
     ('unshaped_standard_pd', 'vizard_demo_unshaped_standard_pd.npz'),
     ('unshaped_filtered_pd', 'vizard_demo_unshaped_filtered_pd.npz'),
-    ('unshaped_avc', 'vizard_demo_unshaped_avc.npz'),
-    ('zvd_standard_pd', 'vizard_demo_zvd_standard_pd.npz'),
-    ('zvd_filtered_pd', 'vizard_demo_zvd_filtered_pd.npz'),
-    ('zvd_avc', 'vizard_demo_zvd_avc.npz'),
     ('fourth_standard_pd', 'vizard_demo_fourth_standard_pd.npz'),
     ('fourth_filtered_pd', 'vizard_demo_fourth_filtered_pd.npz'),
-    ('fourth_avc', 'vizard_demo_fourth_avc.npz'),
 ]
 
 target_180deg = np.array([0.0, 0.0, 1.0])

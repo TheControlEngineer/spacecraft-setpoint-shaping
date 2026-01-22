@@ -8,8 +8,8 @@ This module defines a spacecraft with:
 
 For YAW (Z-axis) slew maneuvers:
 - Solar arrays extend along Y-axis (port/starboard)
-- Flex modes bend in Z direction
-- Slew start/stop (angular acceleration) excites out-of-plane bending via base excitation
+- Flex modes bend in X direction (tangential to yaw)
+- Slew start/stop (angular acceleration) excites tangential bending via base excitation
 - This is the classic input shaping problem for flexible spacecraft
 """
 
@@ -163,7 +163,7 @@ class FlexibleSpacecraft:
         omega1 = 2 * np.pi * self.array_modes[0]['frequency']
         zeta1 = self.array_modes[0]['damping']
         mode1_port.k = modal_mass * omega1**2  # k = m * omega^2
-        mode1_port.c = 2 * zeta1 * np.sqrt(mode1_port.k * modal_mass)  # critical damping formula
+        mode1_port.c = 2 * zeta1 * np.sqrt(mode1_port.k * modal_mass)  # damping coefficient formula
         mode1_port.massInit = modal_mass
         r_mode1_port = self.flex_mode_locations["mode1_port"]
         mode1_port.r_PB_B = [[float(r_mode1_port[0])], [float(r_mode1_port[1])], [float(r_mode1_port[2])]]
@@ -237,7 +237,7 @@ class FlexibleSpacecraft:
             return np.array(self.hub_inertia, dtype=float)
         return compute_effective_inertia_base(
             hub_inertia=self.hub_inertia,
-            mode_locations=self.flex_mode_locations.values(),
+            mode_locations=self.flex_mode_locations,
             modal_mass=self.modal_mass,
         )
 

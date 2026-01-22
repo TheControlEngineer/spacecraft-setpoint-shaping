@@ -6,6 +6,7 @@ import argparse
 import csv
 import math
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -20,7 +21,13 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from scipy import signal
 from scipy.fft import fft, fftfreq
 
-from spacecraft_properties import HUB_INERTIA, compute_effective_inertia
+from spacecraft_properties import (
+    HUB_INERTIA,
+    compute_effective_inertia,
+    compute_modal_gains,
+    compute_mode_lever_arms,
+    FLEX_MODE_MASS,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -37,92 +44,111 @@ class MissionConfig:
     modal_freqs_hz: List[float]
     modal_damping: List[float]
     modal_gains: List[float]
-    ppf_gains: List[float]
     slew_angle_deg: float
     slew_duration_s: float
     feedforward_inertia: Optional[np.ndarray] = None
     control_modal_gains: Optional[List[float]] = None
     control_filter_cutoff_hz: Optional[float] = None
     control_filter_phase_lag_deg: float = 3.0
-    vibration_highpass_hz: Optional[float] = None
+    vibration_highpass_hz: Optional[float] = 0.2
     pointing_error_spec_asd_deg: Optional[float] = None
     pointing_error_spec_label: Optional[str] = None
+    feedback_method: Optional[str] = None
+    camera_lever_arm_m: float = 4.0
+    modal_mass_kg: Optional[float] = None
 
 
-METHODS = ["unshaped", "zvd", "fourth"]
-CONTROLLERS = ["standard_pd", "filtered_pd", "avc"]
+METHODS = ["unshaped", "fourth"]
+CONTROLLERS = ["standard_pd", "filtered_pd"]
+UNIFIED_SAMPLE_DT = 0.01  # 100 Hz to match Basilisk simulation
 
 METHOD_LABELS = {
     "unshaped": "Unshaped",
-    "zvd": "ZVD",
     "fourth": "Fourth-Order",
 }
 
 METHOD_COLORS = {
     "unshaped": "#d62728",  # red
-    "zvd": "#1f77b4",  # blue
     "fourth": "#2ca02c",  # green
 }
 
 CONTROLLER_LABELS = {
     "standard_pd": "Standard PD",
     "filtered_pd": "Filtered PD",
-    "avc": "AVC",
 }
 
 CONTROLLER_COLORS = {
     "standard_pd": "#ff7f0e",  # orange
     "filtered_pd": "#9467bd",  # purple
-    "avc": "#17becf",  # cyan
 }
+
+# Comparison colors for method + controller combinations (solid lines).
+COMBO_COLORS = {
+    ("unshaped", "standard_pd"): "#d62728",  # red
+    ("unshaped", "filtered_pd"): "#ff7f0e",  # orange
+    ("fourth", "standard_pd"): "#1f77b4",  # blue
+    ("fourth", "filtered_pd"): "#9467bd",  # violet
+}
+
+
+def _combo_label(method: str, controller: str) -> str:
+    """Format legend label for a method + controller pair."""
+    return f"{METHOD_LABELS.get(method, method)} + {CONTROLLER_LABELS.get(controller, controller)}"
+
+
+def _combo_color(method: str, controller: str) -> str:
+    """Pick the requested color for a method + controller pair."""
+    return COMBO_COLORS.get((method, controller), CONTROLLER_COLORS.get(controller, "#333333"))
 
 
 def default_config() -> MissionConfig:
     """Return default mission configuration.
 
-    Modal gains are the coupling factors between torque and modal displacement.
-    For a flexible appendage at distance r from the rotation axis:
-        gain ~ r / (I * omega_n^2)
+    Modal gains map torque to modal acceleration for base excitation:
+        q_ddot + 2*zeta*omega*q_dot + omega^2*q = gain * torque
+        gain = r / I_axis
 
-    where I is the hub inertia and omega_n is the modal frequency.
-    Typical values for solar arrays are 0.001-0.01 m/(N.m) at the modal frequency.
+    The static displacement per unit torque is gain / omega^2.
+    Typical values at the modal frequency are 1e-4 to 1e-2 m/(N.m).
 
     IMPORTANT: modal_gains and control_modal_gains should be CONSISTENT.
-    The theoretical values based on spacecraft geometry are:
-        Mode 1 (0.4 Hz): r/(J*omega^2) = 3.5/(600*2.51^2) = 0.00092
-        Mode 2 (1.3 Hz): r/(J*omega^2) = 4.5/(600*8.17^2) = 0.00011
-    
-    Using [0.0015, 0.0008] which is close to theoretical and produces
-    realistic mm-level vibrations for the ~13 N.m peak torque.
+    Modal gains are computed from lever arm / I_axis.
     
     Controller Design (based on analysis in optimal_controller_design.py):
-    - Bandwidth = first_mode/6 = 0.067 Hz (ensures PM > 62 degrees)
-    - Controller bandwidth = first_mode/6 for adequate phase margin
-    - PPF gains need to be tuned to add damping without destabilizing
+    - Bandwidth = first_mode/2.5 = 0.16 Hz (still below mode 1)
+    - Controller bandwidth = first_mode/2.5 for adequate phase margin
+    - Derivative filter cutoff is set high enough to preserve phase margin
     """
+    inertia_eff = compute_effective_inertia(hub_inertia=HUB_INERTIA.copy())
+    rotation_axis = np.array([0.0, 0.0, 1.0])
+    modal_freqs_hz = [0.4, 1.3]
+    modal_gains = compute_modal_gains(inertia_eff, rotation_axis)
+    if not modal_gains:
+        modal_gains = [0.0] * len(modal_freqs_hz)
+    elif len(modal_gains) < len(modal_freqs_hz):
+        modal_gains = (modal_gains + [modal_gains[-1]] * len(modal_freqs_hz))[: len(modal_freqs_hz)]
+    first_mode = min(modal_freqs_hz) if modal_freqs_hz else 0.4
+    control_bandwidth_hz = first_mode / 2.5
+    # Filtered PD cutoff (user-requested): 8.0 Hz for current tuning.
+    control_filter_cutoff_hz = 8.0
     return MissionConfig(
-        inertia=HUB_INERTIA.copy(),
-        feedforward_inertia=compute_effective_inertia(hub_inertia=HUB_INERTIA.copy()),
-        rotation_axis=np.array([0.0, 0.0, 1.0]),
-        modal_freqs_hz=[0.4, 1.3],
+        inertia=inertia_eff.copy(),
+        feedforward_inertia=inertia_eff.copy(),
+        rotation_axis=rotation_axis,
+        modal_freqs_hz=modal_freqs_hz,
         modal_damping=[0.02, 0.015],
-        # Modal gains - physically derived from: 2 * m_flex * r^2 / J_eff
-        # Mode 1: 2 * 5kg * 3.5m^2 / 765 kg*m^2 = 0.160
-        # Mode 2: 2 * 5kg * 4.5m^2 / 765 kg*m^2 = 0.265
-        # These represent the modal participation factors for torque coupling
-        modal_gains=[0.16, 0.265],
-        # Use SAME gains for control analysis to ensure consistency
-        control_modal_gains=[0.16, 0.265],
-        # No derivative filter - causes phase margin to drop below 62 degrees
-        control_filter_cutoff_hz=None,
+        modal_gains=modal_gains,
+        control_modal_gains=modal_gains,
+        control_filter_cutoff_hz=control_filter_cutoff_hz,
         control_filter_phase_lag_deg=3.0,
-        # PPF gains for modal damping - start conservative
-        ppf_gains=[0.5, 0.5],
         slew_angle_deg=180.0,
         slew_duration_s=30.0,
         vibration_highpass_hz=None,
         pointing_error_spec_asd_deg=None,
         pointing_error_spec_label=None,
+        feedback_method="fourth",
+        camera_lever_arm_m=4.0,
+        modal_mass_kg=FLEX_MODE_MASS,
     )
 
 
@@ -134,6 +160,21 @@ def default_config() -> MissionConfig:
 def _ensure_dir(path: str) -> None:
     """Create directory if it doesn't exist."""
     os.makedirs(path, exist_ok=True)
+
+
+def _mirror_output(path: str, mirror_dir: str) -> None:
+    """Copy an output file to a mirror directory if needed."""
+    if not path or not mirror_dir:
+        return
+    if not os.path.isdir(mirror_dir):
+        return
+    dst = os.path.join(mirror_dir, os.path.basename(path))
+    if os.path.abspath(dst) == os.path.abspath(path):
+        return
+    try:
+        shutil.copy2(path, dst)
+    except OSError:
+        pass
 
 
 def _write_csv(path: str, headers: List[str], rows: Iterable[List[str]]) -> None:
@@ -171,20 +212,35 @@ def _get_vibration_highpass_hz(config: MissionConfig) -> float:
     duration = float(config.slew_duration_s)
     base = 2.0 / duration if duration > 0 else 0.05
     if config.modal_freqs_hz:
-        return min(base, 0.5 * min(config.modal_freqs_hz))
+        return max(base, 0.5 * min(config.modal_freqs_hz))
     return base
 
 
 def _extract_vibration_signals(
-    time: np.ndarray, displacement: np.ndarray, config: MissionConfig
+    time: np.ndarray,
+    displacement: np.ndarray,
+    config: MissionConfig,
+    acceleration: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """High-pass filter displacement and derive vibration acceleration."""
+    """High-pass filter displacement and derive vibration acceleration.
+
+    If acceleration is provided, it is filtered/detrended directly (no numerical
+    differentiation of displacement).
+    """
     if len(time) == 0 or len(displacement) == 0:
         return np.array([]), np.array([])
     cutoff_hz = _get_vibration_highpass_hz(config)
     disp = _highpass_filter(np.array(displacement, dtype=float), time, cutoff_hz)
-    acc = _compute_acceleration_from_displacement(time, disp)
+    disp = signal.detrend(disp, type="linear")
+    if acceleration is None or len(acceleration) == 0:
+        acc = _compute_acceleration_from_displacement(time, disp)
+    else:
+        acc = np.array(acceleration, dtype=float)
+        if len(acc) != len(time):
+            n = min(len(acc), len(time))
+            acc = acc[:n]
     acc = _highpass_filter(np.array(acc, dtype=float), time, cutoff_hz)
+    acc = signal.detrend(acc, type="linear")
     return disp, acc
 
 
@@ -193,21 +249,67 @@ def _detrend_mean(data: np.ndarray) -> np.ndarray:
     return data - np.mean(data)
 
 
+def _choose_psd_params(time: np.ndarray, signal_data: np.ndarray) -> Optional[Dict[str, object]]:
+    """Choose Welch PSD parameters for balanced resolution and variance."""
+    n = len(signal_data)
+    if n < 16:
+        return None
+    dt = np.median(np.diff(time))
+    if not np.isfinite(dt) or dt <= 0:
+        return None
+    fs = 1.0 / dt
+
+    max_nperseg = min(4096, n)
+    if max_nperseg < 8:
+        return None
+
+    # Target resolution around 0.02 Hz if possible, otherwise use the longest feasible segment.
+    target_df = 0.02
+    nperseg_target = int(round(fs / target_df))
+    nperseg = min(max_nperseg, max(8, nperseg_target))
+
+    # Use a power-of-two length for efficiency and stable grids.
+    nperseg = 2 ** int(np.floor(np.log2(nperseg)))
+    nperseg = max(8, min(nperseg, max_nperseg))
+
+    # Ensure enough averages for a meaningful PSD (variance reduction).
+    min_segments = 6
+    overlap_ratio = 0.5
+    while nperseg >= 8:
+        noverlap = int(nperseg * overlap_ratio)
+        step = nperseg - noverlap
+        segments = 1 + max(0, (n - nperseg) // step) if step > 0 else 0
+        if segments >= min_segments or nperseg <= 64:
+            break
+        nperseg //= 2
+
+    if nperseg < 8:
+        return None
+
+    noverlap = int(nperseg * overlap_ratio)
+    return {
+        "fs": fs,
+        "nperseg": nperseg,
+        "noverlap": noverlap,
+        "window": "hann",
+        "detrend": "constant",
+        "scaling": "density",
+    }
+
+
 def _compute_psd(time: np.ndarray, signal_data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Compute power spectral density using Welch's method."""
-    if len(time) < 10:
-        return np.array([]), np.array([])
-    dt = np.median(np.diff(time))
-    fs = 1.0 / dt
-    nperseg = min(256, len(signal_data) // 4)
-    if nperseg < 8:
+    params = _choose_psd_params(time, signal_data)
+    if not params:
         return np.array([]), np.array([])
     freq, psd = signal.welch(
         signal_data,
-        fs=fs,
-        nperseg=nperseg,
-        noverlap=nperseg // 2,
-        scaling="density",
+        fs=params["fs"],
+        window=params["window"],
+        nperseg=params["nperseg"],
+        noverlap=params["noverlap"],
+        detrend=params["detrend"],
+        scaling=params["scaling"],
     )
     return freq, psd
 
@@ -276,6 +378,43 @@ def _normalize_axis(axis: np.ndarray) -> np.ndarray:
     return axis / norm
 
 
+def _pad_list(values: Optional[Iterable[float]], count: int, default: float) -> List[float]:
+    """Pad or trim a list to a fixed count."""
+    if count <= 0:
+        return []
+    vals = []
+    if values is not None:
+        vals = [float(v) for v in values]
+    if len(vals) >= count:
+        return vals[:count]
+    if vals:
+        vals.extend([vals[-1]] * (count - len(vals)))
+        return vals
+    return [float(default)] * count
+
+
+def _infer_modal_lever_arms(config: MissionConfig, axis: np.ndarray, inertia_axis: float) -> List[float]:
+    """Infer modal lever arms from gains or geometry."""
+    n_modes = len(config.modal_freqs_hz)
+    lever_arms: List[float] = []
+    if config.modal_gains:
+        lever_arms = [float(gain) * float(inertia_axis) for gain in config.modal_gains]
+    if not lever_arms:
+        lever_arms = compute_mode_lever_arms(rotation_axis=axis)
+    if len(lever_arms) < n_modes:
+        if lever_arms:
+            lever_arms.extend([lever_arms[-1]] * (n_modes - len(lever_arms)))
+        else:
+            lever_arms = [0.0] * n_modes
+    return lever_arms[:n_modes]
+
+
+def _infer_modal_masses(config: MissionConfig, count: int) -> List[float]:
+    """Infer modal masses for coupled dynamics."""
+    modal_mass = float(config.modal_mass_kg) if config.modal_mass_kg is not None else float(FLEX_MODE_MASS)
+    return [modal_mass] * count
+
+
 def _align_series(time: np.ndarray, *series: np.ndarray) -> Tuple[np.ndarray, List[np.ndarray]]:
     """Align time and series arrays to the shortest length."""
     lengths = [len(time)] + [len(s) for s in series if s is not None]
@@ -289,6 +428,29 @@ def _align_series(time: np.ndarray, *series: np.ndarray) -> Tuple[np.ndarray, Li
         else:
             aligned.append(np.array(s, dtype=float)[:n])
     return np.array(time, dtype=float)[:n], aligned
+
+
+def _resample_time_series(
+    time: np.ndarray,
+    *series: np.ndarray,
+    dt_target: float = UNIFIED_SAMPLE_DT,
+) -> Tuple[np.ndarray, List[np.ndarray]]:
+    """Resample time series to a uniform target timestep."""
+    time = np.array(time, dtype=float)
+    if len(time) < 2:
+        return time, [np.array(s, dtype=float) for s in series]
+    dt = float(np.median(np.diff(time)))
+    if not np.isfinite(dt) or abs(dt - dt_target) < 1e-9:
+        return time, [np.array(s, dtype=float) for s in series]
+    t_new = np.arange(time[0], time[-1] + dt_target * 0.5, dt_target)
+    resampled = []
+    for s in series:
+        if s is None or len(s) == 0:
+            resampled.append(np.array([]))
+        else:
+            resampled.append(np.interp(t_new, time, np.array(s, dtype=float)))
+    print(f"Warning: resampled trajectory from dt={dt:.6f}s to {dt_target:.2f}s")
+    return t_new, resampled
 
 
 def _combine_modal_displacement(mode1: np.ndarray, mode2: np.ndarray) -> np.ndarray:
@@ -334,7 +496,10 @@ def _infer_maneuver_end(
     if len(time) == 0:
         return fallback
     if control_mode:
-        ff_mask = np.array(["FF" in str(mode) for mode in control_mode], dtype=bool)
+        ff_mask = np.array(
+            [("FF" in str(mode)) and ("FF(0)" not in str(mode)) for mode in control_mode],
+            dtype=bool,
+        )
         if np.any(ff_mask):
             return float(time[np.where(ff_mask)[0][-1]])
     if torque is not None and len(torque) > 0:
@@ -350,6 +515,39 @@ def _infer_maneuver_end(
 
 def _npz_matches_config(npz_data: Dict[str, object], config: MissionConfig) -> bool:
     """Check whether NPZ metadata matches the current configuration."""
+    def _match_array(key: str, ref: Optional[Iterable[float]], rtol: float = 0.1) -> bool:
+        value = npz_data.get(key)
+        if key not in npz_data or ref is None or value is None:
+            return True
+        try:
+            data_arr = np.array(value, dtype=float).ravel()
+            ref_arr = np.array(ref, dtype=float).ravel()
+            if data_arr.shape != ref_arr.shape:
+                return False
+            return np.allclose(data_arr, ref_arr, rtol=rtol, atol=1e-12)
+        except (TypeError, ValueError):
+            return True
+
+    def _match_scalar(key: str, ref: Optional[float], tol: float) -> bool:
+        value = npz_data.get(key)
+        if key not in npz_data or ref is None or value is None:
+            return True
+        try:
+            return abs(float(value) - float(ref)) <= tol
+        except (TypeError, ValueError):
+            return True
+
+    required_keys = [
+        "modal_freqs_hz",
+        "modal_damping",
+        "modal_gains",
+        "control_filter_cutoff_hz",
+        "inertia_control",
+        "slew_duration_s",
+    ]
+    if any(npz_data.get(key) is None for key in required_keys):
+        return False
+
     # Check slew angle
     angle = npz_data.get("slew_angle_deg")
     if angle is not None:
@@ -358,21 +556,31 @@ def _npz_matches_config(npz_data: Dict[str, object], config: MissionConfig) -> b
                 return False
         except (TypeError, ValueError):
             pass
+
+    # Check slew duration
+    if not _match_scalar("slew_duration_s", config.slew_duration_s, tol=0.5):
+        return False
+
+    # Check modal frequencies and damping
+    if not _match_array("modal_freqs_hz", config.modal_freqs_hz, rtol=0.02):
+        return False
+    if not _match_array("modal_damping", config.modal_damping, rtol=0.2):
+        return False
+
+    # Check control filter cutoff only for filtered PD (not relevant for standard PD).
+    controller = str(npz_data.get("controller", "")).lower()
+    if "filtered_pd" in controller:
+        if not _match_scalar("control_filter_cutoff_hz", config.control_filter_cutoff_hz, tol=0.05):
+            return False
+
+    # Check inertia used for control if present
+    if not _match_array("inertia_control", config.inertia.flatten(), rtol=0.02):
+        return False
     
     # Check modal gains - critical for vibration magnitude
-    npz_gains = npz_data.get("modal_gains")
-    if npz_gains is not None and config.modal_gains:
-        try:
-            npz_gains = np.array(npz_gains, dtype=float)
-            cfg_gains = np.array(config.modal_gains, dtype=float)
-            if len(npz_gains) != len(cfg_gains):
-                return False
-            # Require gains to match within 10%
-            if not np.allclose(npz_gains, cfg_gains, rtol=0.1):
-                return False
-        except (TypeError, ValueError):
-            pass
-    
+    if not _match_array("modal_gains", config.modal_gains, rtol=0.1):
+        return False
+
     return True
 
 
@@ -382,7 +590,7 @@ def _npz_matches_config(npz_data: Dict[str, object], config: MissionConfig) -> b
 
 
 def _compute_bang_bang_trajectory(
-    theta_final: float, duration: float, dt: float = 0.001, settling_time: float = 30.0
+    theta_final: float, duration: float, dt: float = 0.01, settling_time: float = 30.0
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute bang-bang trajectory with settling time after maneuver.
 
@@ -428,44 +636,6 @@ def _compute_bang_bang_trajectory(
     return t, theta, omega, alpha
 
 
-def _zvd_shaper_params(f_mode: float, zeta: float) -> Tuple[List[float], List[float]]:
-    """Return ZVD shaper amplitudes and delays for a single mode."""
-    omega_n = 2 * np.pi * float(f_mode)
-    zeta = float(zeta)
-    if zeta >= 1.0:
-        return [1.0], [0.0]
-    omega_d = omega_n * np.sqrt(1 - zeta**2)
-    if omega_d <= 0:
-        return [1.0], [0.0]
-    T_d = 2 * np.pi / omega_d
-    K = np.exp(-zeta * np.pi / np.sqrt(1 - zeta**2))
-    denom = 1 + 2 * K + K**2
-    amplitudes = [1 / denom, 2 * K / denom, K**2 / denom]
-    delays = [0.0, T_d / 2.0, T_d]
-    return amplitudes, delays
-
-
-def _apply_input_shaper(
-    time: np.ndarray,
-    signal_data: np.ndarray,
-    amplitudes: List[float],
-    delays: List[float],
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Apply a discrete input shaper and extend the time vector."""
-    if len(time) < 2:
-        return time, signal_data
-    dt = float(np.median(np.diff(time)))
-    shift_max = max(int(round(delay / dt)) for delay in delays) if delays else 0
-    n_base = len(signal_data)
-    n_shaped = n_base + shift_max
-    shaped = np.zeros(n_shaped)
-    for amp, delay in zip(amplitudes, delays):
-        shift = int(round(delay / dt))
-        shaped[shift:shift + n_base] += amp * signal_data
-    time_shaped = time[0] + np.arange(n_shaped) * dt
-    return time_shaped, shaped
-
-
 def _integrate_trajectory(
     alpha: np.ndarray, dt: float, theta_final: float, scale_to_final: bool = True
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -489,7 +659,7 @@ def _compute_torque_profile(
 
     Args:
         config: Mission configuration
-        method: Shaping method ('unshaped', 'zvd', 'fourth')
+        method: Shaping method ('unshaped' or 'fourth')
         settling_time: Time after maneuver for vibration settling (seconds)
 
     Returns:
@@ -501,49 +671,72 @@ def _compute_torque_profile(
     ff_inertia = _get_feedforward_inertia(config)
     I_axis = float(axis @ ff_inertia @ axis)
 
+    if method == "fourth":
+        traj_candidates = [
+            os.path.join(os.path.dirname(__file__), "spacecraft_trajectory_4th_180deg_30s.npz"),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "spacecraft_trajectory_4th_180deg_30s.npz")),
+        ]
+        traj_path = next((path for path in traj_candidates if os.path.isfile(path)), None)
+        if traj_path is None:
+            raise FileNotFoundError(
+                "Fourth-order trajectory file not found. Expected "
+                "`spacecraft_trajectory_4th_180deg_30s.npz` in the repo root or "
+                "basilisk_simulation/."
+            )
+        traj = np.load(traj_path, allow_pickle=True)
+        t = np.array(traj.get("time", []), dtype=float)
+        theta = np.array(traj.get("theta", []), dtype=float)
+        omega = np.array(traj.get("omega", []), dtype=float)
+        alpha = np.array(traj.get("alpha", []), dtype=float)
+
+        min_len = min(len(t), len(theta), len(omega), len(alpha))
+        if min_len == 0:
+            raise ValueError(f"Fourth-order trajectory file has no usable data: {traj_path}")
+        t = t[:min_len]
+        theta = theta[:min_len]
+        omega = omega[:min_len]
+        alpha = alpha[:min_len]
+
+        t, resampled = _resample_time_series(t, theta, omega, alpha)
+        if resampled:
+            theta, omega, alpha = resampled
+
+        maneuver_end = float(t[-1])
+        if len(t) > 1 and settling_time > 0:
+            dt = float(np.median(np.diff(t)))
+            if dt > 0:
+                n_settling = int(round(settling_time / dt))
+                if n_settling > 0:
+                    t_extra = t[-1] + np.arange(1, n_settling + 1) * dt
+                    t = np.concatenate([t, t_extra])
+                    alpha = np.concatenate([alpha, np.zeros(n_settling)])
+                    theta = np.concatenate([theta, np.full(n_settling, theta[-1])])
+                    omega = np.concatenate([omega, np.full(n_settling, omega[-1])])
+
+        achieved_deg = float(np.degrees(theta[-1]))
+        if abs(abs(achieved_deg) - abs(config.slew_angle_deg)) > 0.5:
+            print(
+                f"Warning: fourth-order trajectory achieves {achieved_deg:.2f} deg "
+                f"(target {config.slew_angle_deg:.2f} deg)."
+            )
+
+        torque = I_axis * alpha
+        return {
+            "time": t,
+            "torque": torque,
+            "theta": theta,
+            "omega": omega,
+            "alpha": alpha,
+            "maneuver_end": maneuver_end,
+        }
+
     t, theta, omega, alpha = _compute_bang_bang_trajectory(
         theta_final, duration, settling_time=settling_time
     )
     torque_unshaped = I_axis * alpha
     maneuver_end = duration  # Default maneuver end time
 
-    if method == "unshaped":
-        torque = torque_unshaped
-    elif method == "zvd":
-        # ZVD shaper for first mode
-        f_mode = config.modal_freqs_hz[0] if config.modal_freqs_hz else 1.0
-        zeta = config.modal_damping[0] if config.modal_damping else 0.01
-        amplitudes, delays = _zvd_shaper_params(f_mode, zeta)
-        # Apply shaper only to the maneuver portion
-        t_maneuver, alpha_maneuver = _apply_input_shaper(
-            t[:int(duration/0.001)+1], alpha[:int(duration/0.001)+1], amplitudes, delays
-        )
-        maneuver_end = t_maneuver[-1]
-        # Extend with settling phase
-        dt = t_maneuver[1] - t_maneuver[0]
-        n_settling = int(settling_time / dt)
-        t = np.concatenate([t_maneuver, t_maneuver[-1] + np.arange(1, n_settling + 1) * dt])
-        alpha = np.concatenate([alpha_maneuver, np.zeros(n_settling)])
-        theta, omega, alpha = _integrate_trajectory(alpha, dt, theta_final)
-        torque = I_axis * alpha
-    elif method == "fourth":
-        # Fourth-order shaper = ZVD on first two modes
-        alpha_shaped = alpha[:int(duration/0.001)+1].copy()
-        t_shaped = t[:int(duration/0.001)+1].copy()
-        for idx, f_mode in enumerate(config.modal_freqs_hz[:2]):
-            zeta = config.modal_damping[idx] if idx < len(config.modal_damping) else 0.01
-            amplitudes, delays = _zvd_shaper_params(f_mode, zeta)
-            t_shaped, alpha_shaped = _apply_input_shaper(t_shaped, alpha_shaped, amplitudes, delays)
-        maneuver_end = t_shaped[-1]
-        # Extend with settling phase
-        dt = t_shaped[1] - t_shaped[0]
-        n_settling = int(settling_time / dt)
-        t = np.concatenate([t_shaped, t_shaped[-1] + np.arange(1, n_settling + 1) * dt])
-        alpha = np.concatenate([alpha_shaped, np.zeros(n_settling)])
-        theta, omega, alpha = _integrate_trajectory(alpha, dt, theta_final)
-        torque = I_axis * alpha
-    else:
-        torque = torque_unshaped
+    torque = torque_unshaped
 
     return {
         "time": t,
@@ -560,46 +753,47 @@ def _simulate_modal_response(
     torque: np.ndarray,
     config: MissionConfig,
 ) -> Dict[str, np.ndarray]:
-    """Simulate modal response to torque profile using symplectic Euler integration.
-
-    The modal equation of motion is:
-        m*ddot{q} + c*dot{q} + k*q = gain * torque
-
-    where:
-        omega_n = sqrt(k/m) is the natural frequency
-        zeta = c / (2*m*omega_n) is the damping ratio
-        gain is the modal participation factor (torque to modal displacement coupling)
-
-    This uses symplectic Euler integration which preserves energy better than
-    standard Euler and matches scipy.integrate.odeint within ~1%.
-    """
-    dt = time[1] - time[0] if len(time) > 1 else 0.001
+    """Simulate modal response using coupled rigid-flex state-space dynamics."""
+    time = np.array(time, dtype=float)
+    torque = np.array(torque, dtype=float)
+    dt = time[1] - time[0] if len(time) > 1 else 0.01
     n = len(time)
 
+    if n == 0:
+        return {
+            "time": time,
+            "mode1": np.array([]),
+            "mode2": np.array([]),
+            "displacement": np.array([]),
+            "acceleration": np.array([]),
+        }
+
+    axis = _normalize_axis(config.rotation_axis)
+    inertia_axis = float(axis @ config.inertia @ axis)
+    lever_arms = _infer_modal_lever_arms(config, axis, inertia_axis)
+    modal_masses = _infer_modal_masses(config, len(config.modal_freqs_hz))
+
+    flex_ss = _build_coupled_flex_state_space(
+        config.inertia,
+        axis,
+        config.modal_freqs_hz,
+        config.modal_damping,
+        modal_masses,
+        lever_arms,
+        sigma_scale=4.0,
+        camera_lever_arm_m=config.camera_lever_arm_m,
+    )
+    pos_ss = flex_ss["positions"]
+    _, pos, _ = signal.lsim(pos_ss, U=torque, T=time)
+
     mode1_disp = np.zeros(n)
-    mode1_vel = np.zeros(n)
     mode2_disp = np.zeros(n)
-    mode2_vel = np.zeros(n)
-
-    if len(config.modal_freqs_hz) >= 1:
-        omega1 = 2 * np.pi * config.modal_freqs_hz[0]
-        zeta1 = config.modal_damping[0] if config.modal_damping else 0.01
-        gain1 = config.modal_gains[0] if config.modal_gains else 0.1
-        for i in range(1, n):
-            # Symplectic Euler: update velocity first, then position with new velocity
-            acc = gain1 * torque[i - 1] - 2 * zeta1 * omega1 * mode1_vel[i - 1] - omega1**2 * mode1_disp[i - 1]
-            mode1_vel[i] = mode1_vel[i - 1] + acc * dt
-            mode1_disp[i] = mode1_disp[i - 1] + mode1_vel[i] * dt  # Use NEW velocity
-
-    if len(config.modal_freqs_hz) >= 2:
-        omega2 = 2 * np.pi * config.modal_freqs_hz[1]
-        zeta2 = config.modal_damping[1] if len(config.modal_damping) > 1 else 0.01
-        gain2 = config.modal_gains[1] if len(config.modal_gains) > 1 else 0.1
-        for i in range(1, n):
-            # Symplectic Euler: update velocity first, then position with new velocity
-            acc = gain2 * torque[i - 1] - 2 * zeta2 * omega2 * mode2_vel[i - 1] - omega2**2 * mode2_disp[i - 1]
-            mode2_vel[i] = mode2_vel[i - 1] + acc * dt
-            mode2_disp[i] = mode2_disp[i - 1] + mode2_vel[i] * dt  # Use NEW velocity
+    if pos.ndim == 1:
+        pos = pos.reshape(-1, 1)
+    if pos.shape[1] >= 2:
+        mode1_disp = np.array(pos[:, 1], dtype=float)
+    if pos.shape[1] >= 3:
+        mode2_disp = np.array(pos[:, 2], dtype=float)
 
     total_disp = mode1_disp + mode2_disp
     total_acc = np.gradient(np.gradient(total_disp, dt), dt)
@@ -659,9 +853,10 @@ def _compute_feedforward_metrics(
         rms_residual = 0.0
         peak_residual = 0.0
 
-    if len(torque) > 0:
-        rms_torque = float(np.sqrt(np.mean(torque**2)))
-        peak_torque = float(np.max(np.abs(torque)))
+    torque_window = torque[:maneuver_end_idx] if maneuver_end_idx > 0 else torque
+    if len(torque_window) > 0:
+        rms_torque = float(np.sqrt(np.mean(torque_window**2)))
+        peak_torque = float(np.max(np.abs(torque_window)))
     else:
         rms_torque = 0.0
         peak_torque = 0.0
@@ -707,15 +902,28 @@ def _collect_feedforward_data(
             torque_vec = npz_data.get("ff_torque")
             if torque_vec is None or len(torque_vec) == 0:
                 torque_vec = npz_data.get("total_torque")
+            mode1_acc = npz_data.get("mode1_acc")
+            mode2_acc = npz_data.get("mode2_acc")
+            if mode1_acc is not None and len(mode1_acc) == 0:
+                mode1_acc = None
+            if mode2_acc is not None and len(mode2_acc) == 0:
+                mode2_acc = None
             torque_axis = _project_axis_torque(torque_vec, axis)
-            time, aligned = _align_series(time, torque_axis, npz_data.get("mode1"), npz_data.get("mode2"))
+            time, aligned = _align_series(
+                time, torque_axis, npz_data.get("mode1"), npz_data.get("mode2"), mode1_acc, mode2_acc
+            )
             torque_axis = aligned[0]
             mode1 = aligned[1]
             mode2 = aligned[2]
+            mode1_acc = aligned[3] if len(aligned) > 3 else np.array([])
+            mode2_acc = aligned[4] if len(aligned) > 4 else np.array([])
 
             displacement = _combine_modal_displacement(mode1, mode2)
             displacement = displacement[: len(time)] if len(time) > 0 else displacement
-            displacement, acceleration = _extract_vibration_signals(time, displacement, config)
+            acc_signal = None
+            if mode1_acc is not None and len(mode1_acc) > 0:
+                acc_signal = _combine_modal_displacement(mode1_acc, mode2_acc)
+            displacement, acceleration = _extract_vibration_signals(time, displacement, config, acc_signal)
             maneuver_end = _infer_maneuver_end(
                 time, npz_data.get("control_mode"), torque_axis, config.slew_duration_s
             )
@@ -791,71 +999,63 @@ def _collect_feedback_data(
     data_dir = data_dir or os.path.dirname(__file__)
     axis = _normalize_axis(config.rotation_axis)
     feedback_data: Dict[str, Dict[str, object]] = {}
-    method_priority = ["fourth", "zvd", "unshaped"]
 
-    for controller in CONTROLLERS:
-        npz_data = None
-        if prefer_npz:
-            for method in method_priority:
-                npz_data = _load_pointing_npz(
-                    method,
-                    data_dir,
-                    controller=controller,
-                    mode="combined",
-                    generate_if_missing=False,
-                    allow_legacy=True,
-                )
-                if npz_data is not None and _npz_matches_config(npz_data, config):
-                    break
-                npz_data = None
-            if npz_data is None:
-                for method in method_priority:
-                    npz_data = _load_pointing_npz(
-                        method,
-                        data_dir,
-                        controller=controller,
-                        mode="fb_only",
-                        generate_if_missing=False,
-                        allow_legacy=False,
-                    )
-                    if npz_data is not None and _npz_matches_config(npz_data, config):
-                        break
-                    npz_data = None
+    if not prefer_npz:
+        return feedback_data
 
-        if npz_data is None:
-            feedback_data[controller] = {
-                "time": np.array([]),
-                "displacement": np.array([]),
-                "acceleration": np.array([]),
-                "torque": np.array([]),
-                "psd_freq": np.array([]),
-                "psd": np.array([]),
+    for method in METHODS:
+        for controller in CONTROLLERS:
+            npz_data = _load_pointing_npz(
+                method,
+                data_dir,
+                controller=controller,
+                mode="combined",
+                generate_if_missing=False,
+                allow_legacy=True,
+            )
+            if npz_data is None or not _npz_matches_config(npz_data, config):
+                continue
+
+            time = np.array(npz_data.get("time", []), dtype=float)
+            torque_vec = npz_data.get("fb_torque")
+            if torque_vec is None or len(torque_vec) == 0:
+                torque_vec = npz_data.get("total_torque")
+            mode1_acc = npz_data.get("mode1_acc")
+            mode2_acc = npz_data.get("mode2_acc")
+            if mode1_acc is not None and len(mode1_acc) == 0:
+                mode1_acc = None
+            if mode2_acc is not None and len(mode2_acc) == 0:
+                mode2_acc = None
+            torque_axis = _project_axis_torque(torque_vec, axis)
+            time, aligned = _align_series(
+                time, torque_axis, npz_data.get("mode1"), npz_data.get("mode2"), mode1_acc, mode2_acc
+            )
+            torque_axis = aligned[0]
+            mode1 = aligned[1]
+            mode2 = aligned[2]
+            mode1_acc = aligned[3] if len(aligned) > 3 else np.array([])
+            mode2_acc = aligned[4] if len(aligned) > 4 else np.array([])
+
+            displacement = _combine_modal_displacement(mode1, mode2)
+            displacement = displacement[: len(time)] if len(time) > 0 else displacement
+            acc_signal = None
+            if mode1_acc is not None and len(mode1_acc) > 0:
+                acc_signal = _combine_modal_displacement(mode1_acc, mode2_acc)
+            displacement, acceleration = _extract_vibration_signals(time, displacement, config, acc_signal)
+            psd_freq, psd_vals = _compute_psd(time, torque_axis) if len(time) > 0 else (np.array([]), np.array([]))
+
+            key = f"{method}_{controller}"
+            feedback_data[key] = {
+                "time": time,
+                "displacement": displacement,
+                "acceleration": acceleration,
+                "torque": torque_axis,
+                "psd_freq": psd_freq,
+                "psd": psd_vals,
+                "method": npz_data.get("method", method),
+                "controller": controller,
+                "run_mode": npz_data.get("run_mode", "combined"),
             }
-            continue
-
-        time = np.array(npz_data.get("time", []), dtype=float)
-        torque_vec = npz_data.get("fb_torque")
-        if torque_vec is None or len(torque_vec) == 0:
-            torque_vec = npz_data.get("total_torque")
-        torque_axis = _project_axis_torque(torque_vec, axis)
-        time, aligned = _align_series(time, torque_axis, npz_data.get("mode1"), npz_data.get("mode2"))
-        torque_axis = aligned[0]
-        mode1 = aligned[1]
-        mode2 = aligned[2]
-
-        displacement = _combine_modal_displacement(mode1, mode2)
-        displacement = displacement[: len(time)] if len(time) > 0 else displacement
-        displacement, acceleration = _extract_vibration_signals(time, displacement, config)
-        psd_freq, psd_vals = _compute_psd(time, torque_axis) if len(time) > 0 else (np.array([]), np.array([]))
-
-        feedback_data[controller] = {
-            "time": time,
-            "displacement": displacement,
-            "acceleration": acceleration,
-            "torque": torque_axis,
-            "psd_freq": psd_freq,
-            "psd": psd_vals,
-        }
 
     return feedback_data
 
@@ -921,35 +1121,112 @@ def _build_flexible_plant_tf(
     modal_freqs_hz: List[float],
     modal_damping: List[float],
     modal_gains: List[float],
+    output_scale: float = 1.0,
 ) -> signal.TransferFunction:
-    """Build flexible plant transfer function."""
-    I = float(inertia[axis, axis])
-    rigid_num = np.array([1.0])
-    rigid_den = np.array([I, 0.0, 0.0])
+    """Build flexible plant transfer function using coupled rigid-flex state-space."""
+    axis_vec = np.zeros(3)
+    axis_vec[axis] = 1.0
+    inertia_axis = float(axis_vec @ inertia @ axis_vec)
+    if modal_gains:
+        lever_arms = [float(gain) * inertia_axis for gain in modal_gains]
+    else:
+        lever_arms = compute_mode_lever_arms(rotation_axis=axis_vec)
+    if len(lever_arms) < len(modal_freqs_hz):
+        lever_arms = _pad_list(lever_arms, len(modal_freqs_hz), 0.0)
+    modal_masses = [float(FLEX_MODE_MASS)] * len(modal_freqs_hz)
+    flex_ss = _build_coupled_flex_state_space(
+        inertia,
+        axis_vec,
+        modal_freqs_hz,
+        modal_damping,
+        modal_masses,
+        lever_arms,
+        sigma_scale=4.0,
+        camera_lever_arm_m=0.0,
+    )
+    ss_body = flex_ss["body"]
+    num, den = signal.ss2tf(ss_body.A, ss_body.B, ss_body.C, ss_body.D)
+    return signal.TransferFunction(np.squeeze(num) * float(output_scale), np.squeeze(den))
 
-    if not modal_freqs_hz:
-        return signal.TransferFunction(rigid_num, rigid_den)
 
-    current_num = rigid_num
-    current_den = rigid_den
+def _build_coupled_flex_state_space(
+    inertia: np.ndarray,
+    axis: np.ndarray,
+    modal_freqs_hz: List[float],
+    modal_damping: List[float],
+    modal_masses: List[float],
+    lever_arms: List[float],
+    sigma_scale: float,
+    camera_lever_arm_m: float,
+) -> Dict[str, object]:
+    """Build coupled rigid-flex state-space models for body and camera outputs."""
+    axis = _normalize_axis(axis)
+    inertia_axis = float(axis @ np.array(inertia, dtype=float) @ axis)
+    hub_axis = float(axis @ HUB_INERTIA @ axis)
+    base_inertia = inertia_axis if abs(inertia_axis - hub_axis) < 1e-6 else hub_axis
+    n_modes = len(modal_freqs_hz)
 
-    for f_mode, zeta, gain in zip(modal_freqs_hz, modal_damping, modal_gains):
-        omega_n = 2 * np.pi * float(f_mode)
-        mode_num = np.array([float(gain) / I])
-        mode_den = np.array([1.0, 2.0 * float(zeta) * omega_n, omega_n**2])
+    if n_modes == 0:
+        a = np.array([[0.0, 1.0], [0.0, 0.0]])
+        b = np.array([[0.0], [1.0 / inertia_axis]])
+        c_body = np.array([[1.0 / sigma_scale, 0.0]])
+        c_camera = c_body.copy()
+        d = np.array([[0.0]])
+        return {
+            "body": signal.StateSpace(a, b, c_body, d),
+            "camera": signal.StateSpace(a, b, c_camera, d),
+            "positions": signal.StateSpace(a, b, np.array([[1.0, 0.0]]), d),
+            "n_modes": 0,
+        }
 
-        term1 = np.convolve(current_num, mode_den)
-        term2 = np.convolve(mode_num, current_den)
+    zetas = _pad_list(modal_damping, n_modes, 0.01)
+    masses = _pad_list(modal_masses, n_modes, FLEX_MODE_MASS)
+    arms = _pad_list(lever_arms, n_modes, 0.0)
 
-        if len(term1) > len(term2):
-            term2 = np.pad(term2, (len(term1) - len(term2), 0), mode="constant")
-        elif len(term2) > len(term1):
-            term1 = np.pad(term1, (len(term2) - len(term1), 0), mode="constant")
+    m_mat = np.zeros((n_modes + 1, n_modes + 1))
+    # Use hub inertia for the rigid coordinate to avoid double-counting appendage inertia.
+    m_mat[0, 0] = base_inertia + sum(m * r * r for m, r in zip(masses, arms))
+    for idx, (m_i, r_i) in enumerate(zip(masses, arms), start=1):
+        m_mat[0, idx] = m_i * r_i
+        m_mat[idx, 0] = m_i * r_i
+        m_mat[idx, idx] = m_i
 
-        current_num = term1 + term2
-        current_den = np.convolve(current_den, mode_den)
+    d_mat = np.zeros_like(m_mat)
+    k_mat = np.zeros_like(m_mat)
+    for idx, (freq_hz, zeta, m_i) in enumerate(zip(modal_freqs_hz, zetas, masses), start=1):
+        omega = 2.0 * np.pi * float(freq_hz)
+        d_mat[idx, idx] = 2.0 * float(zeta) * omega * m_i
+        k_mat[idx, idx] = omega**2 * m_i
 
-    return signal.TransferFunction(current_num, current_den)
+    m_inv = np.linalg.inv(m_mat)
+    n_state = n_modes + 1
+    a = np.zeros((2 * n_state, 2 * n_state))
+    a[:n_state, n_state:] = np.eye(n_state)
+    a[n_state:, :n_state] = -m_inv @ k_mat
+    a[n_state:, n_state:] = -m_inv @ d_mat
+
+    b = np.zeros((2 * n_state, 1))
+    b[n_state:, 0] = (m_inv @ np.array([1.0] + [0.0] * n_modes)).ravel()
+
+    c_pos = np.zeros((n_state, 2 * n_state))
+    c_pos[:, :n_state] = np.eye(n_state)
+
+    c_body = np.zeros((1, 2 * n_state))
+    c_body[0, 0] = 1.0 / sigma_scale
+
+    c_camera = np.zeros((1, 2 * n_state))
+    c_camera[0, 0] = 1.0 / sigma_scale
+    if camera_lever_arm_m > 0:
+        for idx in range(n_modes):
+            c_camera[0, idx + 1] = 1.0 / (sigma_scale * camera_lever_arm_m)
+
+    d = np.zeros((1, 1))
+    return {
+        "body": signal.StateSpace(a, b, c_body, d),
+        "camera": signal.StateSpace(a, b, c_camera, d),
+        "positions": signal.StateSpace(a, b, c_pos, np.zeros((n_state, 1))),
+        "n_modes": n_modes,
+    }
 
 
 def _tf_add(
@@ -1044,34 +1321,26 @@ def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
     For flexible spacecraft, the key is placing the control bandwidth
     well below the first structural mode to avoid exciting vibrations.
 
-    Analysis shows that STANDARD PD with proper bandwidth selection
-    provides the best vibration suppression:
-    - Negative sensitivity at modal frequencies (attenuates disturbances)
-    - Good phase margin (63-65 degrees)
-    - Simple and robust
+    Analysis computes rigid-body S/T for reference and flexible-loop
+    margins (Nyquist/S/T) for the actual sigma-feedback plant:
+    - Rigid-loop S/T for nominal pointing dynamics
+    - Flexible-loop margins for stability assessment
+    - Modal excitation transfer: q(s) = G_q(s) * C(s) / (1 + L(s))
 
     Design approach:
-    1. Standard PD: Pure PD control with bandwidth at 0.1 Hz (well below
-       0.4 Hz first mode). Provides excellent vibration suppression.
-
-    2. Filtered PD: Adds derivative filter at 10x bandwidth to reduce
-       sensor noise without affecting phase at modal frequencies.
-
-    3. AVC: Identical to Filtered PD (PPF compensators removed as they
-       added destabilizing phase lag at modal frequencies).
-
-    KEY FINDING: The phase lead from the derivative term in PD control
-    naturally provides good phase margin. Additional complexity (PPF, heavy
-    filtering) makes performance WORSE by adding phase lag at resonances.
+    1. Standard PD: Pure PD control with bandwidth at first_mode/4.
+    2. Filtered PD: Increase damping gain and use a lower derivative cutoff
+       to reduce torque noise while preserving damping.
     """
     from feedback_control import (
         MRPFeedbackController,
         FilteredDerivativeController,
-        ActiveVibrationController,
     )
 
     axis = 2  # Z-axis
-    I = float(config.inertia[axis, axis])
+    axis_vec = _normalize_axis(config.rotation_axis)
+    I = float(axis_vec @ config.inertia @ axis_vec)
+    sigma_scale = 4.0  # For small angles, sigma ~ theta/4
 
     # Frequency range
     freqs = np.logspace(-2, 2, 1000)
@@ -1087,12 +1356,12 @@ def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
     # STANDARD PD CONTROLLER
     # LOWER bandwidth to avoid exciting modes
     # Rule: Bandwidth should be 1/4 to 1/6 of first modal frequency
-    # For 0.4 Hz mode: bandwidth = 0.4/6 = 0.067 Hz
+    # For 0.4 Hz mode: bandwidth = 0.4/2.5 = 0.16 Hz
     # =========================================================================
-    bandwidth_std = first_mode / 6.0  # 0.067 Hz for 0.4 Hz mode
+    bandwidth_std = first_mode / 2.5  # 0.16 Hz for 0.4 Hz mode
     omega_bw_std = 2 * np.pi * bandwidth_std
-    k_std = I * omega_bw_std**2
-    p_std = 2 * 0.7 * I * omega_bw_std
+    k_std = sigma_scale * I * omega_bw_std**2
+    p_std = 2 * 0.9 * I * omega_bw_std
 
     # Create standard PD controller (no filtering)
     controller_std = MRPFeedbackController(
@@ -1104,20 +1373,16 @@ def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
 
     # =========================================================================
     # FILTERED PD CONTROLLER
-    # Analysis showed: Any filter cutoff adds phase lag that reduces PM
-    # To meet PM > 62°, filter cutoff must be very high (> 5 Hz)
-    # Using filter cutoff = 5 Hz to provide some HF rolloff (for sensor noise)
-    # while maintaining PM close to pure PD
-    # =========================================================================
-    bandwidth_filt = first_mode / 6.0  # Same as standard
+    # Use config.control_filter_cutoff_hz for consistency with simulation
+    bandwidth_filt = first_mode / 2.5  # Same as standard
     omega_bw_filt = 2 * np.pi * bandwidth_filt
-    k_filt = I * omega_bw_filt**2
-    p_filt = 2 * 0.7 * I * omega_bw_filt
-
-    # Filter cutoff very high to minimize phase lag impact
-    # At 5 Hz, filter adds negligible phase at the 0.1 Hz crossover frequency
-    filter_cutoff = 5.0  # 5 Hz - minimal impact on phase margin
-    
+    k_filt = sigma_scale * I * omega_bw_filt**2
+    p_filt_scale = 1.5
+    p_filt = 2 * 0.9 * I * omega_bw_filt * p_filt_scale
+    if config.control_filter_cutoff_hz is not None:
+        filter_cutoff = config.control_filter_cutoff_hz
+    else:
+        filter_cutoff = 8.0
     controller_filt = FilteredDerivativeController(
         inertia=config.inertia,
         K=k_filt,
@@ -1125,94 +1390,123 @@ def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
         filter_freq_hz=filter_cutoff
     )
 
-    # =========================================================================
-    # AVC CONTROLLER
-    # Pure PD + PPF compensators (NO derivative filter to preserve PM)
-    # PPF adds modal damping without the phase lag problems of filtering
-    # =========================================================================
-    bandwidth_avc = first_mode / 6.0  # Low bandwidth
-    omega_bw_avc = 2 * np.pi * bandwidth_avc
-    k_avc = I * omega_bw_avc**2
-    p_avc = 2 * 0.7 * I * omega_bw_avc
 
-    # NO derivative filter for AVC - use pure PD + PPF
-    # This achieves PM > 62 deg while adding modal damping via PPF
-    filter_cutoff_avc = 10.0  # Very high cutoff = effectively no filter
-    
-    # PPF gains: Use the user's config values
-    # Low gains [2, 4] give PM=64 deg, higher gains [5, 10] give PM=62 deg (limit)
-    ppf_gains_active = config.ppf_gains if config.ppf_gains and any(g > 0 for g in config.ppf_gains) else [2.0, 4.0]
-    
-    # Use ActiveVibrationController with PPF
-    controller_avc = ActiveVibrationController(
-        inertia=config.inertia,
-        K=k_avc,
-        P=p_avc,
-        filter_freq_hz=filter_cutoff_avc,
-        modal_freqs_hz=config.modal_freqs_hz,
-        modal_damping=config.modal_damping,
-        modal_gains=config.modal_gains,
-        ppf_damping=0.5,
-        ppf_gains=ppf_gains_active  # Use actual PPF gains
+    # Build rigid plant for MRP attitude output (torque -> sigma)
+    plant_rigid = signal.TransferFunction([1.0], [sigma_scale * I, 0.0, 0.0])
+
+    # Controller in sigma-domain: K + 4*P*s
+    controller_std_tf = signal.TransferFunction([4.0 * p_std, k_std], [1.0])
+    controller_filt_tf = controller_filt.get_transfer_function(axis)
+
+    def _open_loop_tf(plant: signal.TransferFunction, controller: signal.TransferFunction) -> signal.TransferFunction:
+        plant_num = np.atleast_1d(np.squeeze(plant.num))
+        plant_den = np.atleast_1d(np.squeeze(plant.den))
+        ctrl_num = np.atleast_1d(np.squeeze(controller.num))
+        ctrl_den = np.atleast_1d(np.squeeze(controller.den))
+        return signal.TransferFunction(np.convolve(plant_num, ctrl_num), np.convolve(plant_den, ctrl_den))
+
+    lever_arms = _infer_modal_lever_arms(config, axis_vec, I)
+    modal_masses = _infer_modal_masses(config, len(config.modal_freqs_hz))
+    flex_ss = _build_coupled_flex_state_space(
+        config.inertia,
+        axis_vec,
+        config.modal_freqs_hz,
+        config.modal_damping,
+        modal_masses,
+        lever_arms,
+        sigma_scale=sigma_scale,
+        camera_lever_arm_m=config.camera_lever_arm_m,
     )
 
-    # Get open-loop transfer functions
-    l_std_tf = controller_std.get_open_loop_tf(
-        axis=axis,
-        modal_freqs_hz=config.modal_freqs_hz,
-        modal_damping=config.modal_damping,
-        modal_gains=config.modal_gains,
-        include_flexibility=True
-    )
-    
-    l_filt_tf = controller_filt.get_open_loop_tf(
-        axis=axis,
-        modal_freqs_hz=config.modal_freqs_hz,
-        modal_damping=config.modal_damping,
-        modal_gains=config.modal_gains,
-        include_flexibility=True
-    )
-    
-    l_avc_tf = controller_avc.get_open_loop_tf(
-        axis=axis,
-        include_flexibility=True
-    )
 
     # Evaluate frequency responses
-    _, l_std = signal.freqresp(l_std_tf, omega)
-    _, l_filt = signal.freqresp(l_filt_tf, omega)
-    _, l_avc = signal.freqresp(l_avc_tf, omega)
+    _, plant_rigid_resp = signal.freqresp(plant_rigid, omega)
+    _, plant_flex_body = signal.freqresp(flex_ss["body"], omega)
+    _, plant_flex_camera = signal.freqresp(flex_ss["camera"], omega)
 
-    # Sensitivity and complementary sensitivity
-    s_std = 1 / (1 + l_std)
-    s_filt = 1 / (1 + l_filt)
-    s_avc = 1 / (1 + l_avc)
+    _, c_std_resp = signal.freqresp(controller_std_tf, omega)
+    _, c_filt_resp = signal.freqresp(controller_filt_tf, omega)
 
-    t_std = l_std / (1 + l_std)
-    t_filt = l_filt / (1 + l_filt)
-    t_avc = l_avc / (1 + l_avc)
+
+    # Open-loop rigid-body (torque -> sigma) and sensitivity
+    l_std_rigid = plant_rigid_resp * c_std_resp
+    l_filt_rigid = plant_rigid_resp * c_filt_resp
+
+    s_std = 1 / (1 + l_std_rigid)
+    s_filt = 1 / (1 + l_filt_rigid)
+
+    t_std = l_std_rigid / (1 + l_std_rigid)
+    t_filt = l_filt_rigid / (1 + l_filt_rigid)
+
+    # Open-loop using flexible sigma output
+    l_std_flex = plant_flex_body * c_std_resp
+    l_filt_flex = plant_flex_body * c_filt_resp
+
+    s_std_flex = 1 / (1 + l_std_flex)
+    s_filt_flex = 1 / (1 + l_filt_flex)
+
+    t_std_flex = l_std_flex / (1 + l_std_flex)
+    t_filt_flex = l_filt_flex / (1 + l_filt_flex)
+
+    disturbance_camera = {
+        "standard_pd": plant_flex_camera / (1 + l_std_flex),
+        "filtered_pd": plant_flex_camera / (1 + l_filt_flex),
+    }
 
     # Stability margins
     margins = {
-        "standard_pd": _compute_stability_margins(l_std, freqs),
-        "filtered_pd": _compute_stability_margins(l_filt, freqs),
-        "avc": _compute_stability_margins(l_avc, freqs),
+        "standard_pd": _compute_stability_margins(l_std_flex, freqs),
+        "filtered_pd": _compute_stability_margins(l_filt_flex, freqs),
     }
 
-    # Get plant response for reference
-    plant = _build_flexible_plant_tf(
-        config.inertia, axis, config.modal_freqs_hz, config.modal_damping, config.modal_gains
-    )
+    # Modal excitation transfer: q(s) = G_q(s) * C(s) / (1 + L(s))
+    modal_response: Dict[str, List[np.ndarray]] = {name: [] for name in CONTROLLERS}
+    modal_excitation_db: Dict[str, List[float]] = {name: [] for name in CONTROLLERS}
+    controllers_tf = {
+        "standard_pd": controller_std_tf,
+        "filtered_pd": controller_filt_tf,
+    }
+    loops = {"standard_pd": l_std_flex, "filtered_pd": l_filt_flex}
+
+    pos_ss = flex_ss["positions"]
+    a_mat = pos_ss.A
+    b_mat = pos_ss.B
+    for mode_idx, f_mode in enumerate(config.modal_freqs_hz):
+        c_q = np.zeros((1, a_mat.shape[0]))
+        if mode_idx + 1 < a_mat.shape[0]:
+            c_q[0, mode_idx + 1] = 1.0
+        ss_q = signal.StateSpace(a_mat, b_mat, c_q, np.zeros((1, 1)))
+        _, gq_resp = signal.freqresp(ss_q, omega)
+        for name in CONTROLLERS:
+            _, c_resp = signal.freqresp(controllers_tf[name], omega)
+            u_resp = c_resp / (1.0 + loops[name])
+            modal_resp = gq_resp * u_resp
+            modal_response[name].append(modal_resp)
+            idx = np.argmin(np.abs(freqs - f_mode))
+            modal_excitation_db[name].append(20 * np.log10(np.abs(modal_resp[idx]) + 1e-12))
+
 
     return {
         "freqs": freqs,
         "omega": omega,
-        "plant": signal.freqresp(plant, omega)[1],
-        "L": {"standard_pd": l_std, "filtered_pd": l_filt, "avc": l_avc},
-        "S": {"standard_pd": s_std, "filtered_pd": s_filt, "avc": s_avc},
-        "T": {"standard_pd": t_std, "filtered_pd": t_filt, "avc": t_avc},
+        "L": {"standard_pd": l_std_rigid, "filtered_pd": l_filt_rigid},
+        "S": {"standard_pd": s_std, "filtered_pd": s_filt},
+        "T": {"standard_pd": t_std, "filtered_pd": t_filt},
+        "L_flex": {"standard_pd": l_std_flex, "filtered_pd": l_filt_flex},
+        "S_flex": {"standard_pd": s_std_flex, "filtered_pd": s_filt_flex},
+        "T_flex": {"standard_pd": t_std_flex, "filtered_pd": t_filt_flex},
+        "plant_rigid": plant_rigid_resp,
+        "plant_flex_body": plant_flex_body,
+        "plant_flex_camera": plant_flex_camera,
+        "controller_resp": {
+            "standard_pd": c_std_resp,
+            "filtered_pd": c_filt_resp,
+        },
+        "disturbance_camera": disturbance_camera,
         "margins": margins,
         "gains": {"K": k_std, "P": p_std, "filter_cutoff": filter_cutoff},
+        "modal_response": modal_response,
+        "modal_excitation_db": modal_excitation_db,
     }
 
 
@@ -1286,7 +1580,15 @@ def _find_npz(
     elif mode == "ff_only":
         candidates.append(f"vizard_demo_{method}_ff_only.npz")
 
-    search_dirs = [data_dir, os.getcwd()]
+    script_dir = os.path.dirname(__file__)
+    parent_dir = os.path.abspath(os.path.join(script_dir, ".."))
+    search_dirs = [
+        data_dir,
+        os.getcwd(),
+        script_dir,
+        parent_dir,
+        os.path.abspath(os.path.join(str(data_dir), "..")) if data_dir else None,
+    ]
     seen_dirs = set()
     for search_dir in search_dirs:
         if not search_dir or search_dir in seen_dirs:
@@ -1335,8 +1637,6 @@ def _infer_controller_from_control_mode(control_mode: Optional[List[object]]) ->
     if not control_mode:
         return None
     modes = [str(mode) for mode in control_mode]
-    if any("AVC" in mode for mode in modes):
-        return "avc"
     if any("FB(FILT)" in mode or "Filtered" in mode for mode in modes):
         return "filtered_pd"
     if any("FB(MRP)" in mode or "MRP" in mode for mode in modes):
@@ -1367,8 +1667,32 @@ def _load_pointing_npz(
         return None
 
     time = np.array(data["time"], dtype=float) if "time" in data else np.array([])
-    mode1 = np.array(data["mode1"], dtype=float) if "mode1" in data else np.zeros_like(time)
-    mode2 = np.array(data["mode2"], dtype=float) if "mode2" in data else np.zeros_like(time)
+    if "mode1_signed" in data:
+        mode1 = np.array(data["mode1_signed"], dtype=float)
+    elif "mode1" in data:
+        mode1 = np.array(data["mode1"], dtype=float)
+    else:
+        mode1 = np.zeros_like(time)
+
+    if "mode2_signed" in data:
+        mode2 = np.array(data["mode2_signed"], dtype=float)
+    elif "mode2" in data:
+        mode2 = np.array(data["mode2"], dtype=float)
+    else:
+        mode2 = np.zeros_like(time)
+    if "mode1_acc_signed" in data:
+        mode1_acc = np.array(data["mode1_acc_signed"], dtype=float)
+    elif "mode1_acc" in data:
+        mode1_acc = np.array(data["mode1_acc"], dtype=float)
+    else:
+        mode1_acc = np.array([])
+
+    if "mode2_acc_signed" in data:
+        mode2_acc = np.array(data["mode2_acc_signed"], dtype=float)
+    elif "mode2_acc" in data:
+        mode2_acc = np.array(data["mode2_acc"], dtype=float)
+    else:
+        mode2_acc = np.array([])
     sigma = np.array(data["sigma"], dtype=float) if "sigma" in data else None
     omega = np.array(data["omega"], dtype=float) if "omega" in data else None
     control_mode = data["control_mode"].tolist() if "control_mode" in data else []
@@ -1376,6 +1700,16 @@ def _load_pointing_npz(
     controller_in_file = str(data["controller"]) if "controller" in data else None
     run_mode = str(data["run_mode"]) if "run_mode" in data else mode
     slew_angle_deg = float(data["slew_angle_deg"]) if "slew_angle_deg" in data else None
+    slew_duration_s = float(data["slew_duration_s"]) if "slew_duration_s" in data else None
+    camera_error_deg = np.array(data["camera_error_deg"], dtype=float) if "camera_error_deg" in data else None
+    camera_body = np.array(data["camera_body"], dtype=float) if "camera_body" in data else None
+    comet_direction = np.array(data["comet_direction"], dtype=float) if "comet_direction" in data else None
+
+    modal_freqs_hz = np.array(data["modal_freqs_hz"], dtype=float) if "modal_freqs_hz" in data else None
+    modal_damping = np.array(data["modal_damping"], dtype=float) if "modal_damping" in data else None
+    modal_gains = np.array(data["modal_gains"], dtype=float) if "modal_gains" in data else None
+    control_filter_cutoff_hz = float(data["control_filter_cutoff_hz"]) if "control_filter_cutoff_hz" in data else None
+    inertia_control = np.array(data["inertia_control"], dtype=float) if "inertia_control" in data else None
 
     ff_torque = np.array(data["ff_torque"], dtype=float) if "ff_torque" in data else None
     fb_torque = np.array(data["fb_torque"], dtype=float) if "fb_torque" in data else None
@@ -1388,6 +1722,8 @@ def _load_pointing_npz(
         "time": time,
         "mode1": mode1,
         "mode2": mode2,
+        "mode1_acc": mode1_acc,
+        "mode2_acc": mode2_acc,
         "sigma": sigma,
         "omega": omega,
         "control_mode": control_mode,
@@ -1395,15 +1731,25 @@ def _load_pointing_npz(
         "controller": controller_used,
         "run_mode": run_mode,
         "slew_angle_deg": slew_angle_deg,
+        "slew_duration_s": slew_duration_s,
+        "camera_error_deg": camera_error_deg,
+        "camera_body": camera_body,
+        "comet_direction": comet_direction,
         "ff_torque": ff_torque,
         "fb_torque": fb_torque,
         "total_torque": total_torque,
         "rw_torque": rw_torque,
+        "modal_freqs_hz": modal_freqs_hz,
+        "modal_damping": modal_damping,
+        "modal_gains": modal_gains,
+        "control_filter_cutoff_hz": control_filter_cutoff_hz,
+        "inertia_control": inertia_control,
     }
 
 
 def _load_all_pointing_data(
     data_dir: str,
+    config: Optional[MissionConfig] = None,
     generate_if_missing: bool = False,
 ) -> Dict[str, Dict[str, object]]:
     """Load pointing data for all methods and controllers."""
@@ -1420,6 +1766,20 @@ def _load_all_pointing_data(
                 generate_if_missing=generate_if_missing,
                 allow_legacy=False,
             )
+            if npz_data is not None and config is not None and not _npz_matches_config(npz_data, config):
+                npz_data = None
+                if generate_if_missing and _maybe_generate_npz(
+                    method, data_dir, controller=controller, mode="combined"
+                ):
+                    npz_data = _load_pointing_npz(
+                        method,
+                        data_dir,
+                        controller=controller,
+                        generate_if_missing=False,
+                        allow_legacy=False,
+                    )
+                    if npz_data is not None and not _npz_matches_config(npz_data, config):
+                        npz_data = None
             if npz_data is not None:
                 method_data[controller] = npz_data
 
@@ -1432,8 +1792,20 @@ def _load_all_pointing_data(
                 generate_if_missing=generate_if_missing,
                 allow_legacy=True,
             )
+            if legacy is not None and config is not None and not _npz_matches_config(legacy, config):
+                legacy = None
+                if generate_if_missing and _maybe_generate_npz(method, data_dir, mode="combined"):
+                    legacy = _load_pointing_npz(
+                        method,
+                        data_dir,
+                        controller=None,
+                        generate_if_missing=False,
+                        allow_legacy=True,
+                    )
+                    if legacy is not None and not _npz_matches_config(legacy, config):
+                        legacy = None
             if legacy is not None:
-                ctrl = legacy.get("controller") or "avc"
+                ctrl = legacy.get("controller") or "standard_pd"
                 method_data[ctrl] = legacy
 
         if method_data:
@@ -1460,16 +1832,31 @@ def _compute_pointing_error(sigma: np.ndarray, target_sigma: np.ndarray) -> np.n
     return errors
 
 
+def _extract_pointing_error(data: Dict[str, object]) -> np.ndarray:
+    """Return pointing error time series using camera error if available."""
+    camera_error = data.get("camera_error_deg")
+    if camera_error is not None and len(camera_error) > 0:
+        return np.array(camera_error, dtype=float)
+    sigma = data.get("sigma")
+    target = data.get("target_sigma", np.zeros(3))
+    return _compute_pointing_error(sigma, target)
+
+
 def run_pointing_summary(
     config: MissionConfig,
     out_dir: str,
     data_dir: Optional[str] = None,
     make_plots: bool = True,
     export_csv: bool = True,
+    generate_pointing: bool = False,
 ) -> Dict[str, Dict[str, float]]:
     """Run pointing performance summary."""
     data_dir = data_dir or os.path.dirname(__file__)
-    pointing_data = _load_all_pointing_data(data_dir, generate_if_missing=False)
+    pointing_data = _load_all_pointing_data(
+        data_dir,
+        config=config,
+        generate_if_missing=generate_pointing,
+    )
 
     results: Dict[str, Dict[str, float]] = {}
 
@@ -1506,10 +1893,8 @@ def run_pointing_summary(
                 rms_vib = 0.0
 
             # Pointing error metrics
-            sigma = data.get("sigma")
-            target = data.get("target_sigma", np.zeros(3))
-            if sigma is not None and len(sigma) > 0 and len(time) > 0:
-                error = _compute_pointing_error(sigma, target)
+            error = _extract_pointing_error(data)
+            if len(error) > 0 and len(time) > 0:
                 if maneuver_end_idx < len(error) - min_residual_samples:
                     residual_error = error[maneuver_end_idx:]
                 elif len(error) > min_residual_samples:
@@ -1563,6 +1948,19 @@ def _build_mission_psd_data(
             )
             if npz_data is not None and not _npz_matches_config(npz_data, config):
                 npz_data = None
+                if generate_if_missing and _maybe_generate_npz(
+                    method, data_dir, controller=controller, mode="combined"
+                ):
+                    npz_data = _load_pointing_npz(
+                        method,
+                        data_dir,
+                        controller=controller,
+                        mode="combined",
+                        generate_if_missing=False,
+                        allow_legacy=True,
+                    )
+                    if npz_data is not None and not _npz_matches_config(npz_data, config):
+                        npz_data = None
 
             if npz_data is None:
                 psd_freq, psd_vals = np.array([]), np.array([])
@@ -1594,9 +1992,17 @@ def _build_mission_psd_data(
 def _plot_vibration_comparison(
     feedforward_vibration: Dict[str, Dict[str, object]],
     feedback_vibration: Dict[str, Dict[str, object]],
+    config: MissionConfig,
     out_dir: str,
 ) -> Optional[str]:
-    """Plot vibration comparison."""
+    """Plot vibration comparison - FIXED to compare same quantities on same plots.
+
+    This function now properly plots:
+    - Top subplot: Displacement comparison (FF methods + FB controllers)
+    - Bottom subplot: Acceleration comparison (FF methods + FB controllers)
+
+    Both feedforward and feedback results are shown together for fair comparison.
+    """
     if not feedforward_vibration and not feedback_vibration:
         return None
 
@@ -1607,70 +2013,122 @@ def _plot_vibration_comparison(
         "legend.fontsize": 9,
     })
 
-    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
     ax_disp, ax_acc = axes
 
     maneuver_end = None
-    method_handles = []
-    controller_handles = []
 
-    for method, data in feedforward_vibration.items():
-        time = data.get("time", np.array([]))
-        disp = data.get("displacement", np.array([]))
-        acc = data.get("acceleration", np.array([]))
+    plot_feedback_only = bool(feedback_vibration)
 
-        if len(time) == 0:
-            continue
+    plot_entries = []
+    if not plot_feedback_only:
+        # Plot FEEDFORWARD data (solid lines) only when feedback data is missing
+        for method in METHODS:
+            data = feedforward_vibration.get(method)
+            if not data:
+                continue
+            time = data.get("time", np.array([]))
+            disp = data.get("displacement", np.array([]))
+            acc = data.get("acceleration", np.array([]))
 
-        if maneuver_end is None:
-            maneuver_end = data.get("maneuver_end", 30.0)
+            if len(time) == 0:
+                continue
 
-        disp_mm = np.array(disp, dtype=float) * 1000.0
-        acc_mm = _detrend_mean(np.array(acc, dtype=float)) * 1000.0
+            if maneuver_end is None:
+                maneuver_end = data.get("maneuver_end", 30.0)
 
-        ax_disp.plot(time, disp_mm, color=METHOD_COLORS[method],
-                     label=METHOD_LABELS[method], linewidth=1.5)
-        ax_acc.plot(time, acc_mm, color=METHOD_COLORS[method],
-                    label=METHOD_LABELS[method], linewidth=1.5)
-        method_handles.append(Line2D([0], [0], color=METHOD_COLORS[method], lw=1.5,
-                                      label=METHOD_LABELS[method]))
+            disp_mm = _detrend_mean(np.array(disp, dtype=float)) * 1000.0
+            acc_mm = _detrend_mean(np.array(acc, dtype=float)) * 1000.0
 
-    for controller, data in feedback_vibration.items():
-        time = data.get("time", np.array([]))
-        disp = data.get("displacement", np.array([]))
-        acc = data.get("acceleration", np.array([]))
+            label = f"FF: {METHOD_LABELS.get(method, method)}"
+            plot_entries.append({
+                "time": time,
+                "disp": disp_mm,
+                "acc": acc_mm,
+                "label": label,
+                "linestyle": "-",
+                "color": METHOD_COLORS.get(method, "#555555"),
+            })
 
-        if len(time) == 0:
-            continue
+    # Plot FEEDBACK data (combined FF + FB) - same displacement and acceleration
+    for method in METHODS:
+        for controller in CONTROLLERS:
+            key = f"{method}_{controller}"
+            data = feedback_vibration.get(key)
+            if not data:
+                continue
+            time = data.get("time", np.array([]))
+            disp = data.get("displacement", np.array([]))
+            acc = data.get("acceleration", np.array([]))
+            run_mode = str(data.get("run_mode", "")).lower()
 
-        disp_mm = np.array(disp, dtype=float) * 1000.0
-        acc_mm = _detrend_mean(np.array(acc, dtype=float)) * 1000.0
+            if len(time) == 0:
+                continue
+            if run_mode and run_mode != "combined":
+                continue
 
-        ax_disp.plot(time, disp_mm, color=CONTROLLER_COLORS[controller],
-                     label=CONTROLLER_LABELS[controller], linewidth=1.5, linestyle="--")
-        ax_acc.plot(time, acc_mm, color=CONTROLLER_COLORS[controller],
-                    label=CONTROLLER_LABELS[controller], linewidth=1.5, linestyle="--")
-        controller_handles.append(Line2D([0], [0], color=CONTROLLER_COLORS[controller],
-                                         lw=1.5, linestyle="--",
-                                         label=CONTROLLER_LABELS[controller]))
+            disp_mm = _detrend_mean(np.array(disp, dtype=float)) * 1000.0
+            acc_mm = _detrend_mean(np.array(acc, dtype=float)) * 1000.0
 
+            label = _combo_label(method, controller)
+            plot_entries.append({
+                "time": time,
+                "disp": disp_mm,
+                "acc": acc_mm,
+                "label": label,
+                "linestyle": "-",
+                "color": _combo_color(method, controller),
+            })
+
+    if not plot_entries:
+        plt.close(fig)
+        return None
+
+    for entry in plot_entries:
+        color = entry.get("color", "#555555")
+        ax_disp.plot(
+            entry["time"],
+            entry["disp"],
+            color=color,
+            label=entry["label"],
+            linewidth=1.5,
+            linestyle=entry["linestyle"],
+        )
+        ax_acc.plot(
+            entry["time"],
+            entry["acc"],
+            color=color,
+            label=entry["label"],
+            linewidth=1.5,
+            linestyle=entry["linestyle"],
+        )
+
+    # Mark maneuver end
     if maneuver_end is not None:
-        ax_disp.axvline(maneuver_end, color="gray", linestyle=":", linewidth=1.5, alpha=0.7)
+        ax_disp.axvline(maneuver_end, color="gray", linestyle=":", linewidth=1.5, alpha=0.7,
+                        label=f"Maneuver end ({maneuver_end:.0f}s)")
         ax_acc.axvline(maneuver_end, color="gray", linestyle=":", linewidth=1.5, alpha=0.7)
 
-    ax_disp.set_title("Modal Vibration Displacement", fontweight="bold")
+    cutoff_hz = _get_vibration_highpass_hz(config)
+    # Displacement subplot
+    title_prefix = "Modal Vibration Displacement (Combined FF + FB)"
+    if not plot_feedback_only:
+        title_prefix = "Modal Vibration Displacement (Feedforward Only)"
+    ax_disp.set_title(
+        f"{title_prefix} - High-pass {cutoff_hz:.2f} Hz, detrended",
+        fontweight="bold",
+    )
     ax_disp.set_ylabel("Displacement (mm)")
     ax_disp.grid(True, alpha=0.3)
-    if method_handles:
-        ax_disp.legend(handles=method_handles, loc="upper right", title="Feedforward")
+    ax_disp.legend(loc="upper right", fontsize=8, ncol=2)
     ax_disp.axhline(0, color="black", linewidth=0.5, alpha=0.3)
 
-    ax_acc.set_title("Modal Acceleration Response", fontweight="bold")
+    # Acceleration subplot
+    ax_acc.set_title("Modal Acceleration Response (High-pass filtered, detrended)", fontweight="bold")
     ax_acc.set_xlabel("Time (s)")
     ax_acc.set_ylabel(r"Acceleration (mm/s$^2$)")
     ax_acc.grid(True, alpha=0.3)
-    if controller_handles:
-        ax_acc.legend(handles=controller_handles, loc="upper right", title="Feedback")
+    ax_acc.legend(loc="upper right", fontsize=8, ncol=2)
     ax_acc.axhline(0, color="black", linewidth=0.5, alpha=0.3)
 
     plt.tight_layout()
@@ -1688,8 +2146,20 @@ def _plot_sensitivity_functions(
 ) -> Optional[str]:
     """Plot sensitivity functions."""
     freqs = control_data["freqs"]
+    l_data = control_data.get("L")
     s_data = control_data["S"]
     t_data = control_data["T"]
+    l_flex = control_data.get("L_flex")
+    s_flex = control_data.get("S_flex")
+    t_flex = control_data.get("T_flex")
+
+    if l_data is not None:
+        s_data = {name: 1 / (1 + l_data[name]) for name in CONTROLLERS}
+        t_data = {name: l_data[name] / (1 + l_data[name]) for name in CONTROLLERS}
+
+    if l_flex is not None:
+        s_flex = {name: 1 / (1 + l_flex[name]) for name in CONTROLLERS}
+        t_flex = {name: l_flex[name] / (1 + l_flex[name]) for name in CONTROLLERS}
 
     plt.rcParams.update({
         "font.size": 10,
@@ -1698,28 +2168,68 @@ def _plot_sensitivity_functions(
         "legend.fontsize": 9,
     })
 
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-    ax_s, ax_t = axes
+    if s_flex is not None and t_flex is not None:
+        fig, axes = plt.subplots(2, 2, figsize=(13, 8), sharex="col")
+        (ax_s, ax_t), (ax_s_flex, ax_t_flex) = axes
+    else:
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+        ax_s, ax_t = axes
+        ax_s_flex, ax_t_flex = None, None
 
-    line_styles = {"standard_pd": "-", "filtered_pd": "--", "avc": "-."}
+    line_styles = {"standard_pd": "-", "filtered_pd": "--"}
 
-    for name in CONTROLLERS:
-        ls = line_styles.get(name, "-")
-        s_mag_db = 20 * np.log10(np.abs(s_data[name]) + 1e-12)
-        t_mag_db = 20 * np.log10(np.abs(t_data[name]) + 1e-12)
-        ax_s.semilogx(freqs, s_mag_db, label=CONTROLLER_LABELS[name],
-                      color=CONTROLLER_COLORS[name], linewidth=1.5, linestyle=ls)
-        ax_t.semilogx(freqs, t_mag_db, label=CONTROLLER_LABELS[name],
-                      color=CONTROLLER_COLORS[name], linewidth=1.5, linestyle=ls)
+    def _plot_set(ax_left, ax_right, s_vals, t_vals) -> None:
+        for name in CONTROLLERS:
+            ls = line_styles.get(name, "-")
+            s_mag_db = 20 * np.log10(np.abs(s_vals[name]) + 1e-12)
+            t_mag_db = 20 * np.log10(np.abs(t_vals[name]) + 1e-12)
+            ax_left.semilogx(freqs, s_mag_db, label=CONTROLLER_LABELS[name],
+                             color=CONTROLLER_COLORS[name], linewidth=1.5, linestyle=ls)
+            ax_right.semilogx(freqs, t_mag_db, label=CONTROLLER_LABELS[name],
+                              color=CONTROLLER_COLORS[name], linewidth=1.5, linestyle=ls)
+
+    _plot_set(ax_s, ax_t, s_data, t_data)
+    if ax_s_flex is not None and ax_t_flex is not None and s_flex is not None and t_flex is not None:
+        _plot_set(ax_s_flex, ax_t_flex, s_flex, t_flex)
+        if config.modal_freqs_hz:
+            for f_mode in config.modal_freqs_hz:
+                idx = int(np.argmin(np.abs(freqs - f_mode)))
+                for name in CONTROLLERS:
+                    s_mag = 20 * np.log10(np.abs(s_flex[name][idx]) + 1e-12)
+                    t_mag = 20 * np.log10(np.abs(t_flex[name][idx]) + 1e-12)
+                    ax_s_flex.plot(
+                        freqs[idx],
+                        s_mag,
+                        marker="o",
+                        markersize=4,
+                        color=CONTROLLER_COLORS[name],
+                        linestyle="None",
+                        alpha=0.9,
+                    )
+                    ax_t_flex.plot(
+                        freqs[idx],
+                        t_mag,
+                        marker="o",
+                        markersize=4,
+                        color=CONTROLLER_COLORS[name],
+                        linestyle="None",
+                        alpha=0.9,
+                    )
 
     for f_mode in config.modal_freqs_hz:
         ax_s.axvline(f_mode, color="gray", linestyle=":", alpha=0.7)
         ax_t.axvline(f_mode, color="gray", linestyle=":", alpha=0.7)
+        if ax_s_flex is not None and ax_t_flex is not None:
+            ax_s_flex.axvline(f_mode, color="gray", linestyle=":", alpha=0.7)
+            ax_t_flex.axvline(f_mode, color="gray", linestyle=":", alpha=0.7)
 
     ax_s.axhline(0, color="black", linewidth=0.5, alpha=0.5)
     ax_t.axhline(0, color="black", linewidth=0.5, alpha=0.5)
+    if ax_s_flex is not None and ax_t_flex is not None:
+        ax_s_flex.axhline(0, color="black", linewidth=0.5, alpha=0.5)
+        ax_t_flex.axhline(0, color="black", linewidth=0.5, alpha=0.5)
 
-    ax_s.set_title(r"Sensitivity Function $S(j\omega)$", fontweight="bold")
+    ax_s.set_title(r"Rigid-Body Sensitivity $S(j\omega)$", fontweight="bold")
     ax_s.set_xlabel("Frequency (Hz)")
     ax_s.set_ylabel("Magnitude (dB)")
     ax_s.grid(True, alpha=0.3, which="both")
@@ -1727,7 +2237,7 @@ def _plot_sensitivity_functions(
     ax_s.set_ylim([-40, 10])
     ax_s.set_xlim([freqs[0], 10])
 
-    ax_t.set_title(r"Complementary Sensitivity $T(j\omega)$", fontweight="bold")
+    ax_t.set_title(r"Rigid-Body Complementary Sensitivity $T(j\omega)$", fontweight="bold")
     ax_t.set_xlabel("Frequency (Hz)")
     ax_t.set_ylabel("Magnitude (dB)")
     ax_t.grid(True, alpha=0.3, which="both")
@@ -1735,9 +2245,111 @@ def _plot_sensitivity_functions(
     ax_t.set_ylim([-50, 10])
     ax_t.set_xlim([freqs[0], 10])
 
+    note = "Rigid-body loop only; mode markers are references"
+    ax_s.text(0.02, 0.95, note, transform=ax_s.transAxes, fontsize=9, color="gray", va="top")
+    ax_t.text(0.02, 0.95, note, transform=ax_t.transAxes, fontsize=9, color="gray", va="top")
+
+    if ax_s_flex is not None and ax_t_flex is not None:
+        ax_s_flex.set_title(r"Flexible Sigma-Loop Sensitivity $S(j\omega)$", fontweight="bold")
+        ax_s_flex.set_xlabel("Frequency (Hz)")
+        ax_s_flex.set_ylabel("Magnitude (dB)")
+        ax_s_flex.grid(True, alpha=0.3, which="both")
+        ax_s_flex.legend(loc="lower right")
+        ax_s_flex.set_ylim([-60, 20])
+        ax_s_flex.set_xlim([freqs[0], 10])
+
+        ax_t_flex.set_title(r"Flexible Sigma-Loop Complementary Sensitivity $T(j\omega)$", fontweight="bold")
+        ax_t_flex.set_xlabel("Frequency (Hz)")
+        ax_t_flex.set_ylabel("Magnitude (dB)")
+        ax_t_flex.grid(True, alpha=0.3, which="both")
+        ax_t_flex.legend(loc="lower left")
+        ax_t_flex.set_ylim([-60, 20])
+        ax_t_flex.set_xlim([freqs[0], 10])
+
+        flex_err = 0.0
+        if s_flex is not None and t_flex is not None:
+            flex_err = max(
+                float(np.max(np.abs(s_flex[name] + t_flex[name] - 1.0)))
+                for name in CONTROLLERS
+            )
+        note_flex = (
+            "Flexible sigma loop includes rigid + modal dynamics; "
+            "mode markers are nominal\n"
+            f"max|S+T-1|={flex_err:.1e}"
+        )
+        ax_s_flex.text(0.02, 0.95, note_flex, transform=ax_s_flex.transAxes,
+                       fontsize=9, color="gray", va="top")
+        ax_t_flex.text(0.02, 0.95, note_flex, transform=ax_t_flex.transAxes,
+                       fontsize=9, color="gray", va="top")
+
     plt.tight_layout()
     _ensure_dir(out_dir)
     plot_path = os.path.abspath(os.path.join(out_dir, "mission_sensitivity.png"))
+    plt.savefig(plot_path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return plot_path
+
+
+def _plot_modal_excitation(
+    control_data: Dict[str, object],
+    config: MissionConfig,
+    out_dir: str,
+) -> Optional[str]:
+    """Plot closed-loop modal excitation magnitude."""
+    freqs = control_data["freqs"]
+    modal_response = control_data.get("modal_response", {})
+    if not modal_response or not config.modal_freqs_hz:
+        return None
+
+    n_modes = len(config.modal_freqs_hz)
+    if n_modes == 0:
+        return None
+
+    plt.rcParams.update({
+        "font.size": 10,
+        "axes.labelsize": 11,
+        "axes.titlesize": 12,
+        "legend.fontsize": 9,
+    })
+
+    ncols = 2 if n_modes > 1 else 1
+    nrows = int(np.ceil(n_modes / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.5 * ncols, 4.5 * nrows), sharex=True)
+    axes = np.atleast_1d(axes).ravel()
+
+    line_styles = {"standard_pd": "-", "filtered_pd": "--"}
+
+    for idx, f_mode in enumerate(config.modal_freqs_hz):
+        ax = axes[idx]
+        for name in CONTROLLERS:
+            responses = modal_response.get(name, [])
+            if idx >= len(responses):
+                continue
+            resp = responses[idx]
+            mag_db = 20 * np.log10(np.abs(resp) + 1e-12)
+            ax.semilogx(
+                freqs,
+                mag_db,
+                label=CONTROLLER_LABELS[name],
+                color=CONTROLLER_COLORS[name],
+                linewidth=1.5,
+                linestyle=line_styles.get(name, "-"),
+            )
+        ax.axvline(float(f_mode), color="gray", linestyle=":", alpha=0.7)
+        ax.set_title(f"Mode {idx + 1} Response ({f_mode:.2f} Hz)", fontweight="bold")
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("Magnitude (dB)")
+        ax.grid(True, alpha=0.3, which="both")
+        ax.axhline(0, color="black", linewidth=0.5, alpha=0.4)
+        if idx == 0:
+            ax.legend(loc="lower left")
+
+    for extra_ax in axes[n_modes:]:
+        extra_ax.axis("off")
+
+    plt.tight_layout()
+    _ensure_dir(out_dir)
+    plot_path = os.path.abspath(os.path.join(out_dir, "mission_modal_excitation.png"))
     plt.savefig(plot_path, dpi=200, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return plot_path
@@ -1760,24 +2372,54 @@ def _plot_pointing_error(
 
     fig, ax = plt.subplots(1, 1, figsize=(10, 5.5))
 
-    for method, method_data in pointing_errors.items():
-        for controller, data in method_data.items():
+    plot_entries = []
+    for method in METHODS:
+        method_data = pointing_errors.get(method, {})
+        for controller in CONTROLLERS:
+            data = method_data.get(controller)
+            if not data:
+                continue
+            run_mode = str(data.get("run_mode", "")).lower()
+            if run_mode and run_mode != "combined":
+                continue
             time = data.get("time", np.array([]))
-            sigma = data.get("sigma")
-            target = data.get("target_sigma", np.zeros(3))
-
-            if sigma is None or len(time) == 0:
+            if len(time) == 0:
                 continue
 
-            errors = _compute_pointing_error(sigma, target)
+            errors = _extract_pointing_error(data)
             if len(errors) == 0:
                 continue
+            time, aligned = _align_series(time, errors)
+            errors = aligned[0]
+            if len(time) == 0:
+                continue
+            min_positive = np.min(time[time > 0]) if np.any(time > 0) else 1e-6
+            time_plot = np.where(time > 0, time, min_positive)
 
-            label = f"{METHOD_LABELS.get(method, method)}"
-            ax.semilogy(time, np.maximum(errors, 1e-10),
-                        color=METHOD_COLORS.get(method, "black"),
-                        label=label, linewidth=1.5)
-            break  # Only plot first controller per method
+            label = _combo_label(method, controller)
+            errors_plot = np.maximum(np.abs(errors), 1e-12)
+            plot_entries.append({
+                "time": time_plot,
+                "errors": errors_plot,
+                "label": label,
+                "linestyle": "-",
+                "color": _combo_color(method, controller),
+            })
+
+    if not plot_entries:
+        plt.close(fig)
+        return None
+
+    for entry in plot_entries:
+        color = entry.get("color", "#555555")
+        ax.semilogx(
+            entry["time"],
+            entry["errors"],
+            color=color,
+            label=entry["label"],
+            linewidth=1.5,
+            linestyle=entry["linestyle"],
+        )
 
     ax.set_title("Pointing Error", fontweight="bold")
     ax.set_xlabel("Time (s)")
@@ -1813,11 +2455,9 @@ def _plot_psd_comparison(
 
     fig, ax = plt.subplots(1, 1, figsize=(16, 10))
 
-    line_styles = {"standard_pd": "-", "filtered_pd": "--", "avc": "-."}
-
-    plotted_items = []
-    psd_min = None
-    psd_max = None
+    plot_entries = []
+    psd_min_db = None
+    psd_max_db = None
 
     for method in METHODS:
         if method not in mission_psd_data:
@@ -1838,53 +2478,54 @@ def _plot_psd_comparison(
             freq_filtered = psd_freq[mask]
             psd_filtered = psd_vals[mask]
 
-            psd_min = float(np.min(psd_filtered)) if psd_min is None else min(psd_min, float(np.min(psd_filtered)))
-            psd_max = float(np.max(psd_filtered)) if psd_max is None else max(psd_max, float(np.max(psd_filtered)))
+            psd_db = 10.0 * np.log10(psd_filtered)
+            psd_min_db = float(np.min(psd_db)) if psd_min_db is None else min(psd_min_db, float(np.min(psd_db)))
+            psd_max_db = float(np.max(psd_db)) if psd_max_db is None else max(psd_max_db, float(np.max(psd_db)))
 
-            label = f"{METHOD_LABELS[method]} + {CONTROLLER_LABELS[name]}"
-            ax.semilogy(
-                freq_filtered,
-                psd_filtered,
-                color=METHOD_COLORS[method],
-                linestyle=line_styles.get(name, "-"),
-                linewidth=2.0,
-                alpha=0.9,
-                label=label,
-            )
-            plotted_items.append((method, name))
+            label = _combo_label(method, name)
+            plot_entries.append({
+                "freq": freq_filtered,
+                "psd_db": psd_db,
+                "label": label,
+                "linestyle": "-",
+                "color": _combo_color(method, name),
+            })
+
+    if not plot_entries:
+        plt.close(fig)
+        return None
+
+    for entry in plot_entries:
+        color = entry.get("color", "#555555")
+        ax.semilogx(
+            entry["freq"],
+            entry["psd_db"],
+            color=color,
+            linestyle=entry["linestyle"],
+            linewidth=2.0,
+            alpha=0.9,
+            label=entry["label"],
+        )
 
     # Mark modal frequencies
-    if psd_max is not None:
+    if psd_max_db is not None:
+        label_y = psd_max_db - 3.0
         for f_mode in config.modal_freqs_hz:
             if f_mode <= 10.0:
                 ax.axvline(f_mode, color="red", linestyle="--", alpha=0.6, linewidth=1.5)
-                ax.text(f_mode + 0.05, psd_max * 0.5, f"Mode: {f_mode:.2f} Hz",
+                ax.text(f_mode + 0.05, label_y, f"Mode: {f_mode:.2f} Hz",
                         rotation=90, va="bottom", ha="left", fontsize=10, alpha=0.9,
                         fontweight="bold", color="red")
 
     ax.set_title("Mission Vibration Displacement PSD (Combined Feedforward + Feedback)",
                  fontweight="bold", fontsize=16, pad=15)
     ax.set_xlabel("Frequency (Hz)", fontsize=14, fontweight="bold")
-    ax.set_ylabel(r"PSD (m$^2$ / Hz)", fontsize=14, fontweight="bold")
-
-    # X-axis: 0-10 Hz with ticks at 0.5 Hz intervals
-    ax.set_xlim([0.0, 10.0])
-    ax.set_xticks(np.arange(0, 10.5, 0.5))
-    ax.set_xticks(np.arange(0, 10.1, 0.1), minor=True)
-
-    # Y-axis: limit to 3 decades for readability
-    if psd_min is not None and psd_max is not None:
-        top = psd_max * 5.0
-        bottom = max(psd_min / 2.0, top / 1e3)
-        ax.set_ylim([bottom, top])
-
-    ax.yaxis.set_major_locator(LogLocator(base=10, numticks=15))
-    ax.yaxis.set_minor_locator(LogLocator(base=10, subs=np.arange(2, 10) * 0.1, numticks=100))
+    ax.set_ylabel(r"PSD (dB re m$^2$/Hz)", fontsize=14, fontweight="bold")
 
     ax.grid(True, alpha=0.6, which="major", linestyle="-", linewidth=0.8, color="gray")
     ax.grid(True, alpha=0.3, which="minor", linestyle="-", linewidth=0.4, color="lightgray")
 
-    if plotted_items:
+    if plot_entries:
         ax.legend(loc="upper right", framealpha=0.95, ncol=1, fontsize=11,
                   fancybox=True, shadow=True)
 
@@ -1910,7 +2551,7 @@ def _plot_nyquist(
     out_dir: str,
 ) -> Optional[str]:
     """Plot Nyquist diagram."""
-    l_data = control_data["L"]
+    l_data = control_data.get("L_flex") or control_data["L"]
     margins = control_data["margins"]
 
     plt.rcParams.update({
@@ -1920,29 +2561,67 @@ def _plot_nyquist(
         "legend.fontsize": 9,
     })
 
-    fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+    fig, (ax_full, ax_zoom) = plt.subplots(1, 2, figsize=(12, 6))
 
-    line_styles = {"standard_pd": "-", "filtered_pd": "--", "avc": "-."}
+    line_styles = {"standard_pd": "-", "filtered_pd": "--"}
+    nyq_traces = []
 
     for name in CONTROLLERS:
         l_resp = l_data[name]
         nyq = np.concatenate([l_resp, np.conjugate(l_resp[::-1])])
+        nyq_traces.append(nyq)
         ls = line_styles.get(name, "-")
         label = f"{CONTROLLER_LABELS[name]} ({_format_margin_label(margins[name])})"
-        ax.plot(nyq.real, nyq.imag, color=CONTROLLER_COLORS[name], label=label,
-                linewidth=1.5, linestyle=ls)
+        ax_full.plot(nyq.real, nyq.imag, color=CONTROLLER_COLORS[name], label=label,
+                     linewidth=1.5, linestyle=ls)
+        ax_zoom.plot(nyq.real, nyq.imag, color=CONTROLLER_COLORS[name],
+                     linewidth=1.5, linestyle=ls)
 
     # Critical point
-    ax.plot(-1, 0, "rx", markersize=10, markeredgewidth=2, label="Critical Point")
+    for ax in (ax_full, ax_zoom):
+        ax.plot(-1, 0, marker="o", markersize=14, markerfacecolor="none",
+                markeredgecolor="red", markeredgewidth=2.5)
+        ax.plot(-1, 0, "rx", markersize=12, markeredgewidth=2.5,
+                label="Critical Point (-1, 0)" if ax is ax_full else None)
+    ax_zoom.annotate(
+        "(-1, 0)",
+        xy=(-1, 0),
+        xytext=(-1.6, 0.8),
+        textcoords="data",
+        color="red",
+        fontsize=10,
+        arrowprops=dict(arrowstyle="->", color="red", linewidth=1.2),
+    )
 
-    ax.set_title("Nyquist Diagram", fontweight="bold")
-    ax.set_xlabel("Real")
-    ax.set_ylabel("Imaginary")
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="lower left")
-    ax.set_aspect("equal")
-    ax.axhline(0, color="black", linewidth=0.5)
-    ax.axvline(0, color="black", linewidth=0.5)
+    ax_full.set_title("Nyquist Diagram", fontweight="bold")
+    ax_full.set_xlabel("Real")
+    ax_full.set_ylabel("Imaginary")
+    ax_full.grid(True, alpha=0.3)
+    ax_full.legend(loc="lower left")
+    ax_full.set_aspect("equal")
+    ax_full.axhline(0, color="black", linewidth=0.5)
+    ax_full.axvline(0, color="black", linewidth=0.5)
+
+    ax_zoom.set_title("Zoom Near (-1, 0)", fontweight="bold")
+    ax_zoom.set_xlabel("Real")
+    ax_zoom.set_ylabel("Imaginary")
+    ax_zoom.grid(True, alpha=0.3)
+    ax_zoom.set_aspect("equal")
+    ax_zoom.axhline(0, color="black", linewidth=0.5)
+    ax_zoom.axvline(0, color="black", linewidth=0.5)
+
+    if nyq_traces:
+        all_points = np.concatenate(nyq_traces)
+        center = -1.0 + 0.0j
+        near = all_points[np.abs(all_points - center) < 2.0]
+        if len(near) > 0:
+            real_span = float(np.max(np.abs(near.real + 1.0)))
+            imag_span = float(np.max(np.abs(near.imag)))
+            half_span = max(0.2, 1.2 * max(real_span, imag_span))
+        else:
+            half_span = 1.0
+        ax_zoom.set_xlim([-1.0 - half_span, -1.0 + half_span])
+        ax_zoom.set_ylim([-half_span, half_span])
 
     plt.tight_layout()
     _ensure_dir(out_dir)
@@ -1950,6 +2629,183 @@ def _plot_nyquist(
     plt.savefig(plot_path, dpi=200, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return plot_path
+
+
+def _plot_disturbance_transfer(
+    control_data: Dict[str, object],
+    config: MissionConfig,
+    out_dir: str,
+) -> Optional[str]:
+    """Plot disturbance torque to pointing error transfer."""
+    freqs = control_data.get("freqs")
+    plant = control_data.get("plant_flex_camera")
+    if plant is None:
+        plant = control_data.get("plant_flex_body")
+    disturbance = control_data.get("disturbance_camera")
+    if freqs is None or plant is None or disturbance is None:
+        return None
+
+    plt.rcParams.update({
+        "font.size": 10,
+        "axes.labelsize": 11,
+        "axes.titlesize": 12,
+        "legend.fontsize": 9,
+    })
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+    sigma_to_deg = 4.0 * 180.0 / np.pi
+    open_mag_db = 20 * np.log10(np.abs(plant * sigma_to_deg) + 1e-12)
+    ax.semilogx(freqs, open_mag_db, color="black", linewidth=1.8, label="Open-loop (camera plant)")
+
+    line_styles = {"standard_pd": "-", "filtered_pd": "--"}
+    for name in CONTROLLERS:
+        if name not in disturbance:
+            continue
+        mag_db = 20 * np.log10(np.abs(disturbance[name] * sigma_to_deg) + 1e-12)
+        ax.semilogx(
+            freqs,
+            mag_db,
+            color=CONTROLLER_COLORS[name],
+            linewidth=1.6,
+            linestyle=line_styles.get(name, "-"),
+            label=f"Closed-loop ({CONTROLLER_LABELS[name]})",
+        )
+
+    for f_mode in config.modal_freqs_hz:
+        ax.axvline(f_mode, color="gray", linestyle=":", alpha=0.7)
+
+    ax.set_title("Disturbance Torque to Pointing Error", fontweight="bold")
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("Magnitude (dB, deg/Nm)")
+    ax.grid(True, alpha=0.3, which="both")
+    ax.legend(loc="lower left")
+    ax.set_xlim([freqs[0], 10])
+
+    plt.tight_layout()
+    _ensure_dir(out_dir)
+    plot_path = os.path.abspath(os.path.join(out_dir, "mission_disturbance_tf.png"))
+    plt.savefig(plot_path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return plot_path
+
+
+def _plot_noise_to_torque(
+    control_data: Dict[str, object],
+    out_dir: str,
+) -> Optional[str]:
+    """Plot measurement noise to commanded torque transfer: C / (1 + P*C)."""
+    freqs = control_data.get("freqs")
+    controller_resp = control_data.get("controller_resp")
+    loop = control_data.get("L_flex") or control_data.get("L")
+    if freqs is None or controller_resp is None or loop is None:
+        return None
+
+    plt.rcParams.update({
+        "font.size": 10,
+        "axes.labelsize": 11,
+        "axes.titlesize": 12,
+        "legend.fontsize": 9,
+    })
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+    for name in CONTROLLERS:
+        c_resp = controller_resp.get(name)
+        l_resp = loop.get(name) if isinstance(loop, dict) else None
+        if c_resp is None or l_resp is None:
+            continue
+        noise_to_tau = c_resp / (1.0 + l_resp)
+        mag_db = 20 * np.log10(np.abs(noise_to_tau) + 1e-12)
+        ax.semilogx(
+            freqs,
+            mag_db,
+            color=CONTROLLER_COLORS.get(name, "#333333"),
+            linewidth=1.6,
+            linestyle="-",
+            label=CONTROLLER_LABELS.get(name, name),
+        )
+
+    ax.set_title("Noise to Commanded Torque |C/(1+P*C)|", fontweight="bold")
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("Magnitude (dB)")
+    ax.grid(True, alpha=0.3, which="both")
+    ax.legend(loc="lower left")
+    ax.set_xlim([freqs[0], 10])
+
+    plt.tight_layout()
+    _ensure_dir(out_dir)
+    plot_path = os.path.abspath(os.path.join(out_dir, "mission_noise_to_torque.png"))
+    plt.savefig(plot_path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return plot_path
+
+
+def _plot_loop_components(
+    control_data: Dict[str, object],
+    config: MissionConfig,
+    out_dir: str,
+) -> List[str]:
+    """Plot plant, controller, and loop transfer functions for key controllers."""
+    freqs = control_data.get("freqs")
+    plant = control_data.get("plant_flex_body")
+    controller_resp = control_data.get("controller_resp", {})
+    loop = control_data.get("L_flex") or control_data.get("L")
+
+    if freqs is None or plant is None or loop is None or not controller_resp:
+        return []
+
+    plt.rcParams.update({
+        "font.size": 10,
+        "axes.labelsize": 11,
+        "axes.titlesize": 12,
+        "legend.fontsize": 9,
+    })
+
+    def _plot_one(ctrl_key: str, title: str, filename: str) -> Optional[str]:
+        c_resp = controller_resp.get(ctrl_key)
+        if c_resp is None or ctrl_key not in loop:
+            return None
+        l_resp = loop[ctrl_key]
+
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+        plant_db = 20 * np.log10(np.abs(plant) + 1e-12)
+        ctrl_db = 20 * np.log10(np.abs(c_resp) + 1e-12)
+        loop_db = 20 * np.log10(np.abs(l_resp) + 1e-12)
+
+        ax.semilogx(freqs, plant_db, color="black", linewidth=1.8, label="Plant |P|")
+        ax.semilogx(freqs, ctrl_db, color="#1f77b4", linewidth=1.6, label="Controller |C|")
+        ax.semilogx(freqs, loop_db, color="#d62728", linewidth=1.8, label="Loop |P*C|")
+
+        for f_mode in config.modal_freqs_hz:
+            ax.axvline(f_mode, color="gray", linestyle=":", alpha=0.6)
+
+        ax.set_title(title, fontweight="bold")
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("Magnitude (dB)")
+        ax.grid(True, alpha=0.3, which="both")
+        ax.legend(loc="best")
+        ax.set_xlim([freqs[0], 10])
+
+        plt.tight_layout()
+        _ensure_dir(out_dir)
+        plot_path = os.path.abspath(os.path.join(out_dir, filename))
+        plt.savefig(plot_path, dpi=200, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+        return plot_path
+
+    plot_paths: List[str] = []
+
+    # PD baseline (filtered PD)
+    pd_plot = _plot_one(
+        "filtered_pd",
+        "Loop Components: Filtered PD",
+        "mission_loop_components_pd.png",
+    )
+    if pd_plot:
+        plot_paths.append(pd_plot)
+
+    return plot_paths
 
 
 # ---------------------------------------------------------------------------
@@ -1979,14 +2835,16 @@ def _export_vibration_csv(
 
     # Feedback vibration
     rows = []
-    for name, data in feedback_data.items():
+    for _, data in feedback_data.items():
         time = data.get("time", [])
         disp = data.get("displacement", [])
+        method = data.get("method")
+        controller = data.get("controller")
         for t, d in zip(time, disp):
-            rows.append([f"{t:.6f}", name, f"{d:.6e}"])
+            rows.append([f"{t:.6f}", method or "", controller or "", f"{d:.6e}"])
     if rows:
         path = os.path.abspath(os.path.join(out_dir, "vibration_feedback.csv"))
-        _write_csv(path, ["time_s", "controller", "displacement_m"], rows)
+        _write_csv(path, ["time_s", "method", "controller", "displacement_m"], rows)
         print(f"Wrote feedback vibration CSV: {path}")
 
 
@@ -2000,11 +2858,11 @@ def _export_pointing_error_csv(
     for method, method_data in pointing_data.items():
         for controller, data in method_data.items():
             time = data.get("time", [])
-            sigma = data.get("sigma")
-            target = data.get("target_sigma", np.zeros(3))
-            if sigma is None:
+            errors = _extract_pointing_error(data)
+            if len(errors) == 0:
                 continue
-            errors = _compute_pointing_error(sigma, target)
+            time, aligned = _align_series(np.array(time, dtype=float), errors)
+            errors = aligned[0]
             for t, e in zip(time, errors):
                 rows.append([f"{t:.6f}", method, controller, f"{e:.6e}"])
     if rows:
@@ -2036,14 +2894,16 @@ def _export_psd_csv(
 
     # Feedback PSD
     rows = []
-    for name, data in feedback_data.items():
+    for _, data in feedback_data.items():
         psd_freq = data.get("psd_freq", [])
         psd_vals = data.get("psd", [])
+        method = data.get("method")
+        controller = data.get("controller")
         for f, p in zip(psd_freq, psd_vals):
-            rows.append([f"{f:.6f}", name, f"{p:.6e}"])
+            rows.append([f"{f:.6f}", method or "", controller or "", f"{p:.6e}"])
     if rows:
         path = os.path.abspath(os.path.join(out_dir, "psd_feedback.csv"))
-        _write_csv(path, ["frequency_hz", "controller", "psd_n2m2_per_hz"], rows)
+        _write_csv(path, ["frequency_hz", "method", "controller", "psd_n2m2_per_hz"], rows)
         print(f"Wrote feedback PSD CSV: {path}")
 
     # Mission PSD
@@ -2079,15 +2939,27 @@ def _export_sensitivity_csv(control_data: Dict[str, object], out_dir: str) -> No
     _write_csv(path, ["frequency_hz", "controller", "S_mag_db", "T_mag_db"], rows)
     print(f"Wrote sensitivity curves CSV: {path}")
 
+    if "S_flex" in control_data and "T_flex" in control_data:
+        rows = []
+        for i, f in enumerate(freqs):
+            for name in CONTROLLERS:
+                s_mag = 20 * np.log10(np.abs(control_data["S_flex"][name][i]) + 1e-12)
+                t_mag = 20 * np.log10(np.abs(control_data["T_flex"][name][i]) + 1e-12)
+                rows.append([f"{f:.6f}", name, f"{s_mag:.4f}", f"{t_mag:.4f}"])
+        path = os.path.abspath(os.path.join(out_dir, "sensitivity_curves_flexible.csv"))
+        _write_csv(path, ["frequency_hz", "controller", "S_mag_db", "T_mag_db"], rows)
+        print(f"Wrote flexible sensitivity curves CSV: {path}")
+
 
 def _export_nyquist_csv(control_data: Dict[str, object], out_dir: str) -> None:
     """Export Nyquist data to CSV."""
     _ensure_dir(out_dir)
     freqs = control_data["freqs"]
+    l_data = control_data.get("L_flex") or control_data["L"]
     rows = []
     for i, f in enumerate(freqs):
         for name in CONTROLLERS:
-            l_val = control_data["L"][name][i]
+            l_val = l_data[name][i]
             rows.append([f"{f:.6f}", name, f"{l_val.real:.6e}", f"{l_val.imag:.6e}"])
     path = os.path.abspath(os.path.join(out_dir, "nyquist_curves.csv"))
     _write_csv(path, ["frequency_hz", "controller", "L_real", "L_imag"], rows)
@@ -2167,8 +3039,14 @@ def run_mission_simulation(
     for name in CONTROLLERS:
         ctrl_metrics[name] = ctrl_data["margins"][name]
 
-    pointing_metrics = run_pointing_summary(config, out_dir, data_dir=data_dir,
-                                            make_plots=False, export_csv=export_csv)
+    pointing_metrics = run_pointing_summary(
+        config,
+        out_dir,
+        data_dir=data_dir,
+        make_plots=False,
+        export_csv=export_csv,
+        generate_pointing=generate_pointing,
+    )
 
     # Build data structures for plotting
     feedforward_torque, feedforward_vibration = _collect_feedforward_data(
@@ -2182,7 +3060,11 @@ def run_mission_simulation(
     )
 
     # Pointing data
-    pointing_data = _load_all_pointing_data(data_dir, generate_if_missing=generate_pointing)
+    pointing_data = _load_all_pointing_data(
+        data_dir,
+        config=config,
+        generate_if_missing=generate_pointing,
+    )
 
     # Export remaining CSVs
     if export_csv:
@@ -2196,16 +3078,41 @@ def run_mission_simulation(
     # Generate plots
     plot_paths: List[str] = []
     if make_plots:
-        vibration_plot = _plot_vibration_comparison(feedforward_vibration, feedback_vibration, out_dir)
+        vibration_plot = _plot_vibration_comparison(
+            feedforward_vibration, feedback_vibration, config, out_dir
+        )
         sensitivity_plot = _plot_sensitivity_functions(ctrl_data, config, out_dir)
+        modal_plot = _plot_modal_excitation(ctrl_data, config, out_dir)
         pointing_plot = _plot_pointing_error(pointing_data, out_dir)
         psd_plot = _plot_psd_comparison(mission_psd_data, config, out_dir)
         nyquist_plot = _plot_nyquist(ctrl_data, out_dir)
+        disturbance_plot = _plot_disturbance_transfer(ctrl_data, config, out_dir)
+        noise_torque_plot = _plot_noise_to_torque(ctrl_data, out_dir)
+        loop_component_plots = _plot_loop_components(ctrl_data, config, out_dir)
 
-        for plot in [vibration_plot, sensitivity_plot, pointing_plot, psd_plot, nyquist_plot]:
+        for plot in [
+            vibration_plot,
+            sensitivity_plot,
+            modal_plot,
+            pointing_plot,
+            psd_plot,
+            nyquist_plot,
+            disturbance_plot,
+            noise_torque_plot,
+        ]:
             if plot:
                 plot_paths.append(plot)
                 print(f"Saved plot: {plot}")
+
+        if loop_component_plots:
+            for plot in loop_component_plots:
+                if plot:
+                    plot_paths.append(plot)
+                    print(f"Saved plot: {plot}")
+
+        mirror_dir = os.path.join(os.path.dirname(__file__), "analysis")
+        for plot in plot_paths:
+            _mirror_output(plot, mirror_dir)
 
     if make_plots:
         print(f"Plots are saved in: {os.path.abspath(out_dir)}")

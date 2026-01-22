@@ -727,21 +727,15 @@ if __name__ == "__main__":
     shaped_file = None
 
     possible_unshaped = [
-        "vizard_demo_unshaped_avc.npz",
         "vizard_demo_unshaped_filtered_pd.npz",
         "vizard_demo_unshaped_standard_pd.npz",
         "vizard_demo_unshaped.npz",
         "comparison_unshaped.npz",
     ]
     possible_shaped = [
-        "vizard_demo_fourth_avc.npz",
-        "vizard_demo_zvd_avc.npz",
         "vizard_demo_fourth_filtered_pd.npz",
-        "vizard_demo_zvd_filtered_pd.npz",
         "vizard_demo_fourth_standard_pd.npz",
-        "vizard_demo_zvd_standard_pd.npz",
         "vizard_demo_fourth.npz",
-        "vizard_demo_zvd.npz",
         "comparison_fourth.npz",
     ]
 
@@ -762,8 +756,8 @@ if __name__ == "__main__":
         create_blur_demo_from_modal_data(unshaped_file, shaped_file)
     else:
         print("\nNo simulation data found. Run vizard_demo.py first:")
-        print("  python vizard_demo.py unshaped --controller avc")
-        print("  python vizard_demo.py fourth --controller avc")
+        print("  python vizard_demo.py unshaped --controller filtered_pd")
+        print("  python vizard_demo.py fourth --controller filtered_pd")
         print("\nThen run this script again.")
 
         # Create a demo with synthetic vibration data for stand-alone use.
