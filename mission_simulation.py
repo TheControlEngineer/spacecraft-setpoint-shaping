@@ -56,6 +56,7 @@ class MissionConfig:
     feedback_method: Optional[str] = None
     camera_lever_arm_m: float = 4.0
     modal_mass_kg: Optional[float] = None
+    rw_max_torque_nm: Optional[float] = 70.0
 
 
 METHODS = ["unshaped", "fourth"]
@@ -214,6 +215,25 @@ def _get_vibration_highpass_hz(config: MissionConfig) -> float:
     if config.modal_freqs_hz:
         return max(base, 0.5 * min(config.modal_freqs_hz))
     return base
+
+
+def _sigma_to_angle(sigma: np.ndarray, axis: np.ndarray) -> np.ndarray:
+    """Project MRP onto a rotation axis and return signed rotation angle [rad]."""
+    sigma = np.atleast_2d(np.array(sigma, dtype=float))
+    if sigma.size == 0:
+        return np.array([])
+    axis = _normalize_axis(axis)
+    dot = sigma @ axis
+    mag = np.linalg.norm(sigma, axis=1)
+    angle = 4.0 * np.arctan(mag)
+    sign = np.sign(dot)
+    sign[sign == 0] = 1.0
+    return angle * sign
+
+
+def _wrap_angle_rad(angle: np.ndarray) -> np.ndarray:
+    """Wrap angle(s) to [-pi, pi] for shortest-distance errors."""
+    return (angle + np.pi) % (2 * np.pi) - np.pi
 
 
 def _extract_vibration_signals(
@@ -1073,11 +1093,12 @@ def _collect_feedback_data(
                 "time": time,
                 "displacement": displacement,
                 "acceleration": acceleration,
-                "torque": torque_axis,
-                "torque_total": torque_total,
-                "psd_freq": psd_freq,
-                "psd": psd_vals,
-                "method": npz_data.get("method", method),
+        "torque": torque_axis,
+        "torque_total": torque_total,
+        "rw_torque": npz_data.get("rw_torque"),
+        "psd_freq": psd_freq,
+        "psd": psd_vals,
+        "method": npz_data.get("method", method),
                 "controller": controller,
                 "run_mode": npz_data.get("run_mode", "combined"),
             }
@@ -2735,6 +2756,197 @@ def _plot_torque_command_psd(
     return plot_path
 
 
+def _plot_tracking_response(
+    pointing_data: Dict[str, Dict[str, object]],
+    config: MissionConfig,
+    out_dir: str,
+) -> Optional[str]:
+    """Plot reference tracking: angle and error vs time."""
+    if not pointing_data:
+        return None
+
+    plt.rcParams.update({
+        "font.size": 10,
+        "axes.labelsize": 11,
+        "axes.titlesize": 12,
+        "legend.fontsize": 9,
+    })
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9), sharex="col")
+    axis = _normalize_axis(config.rotation_axis)
+
+    for col, method in enumerate(METHODS):
+        method_data = pointing_data.get(method, {})
+        if not method_data:
+            axes[0, col].axis("off")
+            axes[1, col].axis("off")
+            continue
+
+        max_time = None
+        for controller in CONTROLLERS:
+            data = method_data.get(controller)
+            if not data:
+                continue
+            time = np.array(data.get("time", []), dtype=float)
+            if len(time) == 0:
+                continue
+            max_time = float(time[-1]) if max_time is None else max(max_time, float(time[-1]))
+
+        settling_time = max(0.0, (max_time or config.slew_duration_s) - config.slew_duration_s)
+        ref_data = _compute_torque_profile(config, method, settling_time=settling_time)
+        ref_time = np.array(ref_data.get("time", []), dtype=float)
+        ref_theta = np.array(ref_data.get("theta", []), dtype=float)
+        if len(ref_time) == 0 or len(ref_theta) == 0:
+            axes[0, col].axis("off")
+            axes[1, col].axis("off")
+            continue
+        ref_time, aligned = _align_series(ref_time, ref_theta)
+        ref_theta = aligned[0]
+        if len(ref_time) == 0:
+            axes[0, col].axis("off")
+            axes[1, col].axis("off")
+            continue
+        ref_unwrapped = np.unwrap(ref_theta)
+        ref_deg = np.degrees(ref_unwrapped)
+
+        ax_angle = axes[0, col]
+        ax_err = axes[1, col]
+        ax_angle.plot(ref_time, ref_deg, color="black", linestyle="--", linewidth=1.6, label="Reference")
+
+        maneuver_end = ref_data.get("maneuver_end")
+
+        for controller in CONTROLLERS:
+            data = method_data.get(controller)
+            if not data:
+                continue
+            run_mode = str(data.get("run_mode", "")).lower()
+            if run_mode and run_mode != "combined":
+                continue
+            time = np.array(data.get("time", []), dtype=float)
+            sigma = np.array(data.get("sigma", []), dtype=float)
+            if len(time) == 0 or len(sigma) == 0:
+                continue
+            theta_actual = _sigma_to_angle(sigma, axis)
+            time, aligned = _align_series(time, theta_actual)
+            theta_actual = aligned[0]
+            if len(time) == 0:
+                continue
+            actual_unwrapped = np.unwrap(theta_actual)
+            ref_interp = np.interp(time, ref_time, ref_unwrapped, left=ref_unwrapped[0], right=ref_unwrapped[-1])
+            err_rad = _wrap_angle_rad(ref_interp - actual_unwrapped)
+            err = np.degrees(err_rad)
+
+            color = _combo_color(method, controller)
+            ax_angle.plot(time, np.degrees(actual_unwrapped), color=color, linewidth=1.4,
+                          label=_combo_label(method, controller))
+            ax_err.plot(time, err, color=color, linewidth=1.4, label=_combo_label(method, controller))
+
+        if maneuver_end is not None:
+            ax_angle.axvline(maneuver_end, color="gray", linestyle=":", alpha=0.6)
+            ax_err.axvline(maneuver_end, color="gray", linestyle=":", alpha=0.6)
+
+        ax_angle.set_title(f"{METHOD_LABELS.get(method, method)} Tracking", fontweight="bold")
+        ax_angle.set_ylabel("Angle (deg)")
+        ax_angle.grid(True, alpha=0.3)
+        ax_angle.legend(loc="upper right", fontsize=8)
+
+        ax_err.set_ylabel("Tracking Error (deg)")
+        ax_err.set_xlabel("Time (s)")
+        ax_err.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    _ensure_dir(out_dir)
+    plot_path = os.path.abspath(os.path.join(out_dir, "mission_tracking_response.png"))
+    plt.savefig(plot_path, dpi=250, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return plot_path
+
+
+def _plot_tracking_transfer(
+    control_data: Dict[str, object],
+    out_dir: str,
+) -> Optional[str]:
+    """Plot tracking transfer functions |E/R| and |Y/R|."""
+    freqs = control_data.get("freqs")
+    s_data = control_data.get("S")
+    t_data = control_data.get("T")
+    if freqs is None or s_data is None or t_data is None:
+        return None
+
+    plt.rcParams.update({
+        "font.size": 10,
+        "axes.labelsize": 11,
+        "axes.titlesize": 12,
+        "legend.fontsize": 9,
+    })
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    ax_e, ax_y = axes
+
+    for name in CONTROLLERS:
+        s_mag_db = 20 * np.log10(np.abs(s_data[name]) + 1e-12)
+        t_mag_db = 20 * np.log10(np.abs(t_data[name]) + 1e-12)
+        ax_e.semilogx(freqs, s_mag_db, color=CONTROLLER_COLORS[name], linewidth=1.6,
+                      label=CONTROLLER_LABELS[name])
+        ax_y.semilogx(freqs, t_mag_db, color=CONTROLLER_COLORS[name], linewidth=1.6,
+                      label=CONTROLLER_LABELS[name])
+
+    ax_e.set_title("Tracking Error TF |E/R| = |S|", fontweight="bold")
+    ax_y.set_title("Tracking Output TF |Y/R| = |T|", fontweight="bold")
+    ax_e.set_xlabel("Frequency (Hz)")
+    ax_y.set_xlabel("Frequency (Hz)")
+    ax_e.set_ylabel("Magnitude (dB)")
+    ax_y.set_ylabel("Magnitude (dB)")
+    ax_e.grid(True, alpha=0.3, which="both")
+    ax_y.grid(True, alpha=0.3, which="both")
+    ax_e.legend(loc="best")
+    ax_y.legend(loc="best")
+
+    plt.tight_layout()
+    _ensure_dir(out_dir)
+    plot_path = os.path.abspath(os.path.join(out_dir, "mission_tracking_tf.png"))
+    plt.savefig(plot_path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return plot_path
+
+
+def _plot_disturbance_to_torque(
+    control_data: Dict[str, object],
+    out_dir: str,
+) -> Optional[str]:
+    """Plot disturbance torque -> commanded torque transfer (|T|)."""
+    freqs = control_data.get("freqs")
+    t_data = control_data.get("T_flex") or control_data.get("T")
+    if freqs is None or t_data is None:
+        return None
+
+    plt.rcParams.update({
+        "font.size": 10,
+        "axes.labelsize": 11,
+        "axes.titlesize": 12,
+        "legend.fontsize": 9,
+    })
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    for name in CONTROLLERS:
+        t_mag_db = 20 * np.log10(np.abs(t_data[name]) + 1e-12)
+        ax.semilogx(freqs, t_mag_db, color=CONTROLLER_COLORS[name], linewidth=1.6,
+                    label=CONTROLLER_LABELS[name])
+
+    ax.set_title("Disturbance Torque \u2192 Commanded Torque (|T|)", fontweight="bold")
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("Magnitude (dB)")
+    ax.grid(True, alpha=0.3, which="both")
+    ax.legend(loc="best")
+
+    plt.tight_layout()
+    _ensure_dir(out_dir)
+    plot_path = os.path.abspath(os.path.join(out_dir, "mission_disturbance_to_torque.png"))
+    plt.savefig(plot_path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return plot_path
+
+
 def _plot_torque_psd_split(
     feedforward_torque: Dict[str, Dict[str, np.ndarray]],
     feedback_vibration: Dict[str, Dict[str, object]],
@@ -3033,6 +3245,120 @@ def _export_torque_psd_rms(
     path = os.path.abspath(os.path.join(out_dir, "torque_psd_rms.csv"))
     _write_csv(path, ["type", "method", "controller", "band_hz", "rms_torque_nm"], rows)
     print(f"Wrote torque PSD RMS CSV: {path}")
+    return path
+
+
+def _export_torque_command_metrics(
+    feedforward_torque: Dict[str, Dict[str, np.ndarray]],
+    feedback_vibration: Dict[str, Dict[str, object]],
+    config: MissionConfig,
+    out_dir: str,
+    fmin: float = 0.0,
+    fmax: float = 10.0,
+) -> Optional[str]:
+    """Export time-domain actuator metrics for torque commands."""
+    rows: List[List[str]] = []
+    rw_limit = config.rw_max_torque_nm
+
+    def _metrics_from_signal(time: np.ndarray, torque: np.ndarray) -> Tuple[float, float, float, float]:
+        if len(time) == 0 or len(torque) == 0:
+            return float("nan"), float("nan"), float("nan"), float("nan")
+        torque = np.array(torque, dtype=float)
+        peak = float(np.max(np.abs(torque)))
+        rms = float(np.sqrt(np.mean(torque**2)))
+        dt = float(np.median(np.diff(time))) if len(time) > 1 else 0.0
+        if dt > 0 and len(torque) > 1:
+            rate = float(np.max(np.abs(np.diff(torque) / dt)))
+        else:
+            rate = float("nan")
+        freq, psd = _compute_psd(time, torque)
+        rms_band = _compute_band_rms(freq, psd, fmin, fmax)
+        return peak, rms, rms_band, rate
+
+    for method in METHODS:
+        data = feedforward_torque.get(method)
+        if not data:
+            continue
+        time = np.array(data.get("time", []), dtype=float)
+        torque = np.array(data.get("torque", []), dtype=float)
+        time, aligned = _align_series(time, torque)
+        torque = aligned[0]
+        peak, rms, rms_band, rate = _metrics_from_signal(time, torque)
+        rows.append([
+            "ff_body", method, "",
+            f"{peak:.6e}", f"{rms:.6e}", f"{rms_band:.6e}", f"{rate:.6e}", "", ""
+        ])
+
+    for method in METHODS:
+        for controller in CONTROLLERS:
+            key = f"{method}_{controller}"
+            data = feedback_vibration.get(key)
+            if not data:
+                continue
+            run_mode = str(data.get("run_mode", "")).lower()
+            if run_mode and run_mode != "combined":
+                continue
+
+            time = np.array(data.get("time", []), dtype=float)
+            fb_torque = np.array(data.get("torque", []), dtype=float)
+            total_torque = data.get("torque_total")
+            if total_torque is None or len(total_torque) == 0:
+                total_torque = fb_torque
+            total_torque = np.array(total_torque, dtype=float)
+            time, aligned = _align_series(time, fb_torque, total_torque)
+            fb_torque = aligned[0]
+            total_torque = aligned[1]
+
+            fb_peak, fb_rms, fb_rms_band, fb_rate = _metrics_from_signal(time, fb_torque)
+            rows.append([
+                "fb_body", method, controller,
+                f"{fb_peak:.6e}", f"{fb_rms:.6e}", f"{fb_rms_band:.6e}", f"{fb_rate:.6e}", "", ""
+            ])
+
+            tot_peak, tot_rms, tot_rms_band, tot_rate = _metrics_from_signal(time, total_torque)
+            rows.append([
+                "total_body", method, controller,
+                f"{tot_peak:.6e}", f"{tot_rms:.6e}", f"{tot_rms_band:.6e}", f"{tot_rate:.6e}", "", ""
+            ])
+
+            rw_torque = data.get("rw_torque")
+            if rw_torque is not None and len(rw_torque) > 0:
+                rw_torque = np.array(rw_torque, dtype=float)
+                if rw_torque.ndim == 1:
+                    rw_env = np.abs(rw_torque)
+                else:
+                    rw_env = np.max(np.abs(rw_torque), axis=1)
+                rw_peak, rw_rms, rw_rms_band, rw_rate = _metrics_from_signal(time, rw_env)
+                sat_pct = ""
+                if rw_limit is not None and np.isfinite(rw_limit) and rw_limit > 0:
+                    sat_pct = f"{(rw_peak / rw_limit) * 100.0:.2f}"
+                rows.append([
+                    "rw_wheel", method, controller,
+                    f"{rw_peak:.6e}", f"{rw_rms:.6e}", f"{rw_rms_band:.6e}", f"{rw_rate:.6e}",
+                    f"{rw_peak:.6e}", sat_pct
+                ])
+
+    if not rows:
+        return None
+
+    _ensure_dir(out_dir)
+    path = os.path.abspath(os.path.join(out_dir, "torque_command_metrics.csv"))
+    _write_csv(
+        path,
+        [
+            "type",
+            "method",
+            "controller",
+            "peak_torque_nm",
+            "rms_torque_nm",
+            "rms_band_0_10hz_nm",
+            "max_rate_nm_s",
+            "peak_rw_torque_nm",
+            "rw_saturation_percent",
+        ],
+        rows,
+    )
+    print(f"Wrote torque command metrics CSV: {path}")
     return path
 
 
@@ -3574,6 +3900,7 @@ def run_mission_simulation(
         _export_nyquist_csv(ctrl_data, out_dir)
         _export_mission_summary_csv(ff_metrics, ctrl_metrics, pointing_metrics, out_dir)
         _export_torque_psd_rms(feedforward_torque, feedback_vibration, out_dir)
+        _export_torque_command_metrics(feedforward_torque, feedback_vibration, config, out_dir)
 
     # Generate plots
     plot_paths: List[str] = []
@@ -3588,6 +3915,9 @@ def run_mission_simulation(
         nyquist_plot = _plot_nyquist(ctrl_data, out_dir)
         disturbance_plot = _plot_disturbance_transfer(ctrl_data, config, out_dir)
         noise_torque_plot = _plot_noise_to_torque(ctrl_data, out_dir)
+        tracking_plot = _plot_tracking_response(pointing_data, config, out_dir)
+        tracking_tf_plot = _plot_tracking_transfer(ctrl_data, out_dir)
+        disturbance_to_torque_plot = _plot_disturbance_to_torque(ctrl_data, out_dir)
         loop_component_plots = _plot_loop_components(ctrl_data, config, out_dir)
         torque_cmd_plot = _plot_torque_command_time(feedback_vibration, out_dir)
         torque_cmd_psd_plot = _plot_torque_command_psd(feedback_vibration, out_dir)
@@ -3603,6 +3933,9 @@ def run_mission_simulation(
             nyquist_plot,
             disturbance_plot,
             noise_torque_plot,
+            tracking_plot,
+            tracking_tf_plot,
+            disturbance_to_torque_plot,
             torque_cmd_plot,
             torque_cmd_psd_plot,
             torque_psd_split_plot,
