@@ -1,4 +1,4 @@
-# Spacecraft Setpoint Shaping for Vibration Control 
+# Setpoint Shaping and Pointing Control for Satellite Repositioning  
 
 A comprehensive Python library implementing input shaping techniques for controlling residual vibrations in flexible spacecraft structures, with application to  comet tracking and imaging.
 
