@@ -18,8 +18,10 @@ from __future__ import annotations
 import numpy as np
 from scipy import interpolate
 
+DEFAULT_SAMPLE_DT = 0.01  # 100 Hz to match Basilisk simulation
 
-def compute_bang_bang_trajectory(theta_final, duration, dt=0.001):
+
+def compute_bang_bang_trajectory(theta_final, duration, dt=DEFAULT_SAMPLE_DT):
     """
     Compute a bang-bang trajectory with constant accel then decel.
 
@@ -64,7 +66,7 @@ def compute_bang_bang_trajectory(theta_final, duration, dt=0.001):
     return t, theta, omega, alpha
 
 
-def compute_smooth_trajectory(theta_final, duration, dt=0.001, smooth_fraction=0.2):
+def compute_smooth_trajectory(theta_final, duration, dt=DEFAULT_SAMPLE_DT, smooth_fraction=0.2):
     """
     Compute a smooth trajectory using cosine ramps to reduce high-frequency content.
 
@@ -122,7 +124,7 @@ def compute_smooth_trajectory(theta_final, duration, dt=0.001, smooth_fraction=0
     return t, theta, omega, alpha
 
 
-def compute_step_command_torque(theta_final, axis, inertia, duration, dt=0.001, 
+def compute_step_command_torque(theta_final, axis, inertia, duration, dt=DEFAULT_SAMPLE_DT, 
                                  trajectory_type='bang-bang'):
     """
     Compute the body torque profile for an unshaped step command.
@@ -301,7 +303,7 @@ def compute_minimum_duration(theta_final, rotation_axis, inertia, Gs_matrix, max
 def create_feedforward_torque_profile(theta_final, rotation_axis, inertia, 
                                        Gs_matrix, maneuver_duration,
                                        shaper_amplitudes=None, shaper_times=None,
-                                       dt=0.001, trajectory_type='bang-bang',
+                                       dt=DEFAULT_SAMPLE_DT, trajectory_type='bang-bang',
                                        max_torque=None):
     """
     Create a complete feedforward torque profile for a slew maneuver.
@@ -417,7 +419,7 @@ class FeedforwardController:
             maneuver_duration=duration,
             shaper_amplitudes=shaper_amplitudes,
             shaper_times=shaper_times,
-            dt=0.001,
+            dt=DEFAULT_SAMPLE_DT,
             trajectory_type=trajectory_type,
             max_torque=self.max_torque
         )
@@ -453,7 +455,8 @@ class FeedforwardController:
         - torque command array (Nw,).
         """
         if self.torque_interp is None:
-            return np.zeros(3)
+            n_wheels = self.Gs_matrix.shape[1]
+            return np.zeros(n_wheels)
         
         torque = np.array([interp(t) for interp in self.torque_interp])
         return torque
@@ -472,10 +475,20 @@ class FeedforwardController:
         # Load trajectory
         traj_data = np.load(trajectory_file, allow_pickle=True)
         
-        t = traj_data['time']
-        theta = traj_data['theta']
-        omega = traj_data['omega']
-        alpha = traj_data['alpha']
+        t = np.array(traj_data['time'], dtype=float)
+        theta = np.array(traj_data['theta'], dtype=float)
+        omega = np.array(traj_data['omega'], dtype=float)
+        alpha = np.array(traj_data['alpha'], dtype=float)
+
+        if len(t) > 1:
+            dt = float(np.median(np.diff(t)))
+            if np.isfinite(dt) and abs(dt - DEFAULT_SAMPLE_DT) > 1e-9:
+                t_new = np.arange(t[0], t[-1] + DEFAULT_SAMPLE_DT * 0.5, DEFAULT_SAMPLE_DT)
+                theta = np.interp(t_new, t, theta)
+                omega = np.interp(t_new, t, omega)
+                alpha = np.interp(t_new, t, alpha)
+                t = t_new
+                print(f"Warning: trajectory dt={dt:.6f}s resampled to {DEFAULT_SAMPLE_DT:.2f}s")
         
         print(f"Loaded 4th-order trajectory: {t[-1]:.1f}s, final angle {np.degrees(theta[-1]):.1f} deg")
         

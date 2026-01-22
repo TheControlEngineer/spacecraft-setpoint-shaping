@@ -52,8 +52,6 @@ def generate_synthetic_vibration_data(method: str,
     base_amp = 0.002  # rad/s
     if method == "unshaped":
         amp1, amp2 = base_amp, base_amp * 0.6
-    elif method == "zvd":
-        amp1, amp2 = base_amp * 0.1, base_amp * 0.15
     elif method == "fourth":
         amp1, amp2 = base_amp * 0.01, base_amp * 0.01
     else:

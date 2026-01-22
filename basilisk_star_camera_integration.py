@@ -181,7 +181,7 @@ def analyze_settling_comparison():
     print("POST-SLEW SETTLING ANALYSIS (Step and Stare)")
     print("="*60)
 
-    methods = ['unshaped', 'zvd', 'fourth']
+    methods = ['unshaped', 'fourth']
     results = {}
 
     # Thresholds for different imaging requirements
@@ -251,7 +251,7 @@ def analyze_settling_comparison():
     print("--- INPUT SHAPING BENEFIT ---")
     if results['unshaped'] and results['unshaped']['settling_times']['normal']:
         baseline = results['unshaped']['settling_times']['normal']
-        for method in ['zvd', 'fourth']:
+        for method in ['fourth']:
             if results[method] and results[method]['settling_times']['normal']:
                 t_settle = results[method]['settling_times']['normal']
                 improvement = (baseline - t_settle) / baseline * 100
@@ -268,7 +268,7 @@ def generate_post_slew_video():
 
     # Load post-slew data
     simulation_data = {}
-    for method in ['unshaped', 'zvd', 'fourth']:
+    for method in ['unshaped', 'fourth']:
         data = extract_post_slew_vibration(method)
         if data is not None:
             # Format for star camera simulator
@@ -319,7 +319,6 @@ def run_step_and_stare_analysis():
     print("\n" + "="*60)
     print("KEY INSIGHT: Input shaping reduces SETTLING TIME")
     print("  - Unshaped: Large residual vibration → long wait before imaging")
-    print("  - ZVD: Reduced residual → shorter wait")
     print("  - Fourth-order: Minimal residual → image almost immediately")
     print("="*60)
 
@@ -329,13 +328,12 @@ def synthesize_vibration(time, omega_y, method='unshaped', f1=0.4, f2=1.3, zeta=
     Synthesize flexible vibration based on control method.
     
     For bang-bang (unshaped): abrupt accelerations excite both modes strongly
-    For ZVD: residual vibration at one frequency, suppressed at the other
     For fourth-order: the smooth profile excites almost no vibration
     
     Parameters:
         time: time array (s)
         omega_y: commanded angular rate (rad/s) - used to find transitions
-        method: 'unshaped', 'zvd', or 'fourth'
+        method: 'unshaped' or 'fourth'
         f1, f2: flexible mode frequencies (Hz)
         zeta: damping ratio
     
@@ -359,9 +357,6 @@ def synthesize_vibration(time, omega_y, method='unshaped', f1=0.4, f2=1.3, zeta=
     if method == 'unshaped':
         # Bang-bang fully excites modes
         amp1, amp2 = base_amplitude, base_amplitude * 0.6
-    elif method == 'zvd':
-        # ZVD cancels ~90% at design frequency, some residual
-        amp1, amp2 = base_amplitude * 0.1, base_amplitude * 0.15
     elif method == 'fourth':
         # Fourth-order spectral nulling - essentially zero excitation
         amp1, amp2 = base_amplitude * 0.01, base_amplitude * 0.01
@@ -460,7 +455,7 @@ def generate_all_videos():
     
     # Check if we have Basilisk data
     has_real_data = False
-    for method in ['unshaped', 'zvd', 'fourth']:
+    for method in ['unshaped', 'fourth']:
         try:
             data = extract_basilisk_data(method)
             if 'time' in data:
@@ -488,7 +483,7 @@ def generate_all_videos():
     # Load data for all methods
     print("\nLoading simulation data...")
     simulation_data = {}
-    for method in ['unshaped', 'zvd', 'fourth']:
+    for method in ['unshaped', 'fourth']:
         simulation_data[method] = extract_basilisk_data(method)
         n_points = len(simulation_data[method]['time'])
         duration = simulation_data[method]['time'][-1]
@@ -504,7 +499,7 @@ def generate_all_videos():
     
     # Generate individual videos
     print("\nGenerating individual videos...")
-    for method in ['unshaped', 'zvd', 'fourth']:
+    for method in ['unshaped', 'fourth']:
         camera_hires = StarCameraSimulator(
             fov_deg=15.0,
             resolution=(1200, 1200),

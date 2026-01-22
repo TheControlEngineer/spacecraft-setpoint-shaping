@@ -1,7 +1,7 @@
 """
 Multi-Mode Input Shaper Design.
 
-Designs ZVD and fourth-order shapers for dual-mode vibration suppression.
+Designs a fourth-order shaper (jerk/snap window convolution) for dual-mode vibration suppression.
 Target modes: 0.4 Hz and 1.3 Hz flexible bending modes.
 
 Maneuver: 180 deg yaw rotation in 30 seconds.
@@ -33,6 +33,21 @@ from input_shaping import design_multimode_cascaded
 from spacecraft_properties import compute_effective_inertia
 
 
+def _validate_underdamped(zeta: float, context: str = "") -> None:
+    """Validate that damping ratio is underdamped (< 1)."""
+    if zeta >= 1.0:
+        message = f"Damping ratio must be < 1 for underdamped oscillator, got {zeta}"
+        if context:
+            message = f"{context}: {message}"
+        raise ValueError(message)
+
+
+def _damped_frequency(omega_n: float, zeta: float) -> float:
+    """Return damped natural frequency for underdamped modes."""
+    _validate_underdamped(zeta, "damped_frequency")
+    return omega_n * np.sqrt(1 - zeta**2)
+
+
 def compute_residual_vibration_continuous(t, accel, freq, zeta):
     """
     Compute residual vibration amplitude for a continuous acceleration profile.
@@ -54,8 +69,9 @@ def compute_residual_vibration_continuous(t, accel, freq, zeta):
     Returns:
         V: Residual vibration amplitude (normalized)
     """
+    _validate_underdamped(zeta, "compute_residual_vibration_continuous")
     omega = 2 * np.pi * freq
-    omega_d = omega * np.sqrt(1 - zeta**2)
+    omega_d = _damped_frequency(omega, zeta)
     T = t[-1]
     dt = t[1] - t[0]
     
@@ -92,8 +108,9 @@ def compute_residual_vibration_impulse(times, amps, freq, zeta):
     Returns:
         V: Residual vibration amplitude
     """
+    _validate_underdamped(zeta, "compute_residual_vibration_impulse")
     omega = 2 * np.pi * freq
-    omega_d = omega * np.sqrt(1 - zeta**2)
+    omega_d = _damped_frequency(omega, zeta)
     
     C = 0.0
     S = 0.0
@@ -312,7 +329,7 @@ def verify_shaper_suppression(amplitudes, times, mode_frequencies, damping_ratio
     
     def residual_vibration(omega_n, zeta, A, t):
         """Calculate residual vibration amplitude"""
-        omega_d = omega_n * np.sqrt(1 - zeta**2)
+        omega_d = _damped_frequency(omega_n, zeta)
         V = 0
         for amp, time in zip(A, t):
             V += amp * np.exp(-zeta * omega_n * time) * np.exp(1j * omega_d * time)
@@ -452,7 +469,7 @@ def design_fourth_order_trajectory_fixed(theta_final, mode_frequencies,
     - damping_ratios: list of modal damping ratios.
     - I_axis: principal inertia about the rotation axis.
     - max_torque: torque limit used for feasibility checks.
-    - dt: sample time; if None, computed to preserve spectral nulls.
+    - dt: sample time; if None, uses 0.01 s (100 Hz) to match Basilisk.
     - plot: if True, generate diagnostic plots.
     - plot_windows: if True, plot the convolution window formation.
     - target_duration: if set, adjust the base pulse to hit this duration.
@@ -477,88 +494,70 @@ def design_fourth_order_trajectory_fixed(theta_final, mode_frequencies,
     print(f"  Windows: T_jerk={T_jerk:.3f}s (null at {f1}Hz), T_snap={T_snap:.3f}s (null at {f2}Hz)")
     
     # ========================================================================
-    # Compute optimal dt that gives EXACT spectral nulls
+    # Enforce unified sampling at 100 Hz to match Basilisk simulation
     # ========================================================================
     if dt is None:
-        # Find dt such that both T_jerk/dt and T_snap/dt are integers
-        # For T1 = 1/f1 and T2 = 1/f2, we need dt = 1/k where:
-        # k is a common multiple of f1 and f2 (in Hz)
-        
-        # Find LCM-based dt to make both window lengths integer sample counts.
-        # Simple approach: use k = LCM of scaled frequencies.
-        # Scale to integers: f1*1000, f2*1000, then find LCM
-        scale = 1000
-        f1_int = int(f1 * scale)
-        f2_int = int(f2 * scale)
-        
-        def gcd(a, b):
-            while b:
-                a, b = b, a % b
-            return a
-        
-        def lcm(a, b):
-            return abs(a * b) // gcd(a, b)
-        
-        k = lcm(f1_int, f2_int)  # This is the sample rate * scale
-        dt_base = scale / k
-        
-        # Ensure minimum sample rate of ~100 Hz for practical trajectories
-        min_sample_rate = 100.0  # Hz
-        multiplier = max(1, int(np.ceil(min_sample_rate * dt_base)))
-        dt = dt_base / multiplier
-        
-        print(f"  Auto dt = {dt:.6f}s ({1/dt:.1f} Hz sample rate)")
+        dt = 0.01
+        print(f"  Auto dt = {dt:.6f}s (100.0 Hz sample rate)")
     
     # ========================================================================
-    # Calculate base pulse duration
+    # Discretize windows and base pulse duration
     # ========================================================================
+    # CRITICAL: Use round() not int() to minimize truncation error
+    # For perfect null at frequency f, window duration must be EXACTLY 1/f
+    n_jerk = max(1, int(round(T_jerk / dt)))
+    n_snap = max(1, int(round(T_snap / dt)))
+
+    # Verify actual durations match target
+    T_jerk_actual = n_jerk * dt
+    T_snap_actual = n_snap * dt
+
+    # Check residual at target frequencies
+    sinc_f1 = np.abs(np.sinc(mode_frequencies[0] * T_jerk_actual))
+    sinc_f2 = np.abs(np.sinc(mode_frequencies[1] * T_snap_actual))
+
+    if sinc_f1 > 0.01 or sinc_f2 > 0.01:
+        print(f"  Warning: Discretization error - consider smaller dt")
+
     if target_duration is not None:
-        # Target duration constraint
-        # Total duration after convolution = 2*(T_base + T_jerk + T_snap)
-        # Solve for T_base to hit target_duration
-        T_base = target_duration / 2.0 - T_jerk - T_snap
-        
-        if T_base < 0:
+        # Target duration constraint (discrete-time exactness)
+        # Total duration = 2 * N_half * dt, where:
+        # N_half = n_base + n_jerk + n_snap - 2
+        n_half = int(round(target_duration / (2.0 * dt)))
+        n_base = n_half - n_jerk - n_snap + 2
+        if n_base < 1:
             print(f"  WARNING: Windows too long for target duration!")
-            print(f"  Minimum duration = {2*(T_jerk + T_snap):.2f}s")
-            T_base = 1.0  # Fallback
-        
+            min_half = n_jerk + n_snap - 1
+            min_duration = 2.0 * min_half * dt
+            print(f"  Minimum duration = {min_duration:.2f}s")
+            n_base = 1
+            n_half = n_base + n_jerk + n_snap - 2
+
+        T_base = n_base * dt
+
         # Use a scaling approach: build with unit amplitude, then scale
         A_lim = 1.0  # Temporary, will scale later
-        
+
+        actual_duration = 2.0 * n_half * dt
         print(f"  Target duration: {target_duration:.2f}s")
-        print(f"  Computed T_base: {T_base:.3f}s")
+        print(f"  Actual duration: {actual_duration:.3f}s (dt={dt:.6f}s)")
+        print(f"  Computed T_base: {T_base:.3f}s (n_base={n_base})")
     else:
         # Original approach: use acceleration limit from torque
         A_lim = max_torque / I_axis
         T_base = np.sqrt(theta_final / A_lim)
+        n_base = max(1, int(round(T_base / dt)))
+        T_base = n_base * dt
         print(f"  Base pulse: T={T_base:.2f}s, A={A_lim:.6f} rad/s^2")
-    
+
     # ========================================================================
     # Build via convolution
     # ========================================================================
-    
+
     # Step 1: Create rectangular base pulse (ACCELERATION)
-    n_base = int(round(T_base / dt))
     pulse_base = np.ones(n_base) * A_lim
-    
+
     # Step 2: Create smoothing windows
-    # CRITICAL: Use round() not int() to minimize truncation error
-    # For perfect null at frequency f, window duration must be EXACTLY 1/f
-    n_jerk = int(round(T_jerk / dt))
-    n_snap = int(round(T_snap / dt))
-    
-    # Verify actual durations match target
-    T_jerk_actual = n_jerk * dt
-    T_snap_actual = n_snap * dt
-    
-    # Check residual at target frequencies
-    sinc_f1 = np.abs(np.sinc(mode_frequencies[0] * T_jerk_actual))
-    sinc_f2 = np.abs(np.sinc(mode_frequencies[1] * T_snap_actual))
-    
-    if sinc_f1 > 0.01 or sinc_f2 > 0.01:
-        print(f"  Warning: Discretization error - consider smaller dt")
-    
     window_jerk = np.ones(n_jerk) / n_jerk  # Normalized to sum to 1
     window_snap = np.ones(n_snap) / n_snap  # Normalized to sum to 1
     
@@ -578,10 +577,9 @@ def design_fourth_order_trajectory_fixed(theta_final, mode_frequencies,
     # Step 5: Create symmetric profile (accelerate, coast, decelerate)
     # Flip and negate for deceleration phase
     accel_decel = -accel_final[::-1]
-    
-    # Combine: accel, coast (optional), decel
-    # For now, direct transition (no coast)
-    alpha = np.concatenate([accel_final, accel_decel])
+
+    # Insert a center sample at zero acceleration for continuity
+    alpha = np.concatenate([accel_final, np.zeros(1), accel_decel])
     
     # Step 6: Create time vector
     t = np.arange(len(alpha)) * dt
@@ -883,8 +881,9 @@ def design_spacecraft_shaper_with_duration(target_duration=30.0, theta_final=np.
     # Design individual ZVD shapers for each mode
     shapers = []
     for i, (freq, zeta) in enumerate(zip(mode_frequencies, damping_ratios)):
+        _validate_underdamped(zeta, f"mode {i + 1} (freq={freq} Hz)")
         omega_n = 2 * np.pi * freq  # Natural frequency
-        omega_d = omega_n * np.sqrt(1 - zeta**2)  # Damped frequency
+        omega_d = _damped_frequency(omega_n, zeta)  # Damped frequency
         period_d = 2 * np.pi / omega_d
         
         # ZVD shaper (3 impulses)
@@ -940,7 +939,7 @@ def design_spacecraft_shaper_with_duration(target_duration=30.0, theta_final=np.
     
     # Step 3: Verify base maneuver is feasible
     A_lim = max_torque / I_axis
-    T_min = np.sqrt(2 * theta_final / A_lim)
+    T_min = 2.0 * np.sqrt(abs(theta_final) / A_lim)
     
     if base_duration < T_min:
         print(f"  Warning: Adjusting duration (min={T_min:.2f}s)")
@@ -972,7 +971,7 @@ def design_spacecraft_shaper_with_duration(target_duration=30.0, theta_final=np.
 
 def design_fourth_order_with_duration_FIXED(target_duration, theta_final,
                                             mode_frequencies, damping_ratios,
-                                            I_axis, max_torque, dt=0.001, plot=False):
+                                            I_axis, max_torque, dt=0.01, plot=False):
     """
     Wrapper to design a duration-constrained 4th-order trajectory using 
     the CORRECT window convolution method (Spectral Nulling).
@@ -987,7 +986,7 @@ def design_fourth_order_with_duration_FIXED(target_duration, theta_final,
     - damping_ratios: modal damping ratios.
     - I_axis: principal inertia about the slew axis.
     - max_torque: actuator torque limit (Nm).
-    - dt: sample time for discretization.
+    - dt: sample time for discretization (defaults to 0.01 s to match Basilisk).
     - plot: if True, generate diagnostic plots.
 
     Output:
@@ -1009,7 +1008,7 @@ def design_fourth_order_with_duration_FIXED(target_duration, theta_final,
 
 
 # ============================================================================
-# UPDATED MAIN: Design ZVD AND Fourth-Order (Corrected)
+# UPDATED MAIN: Design Fourth-Order Trajectory (Corrected)
 # ============================================================================
 
 if __name__ == "__main__":
@@ -1027,22 +1026,7 @@ if __name__ == "__main__":
     print(f"\nDesigning shapers: {TARGET_ANGLE} deg in {TARGET_DURATION}s")
     print(f"  Inertia: {I_AXIS:.0f} kg*m^2, torque: {MAX_TORQUE} Nm")
     
-    # 1. ZVD Shaper
-    amplitudes, times, shaper_info = design_spacecraft_shaper_with_duration(
-        target_duration=TARGET_DURATION,
-        theta_final=np.radians(TARGET_ANGLE),
-        mode_frequencies=MODE_FREQUENCIES,
-        damping_ratios=DAMPING_RATIOS,
-        I_axis=I_AXIS,
-        max_torque=MAX_TORQUE,
-        plot=False
-    )
-    
-    np.savez("spacecraft_shaper_zvd_180deg_30s.npz",
-             amplitudes=amplitudes, times=times, shaper_info=shaper_info)
-    print(f"Saved: spacecraft_shaper_zvd_180deg_30s.npz")
-    
-    # 2. Fourth-Order Trajectory (FIXED: Uses Spectral Nulling)
+    # Fourth-Order Trajectory (FIXED: Uses Spectral Nulling)
     t, theta, omega, alpha, jerk, snap, traj_info = design_fourth_order_with_duration_FIXED(
         target_duration=TARGET_DURATION,
         theta_final=np.radians(TARGET_ANGLE),
@@ -1050,7 +1034,7 @@ if __name__ == "__main__":
         damping_ratios=DAMPING_RATIOS,
         I_axis=I_AXIS,
         max_torque=MAX_TORQUE,
-        dt=0.001,
+        dt=0.01,
         plot=False
     )
     
@@ -1059,4 +1043,4 @@ if __name__ == "__main__":
              jerk=jerk, snap=snap, trajectory_info=traj_info)
     print(f"Saved: spacecraft_trajectory_4th_180deg_30s.npz (Corrected Algorithm)")
     
-    print(f"\nDone! Both methods designed for {TARGET_DURATION}s.")
+    print(f"\nDone! Fourth-order trajectory designed for {TARGET_DURATION}s.")

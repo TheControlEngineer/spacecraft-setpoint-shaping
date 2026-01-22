@@ -8,6 +8,7 @@ in test_gravity_effect.py and check_rotation.py which both achieve ~179.7 deg.
 from __future__ import annotations
 
 import argparse
+import os
 import numpy as np
 
 from Basilisk.utilities import SimulationBaseClass
@@ -23,18 +24,57 @@ from Basilisk.fswAlgorithms import attTrackingError
 
 # Use the SAME FlexibleSpacecraft class as check_rotation.py
 from spacecraft_model import FlexibleSpacecraft
+from spacecraft_properties import compute_modal_gains
 from feedforward_control import FeedforwardController, body_torque_to_rw_torque
-from feedback_control import ActiveVibrationController, FilteredDerivativeController, _mrp_shadow, _mrp_subtract
+from feedback_control import (
+    FilteredDerivativeController,
+    NotchFilterController,
+    TrajectoryTrackingController,
+    _mrp_shadow,
+    _mrp_subtract
+)
 
 
-CONTROLLERS = {"standard_pd", "filtered_pd", "avc"}
+CONTROLLERS = {"standard_pd", "filtered_pd", "notch", "trajectory_tracking"}
 RUN_MODES = {"combined", "fb_only", "ff_only"}
+
+
+def _skew(vec: np.ndarray) -> np.ndarray:
+    """Return the skew-symmetric matrix for a 3-vector."""
+    x, y, z = vec
+    return np.array([
+        [0.0, -z, y],
+        [z, 0.0, -x],
+        [-y, x, 0.0],
+    ])
+
+
+def _mrp_to_dcm(sigma: np.ndarray) -> np.ndarray:
+    """Convert MRP to DCM (C_BN maps inertial to body)."""
+    sigma = np.array(sigma, dtype=float).reshape(3)
+    s2 = float(np.dot(sigma, sigma))
+    s_tilde = _skew(sigma)
+    denom = (1.0 + s2) ** 2
+    return np.eye(3) + (8.0 * (s_tilde @ s_tilde) - 4.0 * (1.0 - s2) * s_tilde) / denom
 
 
 class CometPhotographyDemo:
     """Demonstrates comet photography with input shaping - uses FlexibleSpacecraft class."""
 
-    def __init__(self, shaping_method='fourth', controller='standard_pd', run_mode='combined'):
+    def __init__(self, shaping_method='fourth', controller='standard_pd', run_mode='combined',
+                 use_trajectory_tracking=True, jitter_lever_arm=4.0, pixel_scale_arcsec=2.0):
+        """
+        Initialize the demo.
+
+        Args:
+            shaping_method: 'fourth' or 'unshaped'
+            controller: 'standard_pd', 'filtered_pd', 'notch', or 'trajectory_tracking'
+            run_mode: 'combined', 'fb_only', or 'ff_only'
+            use_trajectory_tracking: If True, feedback tracks instantaneous FF trajectory
+                                     (RECOMMENDED - prevents feedback from fighting FF)
+            jitter_lever_arm: Lever arm from rotation axis to camera [m]
+            pixel_scale_arcsec: Camera plate scale [arcsec/pixel]
+        """
         if controller not in CONTROLLERS:
             raise ValueError(f"Unknown controller '{controller}'")
         if run_mode not in RUN_MODES:
@@ -42,28 +82,34 @@ class CometPhotographyDemo:
         self.method = shaping_method
         self.controller = controller
         self.run_mode = run_mode
+        self.use_trajectory_tracking = use_trajectory_tracking or (controller == "trajectory_tracking")
         self.dt = 0.01
         self.slew_duration = 30.0
         self.settling_window = 60.0  # Increased from 30s for better convergence
         self.slew_angle_deg = 180.0
         self.slew_angle = np.radians(self.slew_angle_deg)
+        self.camera_body = np.array([0.0, -1.0, 0.0])
+        self.comet_direction = None
+        self.jitter_lever_arm = float(jitter_lever_arm)
+        self.pixel_scale_arcsec = float(pixel_scale_arcsec)
 
         # Create spacecraft model (SAME CLASS as check_rotation.py)
         self.sc = FlexibleSpacecraft()
 
-        # Feedback controller tuning targets (for post-slew fine pointing)
-        self.control_bandwidth_hz = 0.10
-        self.control_damping_ratio = 0.70
+        # Feedback controller tuning targets
+        # Use bandwidth at first_mode/2.5 to preserve margin and avoid mode excitation
+        first_mode_hz = self.sc.array_modes[0]['frequency']
+        self.control_bandwidth_hz = first_mode_hz / 2.5
+        self.control_damping_ratio = 0.90
         self.mrp_K = None
         self.mrp_P = None
         self.mrp_Ki = -1.0
 
         # Feedback controller options
-        self.use_avc = controller == "avc"
         self.use_filtered_pd = controller == "filtered_pd"
-        self.filter_cutoff_hz = 0.5  # Higher cutoff = less phase lag at modes
-        self.ppf_damping = 0.5
-        self.ppf_gains = [0.1, 0.1]  # PPF enabled for active modal damping
+        self.use_notch = controller == "notch"
+        # Filter cutoff: high enough to preserve phase margin with low bandwidth
+        self.filter_cutoff_hz = None
 
         # Target attitude for a +Z yaw slew
         self.initial_sigma = [0.0, 0.0, 0.0]
@@ -73,12 +119,23 @@ class CometPhotographyDemo:
         self.time_log = []
         self.sigma_log = []
         self.omega_log = []
-        self.modal_log = {'mode1_port': [], 'mode2_port': [], 'mode1_stbd': [], 'mode2_stbd': [], 'time': []}
+        self.modal_log = {
+            'mode1_port': [],
+            'mode2_port': [],
+            'mode1_stbd': [],
+            'mode2_stbd': [],
+            'mode1_port_acc': [],
+            'mode2_port_acc': [],
+            'mode1_stbd_acc': [],
+            'mode2_stbd_acc': [],
+            'time': [],
+        }
         self.control_mode_log = []
         self.ff_torque_log = []
         self.fb_torque_log = []
         self.total_torque_log = []
         self.rw_torque_log = []
+        self.camera_error_log = []
 
     def build_simulation(self):
         """Build simulation using FlexibleSpacecraft class."""
@@ -143,7 +200,7 @@ class CometPhotographyDemo:
         cometObject.hub.IHubPntBc_B = [[0.1, 0, 0], [0, 0.1, 0], [0, 0, 0.1]]
 
         comet_offset = 50000.0
-        camera_body = np.array([0.0, -1.0, 0.0])
+        camera_body = self.camera_body
         c_yaw = float(np.cos(self.slew_angle))
         s_yaw = float(np.sin(self.slew_angle))
         rot_z = np.array([[c_yaw, -s_yaw, 0.0],
@@ -151,6 +208,7 @@ class CometPhotographyDemo:
                           [0.0,    0.0,   1.0]])
         comet_direction = rot_z @ camera_body
         comet_direction = comet_direction / np.linalg.norm(comet_direction)
+        self.comet_direction = comet_direction.copy()
         
         cometObject.hub.r_CN_NInit = rN + comet_offset * comet_direction
         cometObject.hub.v_CN_NInit = vN.copy()
@@ -163,18 +221,27 @@ class CometPhotographyDemo:
         # FEEDFORWARD CONTROLLER (same as check_rotation.py)
         # =====================================================
         hub_inertia = np.array(self.sc.hub_inertia)
-        self.inertia_for_control = hub_inertia
         ff_inertia = self.sc.compute_effective_inertia(include_flex=True)
+        self.inertia_for_control = ff_inertia
+        self.inertia_feedforward = ff_inertia
 
         if self.mrp_K is None or self.mrp_P is None:
-            I_control = hub_inertia[2, 2]
+            I_control = self.inertia_for_control[2, 2]
             omega_n = 2 * np.pi * self.control_bandwidth_hz
-            self.mrp_K = omega_n**2 * I_control
-            self.mrp_P = 2 * self.control_damping_ratio * np.sqrt(self.mrp_K * I_control)
+            sigma_scale = 4.0
+            self.mrp_K = sigma_scale * omega_n**2 * I_control
+            self.mrp_P = 2 * self.control_damping_ratio * I_control * omega_n
+
+        if self.use_filtered_pd:
+            # Retune filtered PD damping to offset filter attenuation near modes.
+            self.mrp_P *= 1.5
 
         if self.filter_cutoff_hz is None:
-            first_mode_hz = self.sc.array_modes[0]['frequency']
-            self.filter_cutoff_hz = min(0.5 * first_mode_hz, 2.0 * self.control_bandwidth_hz)
+            base_cutoff = max(2.0, 5.0 * self.control_bandwidth_hz)
+            if self.use_filtered_pd:
+                self.filter_cutoff_hz = 8.0
+            else:
+                self.filter_cutoff_hz = base_cutoff
 
         print(f"  Control gains: K={self.mrp_K:.1f}, P={self.mrp_P:.1f}")
         print(f"  Target bandwidth: {self.control_bandwidth_hz:.2f} Hz, filter cutoff: {self.filter_cutoff_hz:.2f} Hz")
@@ -185,26 +252,30 @@ class CometPhotographyDemo:
             [0.0,           0.0,          1.0]
         ])
 
+        rotation_axis = np.array([0.0, 0.0, 1.0])
+        self.modal_gains = compute_modal_gains(self.inertia_for_control, rotation_axis)
+        if not self.modal_gains:
+            self.modal_gains = [0.0] * len(self.sc.array_modes)
+
         self.ff_controller = FeedforwardController(
             ff_inertia, self.Gs_matrix, max_torque=self.sc.rw_max_torque
         )
 
-        rotation_axis = np.array([0.0, 0.0, 1.0])
-
-        if self.method == 'zvd':
-            shaper_data = np.load('spacecraft_shaper_zvd_180deg_30s.npz', allow_pickle=True)
-            shaper_info = shaper_data['shaper_info'].item()
-            self.ff_controller.design_maneuver(
-                theta_final=self.slew_angle,
-                rotation_axis=rotation_axis,
-                duration=shaper_info['base_duration'],
-                shaper_amplitudes=shaper_data['amplitudes'],
-                shaper_times=shaper_data['times'],
-                trajectory_type='bang-bang'
-            )
-        elif self.method == 'fourth':
+        if self.method == 'fourth':
+            traj_candidates = [
+                os.path.join(os.path.dirname(__file__), "spacecraft_trajectory_4th_180deg_30s.npz"),
+                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "spacecraft_trajectory_4th_180deg_30s.npz")),
+                "spacecraft_trajectory_4th_180deg_30s.npz",
+            ]
+            traj_path = next((path for path in traj_candidates if os.path.isfile(path)), None)
+            if traj_path is None:
+                raise FileNotFoundError(
+                    "Fourth-order trajectory file not found. Expected "
+                    "`spacecraft_trajectory_4th_180deg_30s.npz` in the repo root or "
+                    "basilisk_simulation/."
+                )
             self.ff_controller.load_fourth_order_trajectory(
-                'spacecraft_trajectory_4th_180deg_30s.npz',
+                traj_path,
                 rotation_axis
             )
         else:
@@ -239,9 +310,9 @@ class CometPhotographyDemo:
 
         vehicleConfigOut = messaging.VehicleConfigMsgPayload()
         vehicleConfigOut.ISCPntB_B = [
-            hub_inertia[0, 0], 0, 0,
-            0, hub_inertia[1, 1], 0,
-            0, 0, hub_inertia[2, 2]
+            self.inertia_for_control[0, 0], 0, 0,
+            0, self.inertia_for_control[1, 1], 0,
+            0, 0, self.inertia_for_control[2, 2]
         ]
         vcMsg = messaging.VehicleConfigMsg().write(vehicleConfigOut)
         mrpControlObj.vehConfigInMsg.subscribeTo(vcMsg)
@@ -250,32 +321,69 @@ class CometPhotographyDemo:
         self.attErrorObj = attErrorObj
         self.mrpControlObj = mrpControlObj
 
-        if self.use_avc:
-            modal_freqs = [mode['frequency'] for mode in self.sc.array_modes]
-            modal_damping = [mode['damping'] for mode in self.sc.array_modes]
-            self.avc = ActiveVibrationController(
-                inertia=hub_inertia,
+        # =====================================================
+        # FEEDBACK CONTROLLER SETUP
+        # =====================================================
+        modal_freqs = [mode['frequency'] for mode in self.sc.array_modes]
+        modal_damping = [mode['damping'] for mode in self.sc.array_modes]
+        rotation_axis = np.array([0.0, 0.0, 1.0])
+
+        # Determine which controller type to use
+        if self.use_trajectory_tracking:
+            # RECOMMENDED: Use trajectory tracking controller
+            # This tracks the instantaneous FF reference, not the final target
+            # Prevents feedback from fighting the feedforward trajectory
+            if self.use_filtered_pd:
+                ctrl_type = 'filtered_pd'
+            elif self.use_notch:
+                ctrl_type = 'notch'
+            else:
+                ctrl_type = 'standard_pd'
+
+            self.trajectory_controller = TrajectoryTrackingController(
+                inertia=self.inertia_for_control,
                 K=self.mrp_K,
                 P=self.mrp_P,
+                controller_type=ctrl_type,
                 filter_freq_hz=self.filter_cutoff_hz,
-                modal_freqs_hz=modal_freqs,
-                modal_damping=modal_damping,
-                ppf_damping=self.ppf_damping,
-                ppf_gains=self.ppf_gains
+                notch_freqs_hz=modal_freqs,
             )
-            self.avc.set_target(np.array(self.target_sigma))
-            print(f"  AVC enabled: cutoff={self.filter_cutoff_hz:.2f} Hz, gains={self.ppf_gains}")
+            # Set the feedforward trajectory for tracking
+            self.trajectory_controller.set_feedforward_trajectory(
+                self.ff_controller, rotation_axis
+            )
+            self.trajectory_controller.set_final_target(np.array(self.target_sigma))
+            print(f"  Trajectory Tracking Controller ({ctrl_type})")
+            print(f"    Tracks instantaneous FF reference during slew")
+            print(f"    Filter cutoff: {self.filter_cutoff_hz:.2f} Hz")
+
         elif self.use_filtered_pd:
             self.filtered_pd = FilteredDerivativeController(
-                inertia=hub_inertia,
+                inertia=self.inertia_for_control,
                 K=self.mrp_K,
                 P=self.mrp_P,
                 filter_freq_hz=self.filter_cutoff_hz
             )
             self.filtered_pd.set_target(np.array(self.target_sigma))
-            print(f"  Filtered PD: cutoff={self.filter_cutoff_hz:.2f} Hz (below modes at 0.4, 1.3 Hz)")
+            print(f"  Filtered PD: cutoff={self.filter_cutoff_hz:.2f} Hz (tuned for phase margin)")
 
-        feedback_label = "AVC" if self.use_avc else ("Filtered PD" if self.use_filtered_pd else "MRP Feedback")
+        elif self.use_notch:
+            self.notch_controller = NotchFilterController(
+                inertia=self.inertia_for_control,
+                K=self.mrp_K,
+                P=self.mrp_P,
+                notch_freqs_hz=modal_freqs,
+                notch_depth_db=20.0,
+                notch_width=0.3
+            )
+            self.notch_controller.set_target(np.array(self.target_sigma))
+            print(f"  Notch Filter: frequencies={modal_freqs} Hz")
+
+        feedback_label = "Trajectory Tracking" if self.use_trajectory_tracking else (
+            "Filtered PD" if self.use_filtered_pd else (
+                "Notch" if self.use_notch else "MRP Feedback"
+            )
+        )
         print(f"  Control: FF+{feedback_label} combined continuously (0-{self.actual_duration:.0f}s), then {feedback_label} only")
 
         # =====================================================
@@ -314,6 +422,10 @@ class CometPhotographyDemo:
         self.mode2_port_rho = scObject.dynManager.getStateObject(flexModes['mode2_port'].nameOfRhoState)
         self.mode1_stbd_rho = scObject.dynManager.getStateObject(flexModes['mode1_stbd'].nameOfRhoState)
         self.mode2_stbd_rho = scObject.dynManager.getStateObject(flexModes['mode2_stbd'].nameOfRhoState)
+        self.mode1_port_rho_dot = scObject.dynManager.getStateObject(flexModes['mode1_port'].nameOfRhoDotState)
+        self.mode2_port_rho_dot = scObject.dynManager.getStateObject(flexModes['mode2_port'].nameOfRhoDotState)
+        self.mode1_stbd_rho_dot = scObject.dynManager.getStateObject(flexModes['mode1_stbd'].nameOfRhoDotState)
+        self.mode2_stbd_rho_dot = scObject.dynManager.getStateObject(flexModes['mode2_stbd'].nameOfRhoDotState)
 
         return self.scSim
 
@@ -395,17 +507,26 @@ class CometPhotographyDemo:
             sigma_current = np.array(self.scObject.scStateOutMsg.read().sigma_BN)
             omega_current = np.array(self.scObject.scStateOutMsg.read().omega_BN_B)
 
-            if self.use_avc:
-                mode1 = 0.5 * (self.mode1_port_rho.getState()[0][0] + self.mode1_stbd_rho.getState()[0][0])
-                mode2 = 0.5 * (self.mode2_port_rho.getState()[0][0] + self.mode2_stbd_rho.getState()[0][0])
-                torque_cmd = self.avc.compute_torque(
-                    sigma_current, omega_current, sim_time, modal_displacements=[mode1, mode2]
-                )
-                return torque_cmd, "AVC"
+            # Get modal displacements for logging
+            mode1 = 0.5 * (self.mode1_port_rho.getState()[0][0] - self.mode1_stbd_rho.getState()[0][0])
+            mode2 = 0.5 * (self.mode2_port_rho.getState()[0][0] - self.mode2_stbd_rho.getState()[0][0])
 
+            # RECOMMENDED: Use trajectory tracking controller
+            # This tracks the instantaneous FF reference, preventing feedback from fighting FF
+            if self.use_trajectory_tracking:
+                torque_cmd = self.trajectory_controller.compute_torque(
+                    sigma_current, omega_current, sim_time
+                )
+                return torque_cmd, "TRK"
+
+            # Legacy controllers (track final target, not trajectory)
             if self.use_filtered_pd:
                 torque_cmd = self.filtered_pd.compute_torque(sigma_current, omega_current, sim_time)
                 return torque_cmd, "FB(FILT)"
+
+            if self.use_notch:
+                torque_cmd = self.notch_controller.compute_torque(sigma_current, omega_current, sim_time)
+                return torque_cmd, "FB(NOTCH)"
 
             fb_torque = self.mrpControlObj.cmdTorqueOutMsg.read().torqueRequestBody
             return np.array(fb_torque), "FB(MRP)"
@@ -473,11 +594,24 @@ class CometPhotographyDemo:
             self.total_torque_log.append(body_torque.copy())
             self.rw_torque_log.append(rw_torque_cmd.copy())
 
+            sigma_current = self.sigma_log[-1]
+            if self.comet_direction is not None:
+                c_bn = _mrp_to_dcm(sigma_current)
+                boresight_n = c_bn.T @ self.camera_body
+                dot = float(np.clip(np.dot(boresight_n, self.comet_direction), -1.0, 1.0))
+                self.camera_error_log.append(np.degrees(np.arccos(dot)))
+            else:
+                self.camera_error_log.append(0.0)
+
             self.modal_log['time'].append(current_time)
             self.modal_log['mode1_port'].append(self.mode1_port_rho.getState()[0][0])
             self.modal_log['mode2_port'].append(self.mode2_port_rho.getState()[0][0])
             self.modal_log['mode1_stbd'].append(self.mode1_stbd_rho.getState()[0][0])
             self.modal_log['mode2_stbd'].append(self.mode2_stbd_rho.getState()[0][0])
+            self.modal_log['mode1_port_acc'].append(self.mode1_port_rho_dot.getStateDeriv()[0][0])
+            self.modal_log['mode2_port_acc'].append(self.mode2_port_rho_dot.getStateDeriv()[0][0])
+            self.modal_log['mode1_stbd_acc'].append(self.mode1_stbd_rho_dot.getStateDeriv()[0][0])
+            self.modal_log['mode2_stbd_acc'].append(self.mode2_stbd_rho_dot.getStateDeriv()[0][0])
 
             if step % 500 == 0:
                 print(f"  {current_time:.0f}s / {total_sim_time:.0f}s [{control_mode}]")
@@ -497,8 +631,11 @@ class CometPhotographyDemo:
         rotation_achieved = np.degrees(4 * np.arctan(sigma_mag))
 
         sigma_target = np.array(self.target_sigma)
-        sigma_error = _mrp_subtract(sigma_final_short, sigma_target)
-        pointing_error = np.degrees(4 * np.arctan(np.linalg.norm(sigma_error)))
+        if self.camera_error_log:
+            pointing_error = float(self.camera_error_log[-1])
+        else:
+            sigma_error = _mrp_subtract(sigma_final_short, sigma_target)
+            pointing_error = np.degrees(4 * np.arctan(np.linalg.norm(sigma_error)))
 
         print(f"\n  RESULTS:")
         print(f"    Rotation: {rotation_achieved:.1f} deg (target: 180 deg)")
@@ -516,13 +653,14 @@ class CometPhotographyDemo:
             mode2_rms = np.sqrt(np.mean(mode2[post_slew_idx]**2)) * 1000
             total_rms = np.sqrt(mode1_rms**2 + mode2_rms**2)
             
-            jitter_arcsec = (total_rms / 1000 / 4.0) * (180/np.pi) * 3600
-            blur_px = jitter_arcsec / 2.0
-            
+            jitter_rad = (total_rms / 1000.0) / self.jitter_lever_arm
+            jitter_arcsec = jitter_rad * (180 / np.pi) * 3600
+            blur_px = jitter_arcsec / self.pixel_scale_arcsec
+
             print(f"\n  VIBRATION (imaging impact):")
             print(f"    Modal RMS: {total_rms:.2f} mm")
-            print(f"    Jitter: {jitter_arcsec:.1f} arcsec")
-            print(f"    Blur: {blur_px:.1f} px")
+            print(f"    Jitter: {jitter_arcsec:.1f} arcsec (lever arm: {self.jitter_lever_arm:.1f} m)")
+            print(f"    Blur: {blur_px:.1f} px (scale: {self.pixel_scale_arcsec:.1f} arcsec/px)")
 
     def _save_results(self):
         """Save results."""
@@ -532,14 +670,35 @@ class CometPhotographyDemo:
             output = f'vizard_demo_{self.method}_{self.controller}_fb_only.npz'
         else:
             output = f'vizard_demo_{self.method}_ff_only.npz'
-        mode1 = np.sqrt(np.array(self.modal_log['mode1_port'])**2 + np.array(self.modal_log['mode1_stbd'])**2)
-        mode2 = np.sqrt(np.array(self.modal_log['mode2_port'])**2 + np.array(self.modal_log['mode2_stbd'])**2)
+        mode1_port = np.array(self.modal_log['mode1_port'])
+        mode1_stbd = np.array(self.modal_log['mode1_stbd'])
+        mode2_port = np.array(self.modal_log['mode2_port'])
+        mode2_stbd = np.array(self.modal_log['mode2_stbd'])
+        mode1_port_acc = np.array(self.modal_log['mode1_port_acc'])
+        mode1_stbd_acc = np.array(self.modal_log['mode1_stbd_acc'])
+        mode2_port_acc = np.array(self.modal_log['mode2_port_acc'])
+        mode2_stbd_acc = np.array(self.modal_log['mode2_stbd_acc'])
+
+        mode1_signed = 0.5 * (mode1_port - mode1_stbd)
+        mode2_signed = 0.5 * (mode2_port - mode2_stbd)
+        mode1_acc_signed = 0.5 * (mode1_port_acc - mode1_stbd_acc)
+        mode2_acc_signed = 0.5 * (mode2_port_acc - mode2_stbd_acc)
+
+        mode1_rss = np.sqrt(mode1_port**2 + mode1_stbd**2)
+        mode2_rss = np.sqrt(mode2_port**2 + mode2_stbd**2)
+        mode1_acc_rss = np.sqrt(mode1_port_acc**2 + mode1_stbd_acc**2)
+        mode2_acc_rss = np.sqrt(mode2_port_acc**2 + mode2_stbd_acc**2)
 
         np.savez(output,
                  time=np.array(self.time_log),
                  sigma=np.array(self.sigma_log),
                  omega=np.array(self.omega_log),
-                 mode1=mode1, mode2=mode2,
+                 mode1=mode1_signed, mode2=mode2_signed,
+                 mode1_signed=mode1_signed, mode2_signed=mode2_signed,
+                 mode1_rss=mode1_rss, mode2_rss=mode2_rss,
+                 mode1_acc=mode1_acc_signed, mode2_acc=mode2_acc_signed,
+                 mode1_acc_signed=mode1_acc_signed, mode2_acc_signed=mode2_acc_signed,
+                 mode1_acc_rss=mode1_acc_rss, mode2_acc_rss=mode2_acc_rss,
                  control_mode=self.control_mode_log,
                  method=self.method,
                  controller=self.controller,
@@ -549,8 +708,24 @@ class CometPhotographyDemo:
                  total_torque=np.array(self.total_torque_log),
                  rw_torque=np.array(self.rw_torque_log),
                  slew_angle_deg=self.slew_angle_deg,
+                 slew_duration_s=self.slew_duration,
+                 dt=self.dt,
                  initial_sigma=self.initial_sigma,
-                 target_sigma=self.target_sigma)
+                 target_sigma=self.target_sigma,
+                 camera_body=self.camera_body,
+                 comet_direction=self.comet_direction,
+                 camera_error_deg=np.array(self.camera_error_log),
+                 modal_freqs_hz=[mode['frequency'] for mode in self.sc.array_modes],
+                 modal_damping=[mode['damping'] for mode in self.sc.array_modes],
+                 modal_gains=self.modal_gains,
+                 control_bandwidth_hz=self.control_bandwidth_hz,
+                 control_filter_cutoff_hz=self.filter_cutoff_hz,
+                 control_damping_ratio=self.control_damping_ratio,
+                 control_gains=np.array([self.mrp_K, self.mrp_P, self.mrp_Ki], dtype=float),
+                 inertia_control=self.inertia_for_control,
+                 inertia_feedforward=self.inertia_feedforward,
+                 use_trajectory_tracking=self.use_trajectory_tracking,
+                 rotation_axis=np.array([0.0, 0.0, 1.0]))
         print(f"\nSaved {output}")
 
 
@@ -561,15 +736,25 @@ if __name__ == "__main__":
     print("=" * 60)
 
     parser = argparse.ArgumentParser(description="Run the comet photography demo.")
-    parser.add_argument("method", nargs="?", default="fourth", choices=["unshaped", "zvd", "fourth"])
+    parser.add_argument("method", nargs="?", default="fourth", choices=["unshaped", "fourth"])
     parser.add_argument("--controller", default="standard_pd", choices=sorted(CONTROLLERS))
     parser.add_argument("--mode", default="combined", choices=sorted(RUN_MODES))
+    parser.add_argument("--lever-arm", type=float, default=4.0,
+                        help="Camera lever arm in meters (default: 4.0)")
+    parser.add_argument("--pixel-scale", type=float, default=2.0,
+                        help="Camera plate scale in arcsec/pixel (default: 2.0)")
     args = parser.parse_args()
 
     print(f"\nMethod: {args.method}")
     print(f"Controller: {args.controller}")
     print(f"Run mode: {args.mode}")
 
-    demo = CometPhotographyDemo(args.method, controller=args.controller, run_mode=args.mode)
+    demo = CometPhotographyDemo(
+        args.method,
+        controller=args.controller,
+        run_mode=args.mode,
+        jitter_lever_arm=args.lever_arm,
+        pixel_scale_arcsec=args.pixel_scale,
+    )
     demo.build_simulation()
     demo.run()
