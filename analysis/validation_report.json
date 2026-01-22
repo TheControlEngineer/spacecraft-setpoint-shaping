@@ -1,0 +1,156 @@
+{
+  "timestamp": "2026-01-22T22:14:29.190902",
+  "summary": {
+    "total_tests": 6,
+    "passed": 6,
+    "failed": 0
+  },
+  "tests": [
+    {
+      "name": "tracking",
+      "passed": true,
+      "message": "PASS",
+      "metrics": {
+        "unshaped_standard_pd_rms_error_deg": 0.0053197596583883355,
+        "unshaped_standard_pd_peak_error_deg": 0.03552725290606982,
+        "unshaped_standard_pd_final_error_deg": 7.936544390793051e-05,
+        "unshaped_filtered_pd_rms_error_deg": 0.003933169264637875,
+        "unshaped_filtered_pd_peak_error_deg": 0.026291229511672922,
+        "unshaped_filtered_pd_final_error_deg": 6.84716950516817e-05,
+        "fourth_standard_pd_rms_error_deg": 0.0014803683631913628,
+        "fourth_standard_pd_peak_error_deg": 0.009402284398322941,
+        "fourth_standard_pd_final_error_deg": 8.309434697913882e-05,
+        "fourth_filtered_pd_rms_error_deg": 0.000644139521944417,
+        "fourth_filtered_pd_peak_error_deg": 0.007687502402484307,
+        "fourth_filtered_pd_final_error_deg": 7.175330358870625e-05
+      },
+      "plots": [
+        "c:\\Users\\Utente\\Documents\\GNC\\spacecraft_input_shaping\\basilisk_simulation\\analysis\\validation_tracking.png"
+      ]
+    },
+    {
+      "name": "vibration_suppression",
+      "passed": true,
+      "message": "PASS",
+      "metrics": {
+        "unshaped_standard_pd_rms_vibration_mm": 1.3179645906828854,
+        "unshaped_standard_pd_peak_vibration_mm": 7.9591357084180006,
+        "unshaped_filtered_pd_rms_vibration_mm": 1.1770124043669339,
+        "unshaped_filtered_pd_peak_vibration_mm": 7.082790313742429,
+        "fourth_standard_pd_rms_vibration_mm": 0.07904613827407952,
+        "fourth_standard_pd_peak_vibration_mm": 0.4922351014853923,
+        "fourth_filtered_pd_rms_vibration_mm": 0.07153753510036273,
+        "fourth_filtered_pd_peak_vibration_mm": 0.4311343898396689,
+        "standard_pd_vibration_reduction_pct": 94.0024080439731,
+        "filtered_pd_vibration_reduction_pct": 93.92210865111149
+      },
+      "plots": [
+        "c:\\Users\\Utente\\Documents\\GNC\\spacecraft_input_shaping\\basilisk_simulation\\analysis\\validation_vibration.png"
+      ]
+    },
+    {
+      "name": "torque_limits",
+      "passed": true,
+      "message": "PASS",
+      "metrics": {
+        "unshaped_standard_pd_peak_torque_nm": 15.58576946753342,
+        "unshaped_standard_pd_rms_torque_nm": 7.472123013579333,
+        "unshaped_standard_pd_saturation_pct": 0.0,
+        "unshaped_filtered_pd_peak_torque_nm": 15.997400527304146,
+        "unshaped_filtered_pd_rms_torque_nm": 7.47809663089569,
+        "unshaped_filtered_pd_saturation_pct": 0.0,
+        "fourth_standard_pd_peak_torque_nm": 16.701792961897084,
+        "fourth_standard_pd_rms_torque_nm": 8.119303359750536,
+        "fourth_standard_pd_saturation_pct": 0.0,
+        "fourth_filtered_pd_peak_torque_nm": 16.687156889496507,
+        "fourth_filtered_pd_rms_torque_nm": 8.119915921161633,
+        "fourth_filtered_pd_saturation_pct": 0.0
+      },
+      "plots": [
+        "c:\\Users\\Utente\\Documents\\GNC\\spacecraft_input_shaping\\basilisk_simulation\\analysis\\validation_torque.png"
+      ]
+    },
+    {
+      "name": "stability_margins",
+      "passed": true,
+      "message": "PASS",
+      "metrics": {
+        "standard_pd_gain_margin_db": Infinity,
+        "standard_pd_phase_margin_deg": 73.34499074698391,
+        "filtered_pd_gain_margin_db": Infinity,
+        "filtered_pd_phase_margin_deg": 79.21515799434238
+      },
+      "plots": [
+        "c:\\Users\\Utente\\Documents\\GNC\\spacecraft_input_shaping\\basilisk_simulation\\analysis\\validation_stability.png"
+      ]
+    },
+    {
+      "name": "disturbance_rejection",
+      "passed": true,
+      "message": "PASS",
+      "metrics": {
+        "standard_pd_peak_sensitivity_db": -0.0013786901632852062,
+        "filtered_pd_peak_sensitivity_db": 0.2753071553954835
+      },
+      "plots": [
+        "c:\\Users\\Utente\\Documents\\GNC\\spacecraft_input_shaping\\basilisk_simulation\\analysis\\validation_disturbance.png"
+      ]
+    },
+    {
+      "name": "noise_rejection",
+      "passed": true,
+      "message": "PASS",
+      "metrics": {
+        "standard_pd_hf_noise_db": 112.50789940052479,
+        "filtered_pd_hf_noise_db": 105.93805996262209
+      },
+      "plots": [
+        "c:\\Users\\Utente\\Documents\\GNC\\spacecraft_input_shaping\\basilisk_simulation\\analysis\\validation_noise.png"
+      ]
+    }
+  ],
+  "all_metrics": {
+    "unshaped_standard_pd_rms_error_deg": 0.0053197596583883355,
+    "unshaped_standard_pd_peak_error_deg": 0.03552725290606982,
+    "unshaped_standard_pd_final_error_deg": 7.936544390793051e-05,
+    "unshaped_filtered_pd_rms_error_deg": 0.003933169264637875,
+    "unshaped_filtered_pd_peak_error_deg": 0.026291229511672922,
+    "unshaped_filtered_pd_final_error_deg": 6.84716950516817e-05,
+    "fourth_standard_pd_rms_error_deg": 0.0014803683631913628,
+    "fourth_standard_pd_peak_error_deg": 0.009402284398322941,
+    "fourth_standard_pd_final_error_deg": 8.309434697913882e-05,
+    "fourth_filtered_pd_rms_error_deg": 0.000644139521944417,
+    "fourth_filtered_pd_peak_error_deg": 0.007687502402484307,
+    "fourth_filtered_pd_final_error_deg": 7.175330358870625e-05,
+    "unshaped_standard_pd_rms_vibration_mm": 1.3179645906828854,
+    "unshaped_standard_pd_peak_vibration_mm": 7.9591357084180006,
+    "unshaped_filtered_pd_rms_vibration_mm": 1.1770124043669339,
+    "unshaped_filtered_pd_peak_vibration_mm": 7.082790313742429,
+    "fourth_standard_pd_rms_vibration_mm": 0.07904613827407952,
+    "fourth_standard_pd_peak_vibration_mm": 0.4922351014853923,
+    "fourth_filtered_pd_rms_vibration_mm": 0.07153753510036273,
+    "fourth_filtered_pd_peak_vibration_mm": 0.4311343898396689,
+    "standard_pd_vibration_reduction_pct": 94.0024080439731,
+    "filtered_pd_vibration_reduction_pct": 93.92210865111149,
+    "unshaped_standard_pd_peak_torque_nm": 15.58576946753342,
+    "unshaped_standard_pd_rms_torque_nm": 7.472123013579333,
+    "unshaped_standard_pd_saturation_pct": 0.0,
+    "unshaped_filtered_pd_peak_torque_nm": 15.997400527304146,
+    "unshaped_filtered_pd_rms_torque_nm": 7.47809663089569,
+    "unshaped_filtered_pd_saturation_pct": 0.0,
+    "fourth_standard_pd_peak_torque_nm": 16.701792961897084,
+    "fourth_standard_pd_rms_torque_nm": 8.119303359750536,
+    "fourth_standard_pd_saturation_pct": 0.0,
+    "fourth_filtered_pd_peak_torque_nm": 16.687156889496507,
+    "fourth_filtered_pd_rms_torque_nm": 8.119915921161633,
+    "fourth_filtered_pd_saturation_pct": 0.0,
+    "standard_pd_gain_margin_db": Infinity,
+    "standard_pd_phase_margin_deg": 73.34499074698391,
+    "filtered_pd_gain_margin_db": Infinity,
+    "filtered_pd_phase_margin_deg": 79.21515799434238,
+    "standard_pd_peak_sensitivity_db": -0.0013786901632852062,
+    "filtered_pd_peak_sensitivity_db": 0.2753071553954835,
+    "standard_pd_hf_noise_db": 112.50789940052479,
+    "filtered_pd_hf_noise_db": 105.93805996262209
+  }
+}

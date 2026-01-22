@@ -1,0 +1,114 @@
+{
+  "timestamp": "2026-01-22T22:14:25.763148",
+  "summary": {
+    "total_tests": 6,
+    "passed": 6,
+    "failed": 0
+  },
+  "tests": [
+    {
+      "name": "trajectory_consistency",
+      "passed": true,
+      "message": "PASS",
+      "details": {
+        "final_angle_deg": 179.99999999989797,
+        "target_angle_deg": 180.0,
+        "angle_error_deg": 1.0203393685515039e-10,
+        "sample_dt_s": 0.009999999999999787,
+        "omega_consistency_rms": 7.583848323839545e-05,
+        "alpha_consistency_rms": 1.9480935599205324e-05
+      }
+    },
+    {
+      "name": "controller_implementation",
+      "passed": true,
+      "message": "PASS",
+      "details": {
+        "I_axis": 925.0,
+        "first_mode_hz": 0.4,
+        "designed_K": 3739.3957154847362,
+        "designed_P": 1673.840565832642,
+        "designed_bandwidth_hz": 0.16,
+        "standard_pd_K": 3739.3957154847362,
+        "standard_pd_P": 1673.840565832642,
+        "filtered_pd_K": 3739.3957154847362,
+        "filtered_pd_P": 2510.760848748963,
+        "filter_cutoff_hz": 8.0,
+        "test_torque_std": [
+          -37.393957154847364,
+          -0.0,
+          -1.6738405658326418
+        ]
+      }
+    },
+    {
+      "name": "logging_integrity",
+      "passed": true,
+      "message": "PASS",
+      "details": {
+        "vizard_demo_fourth_standard_pd.npz_has_modal_acc": true,
+        "vizard_demo_fourth_standard_pd.npz_n_samples": 9000,
+        "vizard_demo_fourth_filtered_pd.npz_has_modal_acc": true,
+        "vizard_demo_fourth_filtered_pd.npz_n_samples": 9000,
+        "vizard_demo_unshaped_standard_pd.npz_has_modal_acc": true,
+        "vizard_demo_unshaped_standard_pd.npz_n_samples": 9000,
+        "vizard_demo_unshaped_filtered_pd.npz_has_modal_acc": true,
+        "vizard_demo_unshaped_filtered_pd.npz_n_samples": 9000
+      }
+    },
+    {
+      "name": "psd_computations",
+      "passed": true,
+      "message": "PASS",
+      "details": {
+        "test_frequency_hz": 0.5,
+        "detected_peak_hz": 0.48828125000001044,
+        "total_power": 0.500148735186498,
+        "expected_power": 0.5,
+        "psd_to_db_check": [
+          0.0,
+          10.0,
+          20.0
+        ]
+      }
+    },
+    {
+      "name": "inertia_consistency",
+      "passed": true,
+      "message": "PASS",
+      "details": {
+        "effective_inertia_diag": [
+          1225.0,
+          800.0,
+          925.0
+        ],
+        "hub_inertia_diag": [
+          900.0,
+          800.0,
+          600.0
+        ],
+        "inertia_eigenvalues": [
+          1225.0,
+          800.0,
+          925.0
+        ]
+      }
+    },
+    {
+      "name": "modal_coupling",
+      "passed": true,
+      "message": "PASS",
+      "details": {
+        "modal_gains": [
+          0.0037837837837837837,
+          0.004864864864864865
+        ],
+        "lever_arms_m": [
+          3.5,
+          4.5
+        ],
+        "I_axis": 925.0
+      }
+    }
+  ]
+}
