@@ -1,6 +1,6 @@
 type,method,controller,peak_torque_nm,rms_torque_nm,rms_band_0_10hz_nm,max_rate_nm_s,peak_rw_torque_nm,rw_saturation_percent
-ff_body,unshaped,,1.291544e+01,7.457973e+00,4.702411e+00,2.583087e+03,,
-ff_body,fourth,,1.647681e+01,8.101643e+00,5.500489e+00,6.590723e+00,,
+ff_body,unshaped,,1.291544e+01,9.133354e+00,4.497862e+00,2.583087e+03,,
+ff_body,fourth,,1.647681e+01,9.921619e+00,3.291602e+00,6.590723e+00,,
 fb_body,unshaped,standard_pd,2.670333e+00,4.082566e-01,4.145202e-01,4.669717e+01,,
 total_body,unshaped,standard_pd,1.558577e+01,7.472123e+00,4.718634e+00,2.629784e+03,,
 rw_wheel,unshaped,standard_pd,1.558577e+01,7.472123e+00,2.343648e+00,1.233739e+03,1.558577e+01,22.27

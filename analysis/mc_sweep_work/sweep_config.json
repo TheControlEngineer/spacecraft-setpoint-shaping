@@ -1,0 +1,1 @@
+{"inertia_scale": 1.0, "modal_freqs_hz": [0.4, 1.3], "modal_damping": [0.02, 0.015], "control_filter_cutoff_hz": 8.0, "sensor_noise_std_rad_s": 0.003, "sensor_noise_type": "sine", "sensor_noise_frequency_hz": 0.5729687289793558, "sensor_noise_axis": [0.0, 0.0, 1.0], "disturbance_torque_nm": 0.0}

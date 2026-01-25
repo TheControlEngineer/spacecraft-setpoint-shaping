@@ -1,9 +1,9 @@
 category,method,controller,metric1,metric2,metric3
-feedforward,unshaped,,12.9154,12.9154,1.6883
-feedforward,fourth,,14.0418,16.4768,0.0652
+feedforward,unshaped,,12.9154,12.9154,3.9236
+feedforward,fourth,,14.0771,16.4768,0.1563
 control,,standard_pd,inf,74.93,
 control,,filtered_pd,inf,82.55,
-pointing,unshaped_standard_pd,,0.5530,0.002660,
-pointing,unshaped_filtered_pd,,0.4979,0.001967,
-pointing,fourth_standard_pd,,0.0531,0.000741,
-pointing,fourth_filtered_pd,,0.0505,0.000342,
+pointing,unshaped_standard_pd,,0.5530,0.019119,
+pointing,unshaped_filtered_pd,,0.4979,0.017022,
+pointing,fourth_standard_pd,,0.0531,0.001357,
+pointing,fourth_filtered_pd,,0.0505,0.001087,

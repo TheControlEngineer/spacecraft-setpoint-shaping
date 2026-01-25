@@ -20,11 +20,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import inspect
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time as time_module
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -41,6 +44,9 @@ src_root = os.path.join(repo_root, "src")
 for path in (repo_root, basilisk_dir, src_root):
     if path not in sys.path:
         sys.path.insert(0, path)
+
+# Import mission_simulation for plan-compliant analysis (after path setup)
+import mission_simulation as ms
 
 from spacecraft_properties import (
     HUB_INERTIA,
@@ -59,15 +65,12 @@ METHODS = ["unshaped", "fourth"]
 CONTROLLERS = ["standard_pd", "filtered_pd"]
 UNIFIED_SAMPLE_DT = 0.01  # 100 Hz to match Basilisk simulation
 
-# Default pass/fail thresholds
-# Note: These are relaxed from validation_mc.md (0.005 deg, 0.1 mm) for the simplified
-# Monte Carlo model which does not include actual flexible mode dynamics.
-# For full-fidelity validation, use the thresholds from validation_mc.md section 3.3.
+# Default pass/fail thresholds (validation_mc.md section 3.3)
 DEFAULT_THRESHOLDS = {
-    "rms_pointing_error_deg_p95": 2.0,      # Relaxed for simplified model (was 0.005)
-    "peak_torque_nm_p99": 70.0,              # Per validation_mc.md
-    "rms_vibration_mm_p95": 50.0,            # Relaxed for simplified model (was 0.1)
-    "torque_saturation_percent_max": 5.0,    # Per validation_mc.md
+    "rms_pointing_error_deg_p95": 0.005,
+    "peak_torque_nm_p99": 70.0,
+    "rms_vibration_mm_p95": 0.1,
+    "torque_saturation_percent_max": 5.0,
 }
 
 
@@ -177,6 +180,13 @@ def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
+def _reset_dir(path: str) -> None:
+    """Recreate a clean directory."""
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+    os.makedirs(path, exist_ok=True)
+
+
 def _normalize_axis(axis: np.ndarray) -> np.ndarray:
     """Return unit vector for rotation axis."""
     axis = np.array(axis, dtype=float).flatten()
@@ -236,6 +246,1188 @@ def _compute_band_rms(freq: np.ndarray, psd: np.ndarray, fmin: float, fmax: floa
     df = np.gradient(freq[mask])
     return float(np.sqrt(np.sum(psd[mask] * df)))
 
+
+def _compute_post_slew_stats(
+    time: np.ndarray, values: np.ndarray, slew_duration_s: float
+) -> Tuple[float, float]:
+    """Compute RMS and peak for post-slew window (or full if unavailable)."""
+    if len(time) == 0 or len(values) == 0:
+        return float("nan"), float("nan")
+    mask = time >= slew_duration_s
+    series = values[mask] if np.any(mask) else values
+    rms = _compute_rms(series)
+    peak = float(np.max(np.abs(series))) if len(series) else float("nan")
+    return rms, peak
+
+
+def _format_eta(seconds: float) -> str:
+    """Format seconds as H:MM:SS or M:SS."""
+    if not np.isfinite(seconds) or seconds < 0:
+        return "?"
+    secs = int(round(seconds))
+    mins, sec = divmod(secs, 60)
+    hrs, mins = divmod(mins, 60)
+    if hrs > 0:
+        return f"{hrs}h {mins:02d}m {sec:02d}s"
+    return f"{mins:02d}m {sec:02d}s"
+
+
+def _update_progress(
+    prefix: str,
+    current: int,
+    total: int,
+    start_time: float,
+    last_update: float,
+    min_interval_s: float = 0.5,
+    width: int = 32,
+) -> float:
+    """Render a single-line progress bar with ETA."""
+    now = time_module.time()
+    if current < total and (now - last_update) < min_interval_s:
+        return last_update
+
+    total = max(total, 1)
+    ratio = min(1.0, max(0.0, current / total))
+    filled = int(round(width * ratio))
+    bar = "=" * filled + "-" * (width - filled)
+    elapsed = now - start_time
+    rate = current / elapsed if elapsed > 0 else 0.0
+    remaining = (total - current) / rate if rate > 0 else float("inf")
+    eta = _format_eta(remaining)
+    msg = f"\r{prefix} [{bar}] {current}/{total} ({ratio*100:5.1f}%) ETA {eta}"
+    print(msg, end="", flush=True)
+    if current >= total:
+        print()
+    return now
+
+
+def _run_vizard_demo_batch(
+    overrides: Dict[str, object],
+    output_dir: str,
+    run_mode: str = "combined",
+    timeout_s: Optional[float] = 600.0,
+) -> None:
+    """Run vizard_demo for all method/controller combos with config overrides."""
+    _ensure_dir(output_dir)
+    cfg_path = os.path.join(output_dir, "temp_config.json")
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(overrides, f)
+
+    script_path = os.path.join(basilisk_dir, "vizard_demo.py")
+    for method in METHODS:
+        for controller in CONTROLLERS:
+            cmd = [
+                sys.executable,
+                script_path,
+                method,
+                "--controller",
+                controller,
+                "--mode",
+                run_mode,
+                "--config",
+                cfg_path,
+            ]
+            subprocess.run(
+                cmd,
+                cwd=output_dir,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout_s,
+            )
+
+
+# --- Error handling helpers ---------------------------------------------------
+def _format_subprocess_failure(exc: BaseException) -> str:
+    cmd = getattr(exc, "cmd", "")
+    if isinstance(cmd, (list, tuple)):
+        cmd_str = " ".join(str(part) for part in cmd)
+    else:
+        cmd_str = str(cmd)
+    stdout = getattr(exc, "stdout", "") or ""
+    stderr = getattr(exc, "stderr", "") or ""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        msg = f"Command timed out after {exc.timeout}s: {cmd_str}"
+    elif isinstance(exc, subprocess.CalledProcessError):
+        msg = f"Command failed (code {exc.returncode}): {cmd_str}"
+    else:
+        msg = f"Command failed: {cmd_str}\n{exc}"
+    if stdout.strip():
+        msg += f"\n\n--- stdout ---\n{stdout.strip()}"
+    if stderr.strip():
+        msg += f"\n\n--- stderr ---\n{stderr.strip()}"
+    return msg
+
+
+def _write_mc_failure_log(run_id: int, exc: BaseException, output_dir: str) -> str:
+    _ensure_dir(output_dir)
+    log_path = os.path.join(output_dir, f"mc_fail_run_{run_id:04d}.log")
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write(_format_subprocess_failure(exc))
+        f.write("\n")
+    return log_path
+
+
+# ============================================================================
+# PLAN-COMPLIANT RUNNER (validation_mc.md)
+# ============================================================================
+
+PLAN_THRESHOLDS = {
+    "rms_pointing_error_deg": 0.005,
+    "peak_torque_nm": 70.0,
+    "rms_vibration_mm": 0.1,
+    "torque_saturation_percent": 5.0,
+}
+
+
+def _load_csv_as_dict(path: str, key_field: str) -> Dict[str, Dict[str, str]]:
+    if not os.path.isfile(path):
+        return {}
+    rows = {}
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            key = row.get(key_field, "")
+            rows[key] = row
+    return rows
+
+
+class PlanCompliantRunner:
+    """Runner that strictly follows validation_mc.md."""
+
+    def __init__(
+        self,
+        out_dir: str,
+        data_dir: Optional[str] = None,
+        sensor_noise_std_rad_s: float = 1e-5,
+        disturbance_torque_nm: float = 1e-5,
+    ):
+        self.out_dir = out_dir
+        self.data_dir = data_dir or basilisk_dir
+        self.config = ms.default_config()
+        self.sensor_noise_std_rad_s = float(sensor_noise_std_rad_s)
+        self.disturbance_torque_nm = float(disturbance_torque_nm)
+        _ensure_dir(out_dir)
+
+    # ------------------------------------------------------------------
+    # VERIFICATION (Section 1)
+    # ------------------------------------------------------------------
+    def run_verification(self) -> List[VerificationResult]:
+        results: List[VerificationResult] = []
+        tests = [
+            self._verify_trajectory_consistency,
+            self._verify_controller_implementation,
+            self._verify_logging_integrity,
+            self._verify_psd_computations,
+        ]
+        start = time_module.time()
+        last = start
+        total = len(tests)
+        _update_progress("Verification", 0, total, start, last)
+        for idx, func in enumerate(tests, start=1):
+            results.append(func())
+            last = _update_progress("Verification", idx, total, start, last)
+        self._save_verification_report(results)
+        return results
+
+    def _verify_trajectory_consistency(self) -> VerificationResult:
+        details: Dict[str, Any] = {}
+        issues: List[str] = []
+        axis = _normalize_axis(self.config.rotation_axis)
+        ff_inertia = ms._get_feedforward_inertia(self.config)
+        I_axis = float(axis @ ff_inertia @ axis)
+        details["ff_I_axis"] = I_axis
+
+        for method in METHODS:
+            try:
+                profile = ms._compute_torque_profile(self.config, method, settling_time=30.0)
+                time = np.array(profile.get("time", []), dtype=float)
+                theta = np.array(profile.get("theta", []), dtype=float)
+                omega = np.array(profile.get("omega", []), dtype=float)
+                alpha = np.array(profile.get("alpha", []), dtype=float)
+                torque = np.array(profile.get("torque", []), dtype=float)
+
+                n = len(time)
+                details[f"{method}_samples"] = n
+                if n < 2:
+                    issues.append(f"{method}: insufficient samples ({n})")
+                    continue
+
+                lengths = {
+                    "theta": len(theta),
+                    "omega": len(omega),
+                    "alpha": len(alpha),
+                    "torque": len(torque),
+                }
+                for name, length in lengths.items():
+                    if length != n:
+                        issues.append(f"{method}: {name} length {length} != time length {n}")
+
+                if np.any(np.diff(time) <= 0):
+                    issues.append(f"{method}: non-monotonic time array")
+
+                if n > 2:
+                    dt = np.diff(time)
+                    dt_med = float(np.median(dt))
+                    dt_std = float(np.std(dt))
+                    details[f"{method}_dt_median"] = dt_med
+                    details[f"{method}_dt_std"] = dt_std
+                    if dt_med <= 0 or (dt_std / dt_med) > 0.01:
+                        issues.append(f"{method}: non-uniform timestep (std/med={dt_std/dt_med:.3f})")
+
+                final_deg = float(np.degrees(theta[-1])) if len(theta) else float("nan")
+                target = float(self.config.slew_angle_deg)
+                details[f"{method}_final_deg"] = final_deg
+                details[f"{method}_target_deg"] = target
+                if np.isfinite(final_deg) and abs(abs(final_deg) - abs(target)) > 0.5:
+                    issues.append(f"{method}: final angle {final_deg:.2f} deg vs {target:.2f} deg")
+
+                if n > 3 and len(theta) == n and len(omega) == n:
+                    omega_check = np.gradient(theta, time)
+                    alpha_check = np.gradient(omega, time)
+                    omega_err = _compute_rms(omega - omega_check)
+                    alpha_err = _compute_rms(alpha - alpha_check) if len(alpha) == n else float("nan")
+                    omega_scale = max(1e-6, float(np.max(np.abs(omega))))
+                    alpha_scale = max(1e-6, float(np.max(np.abs(alpha)))) if len(alpha) else 1.0
+                    details[f"{method}_omega_rms_err"] = omega_err
+                    details[f"{method}_alpha_rms_err"] = alpha_err
+                    if omega_err / omega_scale > 0.02:
+                        issues.append(f"{method}: omega consistency error {omega_err:.3e} rad/s")
+                    if np.isfinite(alpha_err) and alpha_err / alpha_scale > 0.02:
+                        issues.append(f"{method}: alpha consistency error {alpha_err:.3e} rad/s^2")
+
+                if len(torque) == n and len(alpha) == n:
+                    torque_expected = I_axis * alpha
+                    torque_err = _compute_rms(torque - torque_expected)
+                    torque_scale = max(1e-6, float(_compute_rms(torque_expected)))
+                    details[f"{method}_torque_rms_err"] = torque_err
+                    if torque_err / torque_scale > 0.02:
+                        issues.append(f"{method}: torque mismatch RMS {torque_err:.3e} Nm")
+
+                if method == "fourth":
+                    traj_candidates = [
+                        os.path.join(basilisk_dir, "spacecraft_trajectory_4th_180deg_30s.npz"),
+                        os.path.abspath(os.path.join(basilisk_dir, "..", "spacecraft_trajectory_4th_180deg_30s.npz")),
+                    ]
+                    traj_path = next((p for p in traj_candidates if os.path.isfile(p)), None)
+                    if traj_path:
+                        traj = np.load(traj_path, allow_pickle=True)
+                        t_raw = np.array(traj.get("time", []), dtype=float)
+                        th_raw = np.array(traj.get("theta", []), dtype=float)
+                        om_raw = np.array(traj.get("omega", []), dtype=float)
+                        al_raw = np.array(traj.get("alpha", []), dtype=float)
+                        _, resampled = ms._resample_time_series(t_raw, th_raw, om_raw, al_raw)
+                        details["fourth_resampled"] = bool(resampled)
+            except Exception as exc:
+                issues.append(f"{method}: {exc}")
+        passed = len(issues) == 0
+        message = "PASS" if passed else "; ".join(issues)
+        return VerificationResult("trajectory_consistency", passed, message, details)
+
+    def _verify_controller_implementation(self) -> VerificationResult:
+        details: Dict[str, Any] = {}
+        issues: List[str] = []
+        try:
+            from feedback_control import MRPFeedbackController, FilteredDerivativeController
+
+            axis = _normalize_axis(self.config.rotation_axis)
+            I_axis = float(axis @ self.config.inertia @ axis)
+            first_mode = min(self.config.modal_freqs_hz) if self.config.modal_freqs_hz else 0.4
+            bandwidth = first_mode / 2.5
+            omega_bw = 2 * np.pi * bandwidth
+            sigma_scale = 4.0
+            k_std = sigma_scale * I_axis * omega_bw**2
+            p_std = 2 * 0.9 * I_axis * omega_bw
+            p_filt = p_std * 1.5
+            filter_cutoff = self.config.control_filter_cutoff_hz or 8.0
+
+            details["designed_K_std"] = k_std
+            details["designed_P_std"] = p_std
+            details["designed_P_filt"] = p_filt
+            details["filter_cutoff_hz"] = filter_cutoff
+
+            ctrl_std = MRPFeedbackController(
+                inertia=self.config.inertia, K=k_std, P=p_std, Ki=-1.0
+            )
+            if abs(ctrl_std.K - k_std) > 1e-6:
+                issues.append(f"standard_pd K mismatch: {ctrl_std.K} vs {k_std}")
+            if abs(ctrl_std.P - p_std) > 1e-6:
+                issues.append(f"standard_pd P mismatch: {ctrl_std.P} vs {p_std}")
+
+            ctrl_filt = FilteredDerivativeController(
+                inertia=self.config.inertia, K=k_std, P=p_filt, filter_freq_hz=filter_cutoff
+            )
+            if abs(ctrl_filt.filter_freq_hz - filter_cutoff) > 1e-6:
+                issues.append(
+                    f"filtered_pd cutoff mismatch: {ctrl_filt.filter_freq_hz} vs {filter_cutoff}"
+                )
+
+            ctrl_data = ms._compute_control_analysis(self.config)
+            gains = ctrl_data.get("gains", {})
+            if gains:
+                details["analysis_K"] = gains.get("K")
+                details["analysis_P"] = gains.get("P")
+                details["analysis_filter_cutoff"] = gains.get("filter_cutoff")
+                if abs(float(gains.get("K", k_std)) - k_std) > 1e-6:
+                    issues.append("control_analysis K differs from design")
+                if abs(float(gains.get("P", p_std)) - p_std) > 1e-6:
+                    issues.append("control_analysis P differs from design")
+                if abs(float(gains.get("filter_cutoff", filter_cutoff)) - filter_cutoff) > 1e-6:
+                    issues.append("control_analysis cutoff differs from config")
+
+            for name in CONTROLLERS:
+                details[f"{name}_gain_margin_db"] = float(ctrl_data["margins"][name]["gain_margin_db"])
+                details[f"{name}_phase_margin_deg"] = float(ctrl_data["margins"][name]["phase_margin_deg"])
+        except Exception as exc:
+            issues.append(str(exc))
+        passed = len(issues) == 0
+        message = "PASS" if passed else "; ".join(issues)
+        return VerificationResult("controller_implementation", passed, message, details)
+
+    def _verify_logging_integrity(self) -> VerificationResult:
+        details = {}
+        issues = []
+        required_keys = ["time", "sigma", "omega", "fb_torque", "total_torque", "rw_torque", "mode1", "mode2"]
+        acc_key_pairs = [("mode1_acc", "mode1_acc_signed"), ("mode2_acc", "mode2_acc_signed")]
+
+        missing_any = False
+        for method in METHODS:
+            for controller in CONTROLLERS:
+                npz_path = os.path.join(self.data_dir, f"vizard_demo_{method}_{controller}.npz")
+                if not os.path.isfile(npz_path):
+                    missing_any = True
+
+        if missing_any:
+            overrides = {
+                "modal_freqs_hz": self.config.modal_freqs_hz,
+                "modal_damping": self.config.modal_damping,
+                "modal_gains_scale": 1.0,
+                "control_filter_cutoff_hz": self.config.control_filter_cutoff_hz
+                if self.config.control_filter_cutoff_hz is not None
+                else 8.0,
+                "inertia_scale": 1.0,
+                "rw_max_torque_nm": self.config.rw_max_torque_nm,
+                "slew_angle_deg": self.config.slew_angle_deg,
+                "slew_duration_s": self.config.slew_duration_s,
+                "sensor_noise_std_rad_s": 0.0,
+                "disturbance_torque_nm": 0.0,
+            }
+            try:
+                _run_vizard_demo_batch(overrides, self.data_dir)
+            except subprocess.CalledProcessError as exc:
+                issues.append(f"failed to generate NPZs: {exc}")
+
+        for method in METHODS:
+            for controller in CONTROLLERS:
+                npz_path = os.path.join(self.data_dir, f"vizard_demo_{method}_{controller}.npz")
+                if not os.path.isfile(npz_path):
+                    issues.append(f"missing NPZ: {os.path.basename(npz_path)}")
+                    continue
+                try:
+                    data = np.load(npz_path, allow_pickle=True)
+                    time = np.array(data.get("time", []), dtype=float)
+                    n = len(time)
+                    if n == 0:
+                        issues.append(f"{os.path.basename(npz_path)} empty time array")
+                        continue
+                    details[f"{method}_{controller}_samples"] = n
+
+                    for key in required_keys:
+                        if key not in data or len(data.get(key, [])) == 0:
+                            issues.append(f"{os.path.basename(npz_path)} missing {key}")
+                            continue
+                        arr = np.array(data.get(key, []))
+                        if len(arr) != n:
+                            issues.append(f"{os.path.basename(npz_path)} {key} length {len(arr)} != {n}")
+
+                    for key_a, key_b in acc_key_pairs:
+                        arr_a = data.get(key_a)
+                        arr_b = data.get(key_b)
+                        if (arr_a is None or len(arr_a) == 0) and (arr_b is None or len(arr_b) == 0):
+                            issues.append(f"{os.path.basename(npz_path)} missing {key_a}/{key_b}")
+                except Exception as exc:
+                    issues.append(f"{os.path.basename(npz_path)} load error: {exc}")
+        passed = len(issues) == 0
+        message = "PASS" if passed else "; ".join(issues)
+        return VerificationResult("logging_integrity", passed, message, details)
+
+    def _verify_psd_computations(self) -> VerificationResult:
+        details: Dict[str, Any] = {}
+        issues: List[str] = []
+        # Use mission_simulation PSD parameter chooser for consistency
+        sample_npz = os.path.join(self.data_dir, "vizard_demo_unshaped_standard_pd.npz")
+        if not os.path.isfile(sample_npz):
+            issues.append("missing sample NPZ for PSD check")
+        else:
+            data = np.load(sample_npz, allow_pickle=True)
+            time = np.array(data.get("time", []), dtype=float)
+            torque = np.array(data.get("total_torque", []), dtype=float)
+            if torque.ndim > 1:
+                torque = torque[:, 2]
+            params = ms._choose_psd_params(time, torque)
+            if not params:
+                issues.append("PSD params could not be computed")
+            else:
+                details.update({f"psd_{k}": v for k, v in params.items()})
+                required = ["fs", "nperseg", "noverlap", "window", "detrend"]
+                for key in required:
+                    if key not in params:
+                        issues.append(f"PSD param missing: {key}")
+
+        # Confirm PSD uses 10*log10 in plotting routines
+        psd_funcs = [
+            ms._plot_psd_comparison,
+            ms._plot_torque_command_psd,
+            ms._plot_torque_psd_split,
+        ]
+        for func in psd_funcs:
+            try:
+                source = inspect.getsource(func)
+                if "10.0 * np.log10" not in source and "10 * np.log10" not in source:
+                    issues.append(f"{func.__name__} missing 10log10 PSD conversion")
+                if "20 * np.log10" in source or "20.0 * np.log10" in source:
+                    issues.append(f"{func.__name__} uses 20log10 on PSD")
+            except OSError:
+                issues.append(f"{func.__name__} source unavailable for PSD check")
+
+        passed = len(issues) == 0
+        message = "PASS" if passed else "; ".join(issues)
+        return VerificationResult("psd_computations", passed, message, details)
+
+    def _save_verification_report(self, results: List[VerificationResult]) -> None:
+        report_path = os.path.join(self.out_dir, "verification_report.json")
+        report = {
+            "timestamp": datetime.now().isoformat(),
+            "summary": {
+                "total_tests": len(results),
+                "passed": sum(1 for r in results if r.passed),
+                "failed": sum(1 for r in results if not r.passed),
+            },
+            "tests": [
+                {
+                    "name": r.test_name,
+                    "passed": r.passed,
+                    "message": r.message,
+                    "details": r.details,
+                }
+                for r in results
+            ],
+        }
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2)
+
+    # ------------------------------------------------------------------
+    # VALIDATION (Section 2)
+    # ------------------------------------------------------------------
+    def run_validation(self) -> List[ValidationResult]:
+        results: List[ValidationResult] = []
+        steps = [
+            ("Baseline simulation", None),
+            ("tracking", self._validate_tracking),
+            ("disturbance_rejection", self._validate_disturbance_rejection),
+            ("noise_rejection", self._validate_noise_rejection),
+            ("vibration_suppression", self._validate_vibration_suppression),
+            ("torque_limits", self._validate_torque_limits),
+            ("deliverables", self._validate_deliverables),
+        ]
+        start = time_module.time()
+        last = start
+        total = len(steps)
+        _update_progress("Validation", 0, total, start, last)
+
+        # Step 1: baseline simulation
+        ms.run_mission_simulation(
+            self.config,
+            out_dir=self.out_dir,
+            data_dir=self.data_dir,
+            make_plots=True,
+            export_csv=True,
+            generate_pointing=True,
+        )
+        last = _update_progress("Validation", 1, total, start, last)
+
+        # Remaining validation checks
+        for idx, (_, func) in enumerate(steps[1:], start=2):
+            if func is not None:
+                results.append(func())
+            last = _update_progress("Validation", idx, total, start, last)
+        self._save_validation_report(results)
+        return results
+
+    def _collect_pointing_rms(self, data_dir: str, label_suffix: str = "") -> Dict[str, float]:
+        metrics: Dict[str, float] = {}
+        pointing_data = ms._load_all_pointing_data(
+            data_dir, config=self.config, generate_if_missing=False
+        )
+        for method in METHODS:
+            method_data = pointing_data.get(method, {})
+            for controller in CONTROLLERS:
+                data = method_data.get(controller)
+                if not data:
+                    continue
+                time = np.array(data.get("time", []), dtype=float)
+                errors = ms._extract_pointing_error(data, config=self.config)
+                time, aligned = ms._align_series(time, errors)
+                errors = aligned[0]
+                rms, _ = _compute_post_slew_stats(time, errors, self.config.slew_duration_s)
+                metrics[f"{method}_{controller}{label_suffix}"] = rms
+        return metrics
+
+    def _validate_tracking(self) -> ValidationResult:
+        issues = []
+        metrics = {}
+        plots = [os.path.join(self.out_dir, "mission_tracking_response.png"),
+                 os.path.join(self.out_dir, "mission_tracking_tf.png")]
+        for p in plots:
+            if not os.path.isfile(p):
+                issues.append(f"missing plot: {os.path.basename(p)}")
+
+        summary_path = os.path.join(self.out_dir, "mission_summary.csv")
+        if os.path.isfile(summary_path):
+            with open(summary_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row.get("category") == "pointing":
+                        key = row.get("method", "")
+                        metrics[f"{key}_rms_pointing_error_deg"] = float(row.get("metric2", "nan"))
+        else:
+            issues.append("missing mission_summary.csv for tracking metrics")
+
+        if not metrics:
+            # Fallback to direct computation from NPZs
+            metrics.update(self._collect_pointing_rms(self.data_dir, label_suffix="_rms_pointing_error_deg"))
+        # Threshold check (P95 target in plan)
+        for k, val in metrics.items():
+            if np.isfinite(val) and val > PLAN_THRESHOLDS["rms_pointing_error_deg"]:
+                issues.append(f"{k} RMS {val:.6f} > {PLAN_THRESHOLDS['rms_pointing_error_deg']}")
+        passed = len(issues) == 0
+        message = "PASS" if passed else "; ".join(issues)
+        return ValidationResult("tracking", passed, message, metrics, plots)
+
+    def _validate_disturbance_rejection(self) -> ValidationResult:
+        issues: List[str] = []
+        metrics: Dict[str, float] = {}
+        plots = [
+            os.path.join(self.out_dir, "mission_disturbance_tf.png"),
+            os.path.join(self.out_dir, "mission_disturbance_to_torque.png"),
+        ]
+        for p in plots:
+            if not os.path.isfile(p):
+                issues.append(f"missing plot: {os.path.basename(p)}")
+
+        baseline = self._collect_pointing_rms(self.data_dir, label_suffix="_rms_base_deg")
+        if not baseline:
+            issues.append("baseline pointing metrics unavailable")
+
+        disturbance_dir = os.path.join(self.out_dir, "validation_disturbance")
+        _reset_dir(disturbance_dir)
+
+        overrides = {
+            "modal_freqs_hz": self.config.modal_freqs_hz,
+            "modal_damping": self.config.modal_damping,
+            "modal_gains_scale": 1.0,
+            "control_filter_cutoff_hz": self.config.control_filter_cutoff_hz
+            if self.config.control_filter_cutoff_hz is not None
+            else 8.0,
+            "inertia_scale": 1.0,
+            "rw_max_torque_nm": self.config.rw_max_torque_nm,
+            "slew_angle_deg": self.config.slew_angle_deg,
+            "slew_duration_s": self.config.slew_duration_s,
+            "sensor_noise_std_rad_s": 0.0,
+            "disturbance_torque_nm": self.disturbance_torque_nm,
+        }
+        try:
+            _run_vizard_demo_batch(overrides, disturbance_dir)
+            disturbed = self._collect_pointing_rms(disturbance_dir, label_suffix="_rms_disturbed_deg")
+            for key, base_val in baseline.items():
+                metrics[key] = base_val
+                dist_key = key.replace("_rms_base_deg", "_rms_disturbed_deg")
+                dist_val = disturbed.get(dist_key, float("nan"))
+                metrics[dist_key] = dist_val
+                if np.isfinite(base_val) and np.isfinite(dist_val):
+                    metrics[key.replace("_rms_base_deg", "_delta_deg")] = dist_val - base_val
+        except subprocess.CalledProcessError as exc:
+            issues.append(f"disturbance run failed: {exc}")
+
+        passed = len(issues) == 0
+        message = "PASS" if passed else "; ".join(issues)
+        return ValidationResult("disturbance_rejection", passed, message, metrics, plots)
+
+    def _validate_noise_rejection(self) -> ValidationResult:
+        issues: List[str] = []
+        metrics: Dict[str, float] = {}
+        plots = [os.path.join(self.out_dir, "mission_noise_to_torque.png")]
+        for p in plots:
+            if not os.path.isfile(p):
+                issues.append(f"missing plot: {os.path.basename(p)}")
+
+        baseline = self._collect_pointing_rms(self.data_dir, label_suffix="_rms_base_deg")
+        if not baseline:
+            issues.append("baseline pointing metrics unavailable")
+
+        noise_dir = os.path.join(self.out_dir, "validation_noise")
+        _reset_dir(noise_dir)
+
+        overrides = {
+            "modal_freqs_hz": self.config.modal_freqs_hz,
+            "modal_damping": self.config.modal_damping,
+            "modal_gains_scale": 1.0,
+            "control_filter_cutoff_hz": self.config.control_filter_cutoff_hz
+            if self.config.control_filter_cutoff_hz is not None
+            else 8.0,
+            "inertia_scale": 1.0,
+            "rw_max_torque_nm": self.config.rw_max_torque_nm,
+            "slew_angle_deg": self.config.slew_angle_deg,
+            "slew_duration_s": self.config.slew_duration_s,
+            "sensor_noise_std_rad_s": self.sensor_noise_std_rad_s,
+            "disturbance_torque_nm": 0.0,
+        }
+        try:
+            _run_vizard_demo_batch(overrides, noise_dir)
+            noisy = self._collect_pointing_rms(noise_dir, label_suffix="_rms_noisy_deg")
+            for key, base_val in baseline.items():
+                metrics[key] = base_val
+                noisy_key = key.replace("_rms_base_deg", "_rms_noisy_deg")
+                noisy_val = noisy.get(noisy_key, float("nan"))
+                metrics[noisy_key] = noisy_val
+                if np.isfinite(base_val) and np.isfinite(noisy_val):
+                    metrics[key.replace("_rms_base_deg", "_delta_deg")] = noisy_val - base_val
+        except subprocess.CalledProcessError as exc:
+            issues.append(f"noise run failed: {exc}")
+
+        passed = len(issues) == 0
+        message = "PASS" if passed else "; ".join(issues)
+        return ValidationResult("noise_rejection", passed, message, metrics, plots)
+
+    def _validate_vibration_suppression(self) -> ValidationResult:
+        issues = []
+        metrics = {}
+        summary_path = os.path.join(self.out_dir, "mission_summary.csv")
+        if os.path.isfile(summary_path):
+            with open(summary_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row.get("category") == "pointing":
+                        key = row.get("method", "") + "_rms_vibration_mm"
+                        metrics[key] = float(row.get("metric1", "nan"))
+        else:
+            issues.append("missing mission_summary.csv for vibration metrics")
+        for k, val in metrics.items():
+            if np.isfinite(val) and val > PLAN_THRESHOLDS["rms_vibration_mm"]:
+                issues.append(f"{k} RMS {val:.6f} > {PLAN_THRESHOLDS['rms_vibration_mm']}")
+
+        # Modal PSD checks at structural frequencies
+        mission_psd = ms._build_mission_psd_data(self.config, self.data_dir, generate_if_missing=False)
+        if not mission_psd:
+            issues.append("mission PSD data unavailable for modal checks")
+        else:
+            for mode_idx, f_mode in enumerate(self.config.modal_freqs_hz):
+                for method in METHODS:
+                    for controller in CONTROLLERS:
+                        data = mission_psd.get(method, {}).get(controller, {})
+                        freq = np.array(data.get("psd_freq", []), dtype=float)
+                        psd = np.array(data.get("psd", []), dtype=float)
+                        if len(freq) == 0 or len(psd) == 0:
+                            continue
+                        idx = int(np.argmin(np.abs(freq - f_mode)))
+                        if psd[idx] <= 0 or not np.isfinite(psd[idx]):
+                            val_db = float("nan")
+                        else:
+                            val_db = float(10.0 * np.log10(psd[idx]))
+                        metrics[f"{method}_{controller}_mode{mode_idx+1}_psd_db"] = val_db
+
+            for controller in CONTROLLERS:
+                for mode_idx in range(len(self.config.modal_freqs_hz)):
+                    key_un = f"unshaped_{controller}_mode{mode_idx+1}_psd_db"
+                    key_ff = f"fourth_{controller}_mode{mode_idx+1}_psd_db"
+                    if key_un in metrics and key_ff in metrics:
+                        un_val = metrics[key_un]
+                        ff_val = metrics[key_ff]
+                        if np.isfinite(un_val) and np.isfinite(ff_val):
+                            metrics[f"{controller}_mode{mode_idx+1}_reduction_db"] = un_val - ff_val
+        passed = len(issues) == 0
+        message = "PASS" if passed else "; ".join(issues)
+        return ValidationResult("vibration_suppression", passed, message, metrics, [])
+
+    def _validate_torque_limits(self) -> ValidationResult:
+        issues = []
+        metrics = {}
+        metrics_path = os.path.join(self.out_dir, "torque_command_metrics.csv")
+        if os.path.isfile(metrics_path):
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row.get("type") == "total_body":
+                        key = f"{row.get('method')}_{row.get('controller')}"
+                        peak = float(row.get("peak_torque_nm", "nan"))
+                        rms = float(row.get("rms_torque_nm", "nan"))
+                        sat_pct = float(row.get("rw_saturation_percent", "nan")) if row.get("rw_saturation_percent") else float("nan")
+                        peak_rw = float(row.get("peak_rw_torque_nm", "nan")) if row.get("peak_rw_torque_nm") else float("nan")
+
+                        metrics[f"{key}_peak_torque_nm"] = peak
+                        metrics[f"{key}_rms_torque_nm"] = rms
+                        metrics[f"{key}_rw_saturation_percent"] = sat_pct
+                        metrics[f"{key}_peak_rw_torque_nm"] = peak_rw
+
+                        if np.isfinite(peak) and peak > PLAN_THRESHOLDS["peak_torque_nm"]:
+                            issues.append(f"{key} peak {peak:.2f} > {PLAN_THRESHOLDS['peak_torque_nm']}")
+                        if np.isfinite(sat_pct) and sat_pct > PLAN_THRESHOLDS["torque_saturation_percent"]:
+                            issues.append(f"{key} rw saturation {sat_pct:.2f}% > {PLAN_THRESHOLDS['torque_saturation_percent']}%")
+                        if np.isfinite(peak_rw) and self.config.rw_max_torque_nm:
+                            if peak_rw > float(self.config.rw_max_torque_nm):
+                                issues.append(f"{key} peak RW {peak_rw:.2f} > {self.config.rw_max_torque_nm}")
+        else:
+            issues.append("missing torque_command_metrics.csv for torque limits")
+        passed = len(issues) == 0
+        message = "PASS" if passed else "; ".join(issues)
+        return ValidationResult("torque_limits", passed, message, metrics, [])
+
+    def _save_validation_report(self, results: List[ValidationResult]) -> None:
+        report_path = os.path.join(self.out_dir, "validation_report.json")
+        all_metrics = {}
+        for r in results:
+            all_metrics.update(r.metrics)
+        report = {
+            "timestamp": datetime.now().isoformat(),
+            "summary": {
+                "total_tests": len(results),
+                "passed": sum(1 for r in results if r.passed),
+                "failed": sum(1 for r in results if not r.passed),
+            },
+            "tests": [
+                {
+                    "name": r.test_name,
+                    "passed": r.passed,
+                    "message": r.message,
+                    "metrics": r.metrics,
+                    "plots": r.plots,
+                }
+                for r in results
+            ],
+            "all_metrics": all_metrics,
+        }
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2)
+
+        csv_path = os.path.join(self.out_dir, "validation_metrics.csv")
+        rows = [[k, str(v)] for k, v in sorted(all_metrics.items())]
+        _write_csv(csv_path, ["metric", "value"], rows)
+
+    def _validate_deliverables(self) -> ValidationResult:
+        plots = [
+            "mission_tracking_response.png",
+            "mission_tracking_tf.png",
+            "mission_disturbance_tf.png",
+            "mission_noise_to_torque.png",
+            "mission_disturbance_to_torque.png",
+            "mission_torque_command.png",
+            "mission_torque_command_psd.png",
+            "mission_torque_psd_split.png",
+            "mission_torque_psd_coherence.png",
+        ]
+        csvs = [
+            "torque_command_metrics.csv",
+            "torque_psd_rms.csv",
+            "mission_summary.csv",
+            "psd_mission.csv",
+        ]
+
+        missing = []
+        for name in plots + csvs:
+            path = os.path.join(self.out_dir, name)
+            if not os.path.isfile(path):
+                missing.append(name)
+
+        passed = len(missing) == 0
+        message = "PASS" if passed else f"missing deliverables: {', '.join(missing)}"
+        metrics = {"missing_count": float(len(missing))}
+        return ValidationResult("deliverables", passed, message, metrics, [os.path.join(self.out_dir, p) for p in plots])
+
+    # ------------------------------------------------------------------
+    # MONTE CARLO (Section 3)
+    # ------------------------------------------------------------------
+    def run_monte_carlo(self, n_runs: int = 500) -> MonteCarloSummary:
+        mc_runner = PlanMonteCarloRunner(
+            self.config,
+            self.out_dir,
+            n_runs=n_runs,
+            data_dir=self.data_dir,
+            sensor_noise_std_rad_s=self.sensor_noise_std_rad_s,
+            disturbance_torque_nm=self.disturbance_torque_nm,
+        )
+        return mc_runner.run()
+
+
+class PlanMonteCarloRunner:
+    """Monte Carlo analysis that regenerates NPZs using vizard_demo overrides."""
+
+    SUMMARY_METRICS = [
+        "rms_pointing_error_deg",
+        "peak_torque_nm",
+        "rms_vibration_mm",
+        "rms_torque_nm",
+        "torque_saturation_percent",
+    ]
+
+    def __init__(
+        self,
+        base_config: ms.MissionConfig,
+        out_dir: str,
+        n_runs: int,
+        data_dir: str,
+        sensor_noise_std_rad_s: float = 1e-5,
+        disturbance_torque_nm: float = 1e-5,
+    ):
+        self.base_config = base_config
+        self.out_dir = out_dir
+        self.n_runs = n_runs
+        self.data_dir = data_dir
+        self.sensor_noise_std_rad_s = float(sensor_noise_std_rad_s)
+        self.disturbance_torque_nm = float(disturbance_torque_nm)
+        self.rng = np.random.default_rng(42)
+        self.thresholds = PLAN_THRESHOLDS.copy()
+        self.mc_work_dir = os.path.join(self.out_dir, "mc_work")
+        _reset_dir(self.mc_work_dir)
+
+    def _copy_config(self) -> ms.MissionConfig:
+        cfg = ms.MissionConfig(**asdict(self.base_config))
+        cfg.inertia = np.array(cfg.inertia, dtype=float)
+        cfg.rotation_axis = np.array(cfg.rotation_axis, dtype=float)
+        cfg.modal_freqs_hz = list(cfg.modal_freqs_hz)
+        cfg.modal_damping = list(cfg.modal_damping)
+        cfg.modal_gains = list(cfg.modal_gains) if cfg.modal_gains is not None else []
+        cfg.control_modal_gains = (
+            list(cfg.control_modal_gains) if cfg.control_modal_gains is not None else []
+        )
+        return cfg
+
+    def _perturb(self) -> Tuple[ms.MissionConfig, Dict[str, float], Dict[str, object]]:
+        cfg = self._copy_config()
+        perturb: Dict[str, float] = {}
+
+        inertia_scale = 1 + self.rng.uniform(-0.2, 0.2)
+        perturb["inertia_scale"] = inertia_scale
+        hub_scaled = HUB_INERTIA.copy() * inertia_scale
+        cfg.inertia = compute_effective_inertia(hub_inertia=hub_scaled.copy())
+
+        freq_scale = 1 + self.rng.uniform(-0.1, 0.1)
+        perturb["freq_scale"] = freq_scale
+        cfg.modal_freqs_hz = [f * freq_scale for f in cfg.modal_freqs_hz]
+
+        damp_scale = 1 + self.rng.uniform(-0.5, 0.5)
+        perturb["damp_scale"] = damp_scale
+        cfg.modal_damping = [max(0.001, d * damp_scale) for d in cfg.modal_damping]
+
+        gains_scale = 1 + self.rng.uniform(-0.2, 0.2)
+        perturb["modal_gains_scale"] = gains_scale
+        modal_gains = cfg.modal_gains or compute_modal_gains(cfg.inertia, cfg.rotation_axis)
+        control_gains = cfg.control_modal_gains or modal_gains
+        cfg.modal_gains = [g * gains_scale for g in modal_gains]
+        cfg.control_modal_gains = [g * gains_scale for g in control_gains]
+
+        cutoff_scale = 1 + self.rng.uniform(-0.2, 0.2)
+        perturb["cutoff_scale"] = cutoff_scale
+        if cfg.control_filter_cutoff_hz is None:
+            cfg.control_filter_cutoff_hz = 8.0
+        cfg.control_filter_cutoff_hz = max(0.1, float(cfg.control_filter_cutoff_hz) * cutoff_scale)
+
+        noise_scale = 1 + self.rng.uniform(-0.5, 0.5)
+        perturb["noise_scale"] = noise_scale
+        noise_std = max(0.0, self.sensor_noise_std_rad_s * noise_scale)
+
+        dist_scale = 1 + self.rng.uniform(-0.5, 0.5)
+        perturb["disturbance_scale"] = dist_scale
+        dist_torque = self.disturbance_torque_nm * dist_scale
+
+        overrides = {
+            "modal_freqs_hz": cfg.modal_freqs_hz,
+            "modal_damping": cfg.modal_damping,
+            "modal_gains_scale": gains_scale,
+            "control_filter_cutoff_hz": cfg.control_filter_cutoff_hz,
+            "inertia_scale": inertia_scale,
+            "rw_max_torque_nm": cfg.rw_max_torque_nm,
+            "slew_angle_deg": cfg.slew_angle_deg,
+            "slew_duration_s": cfg.slew_duration_s,
+            "sensor_noise_std_rad_s": noise_std,
+            "disturbance_torque_nm": dist_torque,
+        }
+        return cfg, perturb, overrides
+
+    def _compute_metrics(
+        self,
+        cfg: ms.MissionConfig,
+        feedback_vibration: Dict[str, Dict[str, object]],
+        pointing_data: Dict[str, Dict[str, object]],
+    ) -> Dict[str, float]:
+        metrics: Dict[str, float] = {}
+
+        rms_list: List[float] = []
+        peak_torque_list: List[float] = []
+        rms_torque_list: List[float] = []
+        vib_list: List[float] = []
+        sat_list: List[float] = []
+
+        for method in METHODS:
+            method_data = pointing_data.get(method, {})
+            for controller in CONTROLLERS:
+                data = method_data.get(controller)
+                if not data:
+                    continue
+                time = np.array(data.get("time", []), dtype=float)
+                errors = ms._extract_pointing_error(data, config=cfg)
+                time, aligned = ms._align_series(time, errors)
+                errors = aligned[0]
+                rms, peak = _compute_post_slew_stats(time, errors, cfg.slew_duration_s)
+                metrics[f"{method}_{controller}_rms_pointing_error_deg"] = rms
+                metrics[f"{method}_{controller}_peak_pointing_error_deg"] = peak
+                if np.isfinite(rms):
+                    rms_list.append(rms)
+
+        for key, data in feedback_vibration.items():
+            time = np.array(data.get("time", []), dtype=float)
+            disp = np.array(data.get("displacement", []), dtype=float)
+            torque = data.get("torque_total", data.get("torque", np.array([])))
+            torque = np.array(torque, dtype=float)
+            if len(time) == 0:
+                continue
+            time, aligned = ms._align_series(time, disp, torque)
+            disp = aligned[0]
+            torque = aligned[1]
+            rms_disp, _ = _compute_post_slew_stats(time, disp, cfg.slew_duration_s)
+            rms_vib_mm = rms_disp * 1000.0 if np.isfinite(rms_disp) else float("nan")
+            vib_list.append(rms_vib_mm)
+            metrics[f"{key}_rms_vibration_mm"] = rms_vib_mm
+
+            if len(torque):
+                peak_torque = float(np.max(np.abs(torque)))
+                rms_torque = _compute_rms(torque)
+                metrics[f"{key}_peak_torque_nm"] = peak_torque
+                metrics[f"{key}_rms_torque_nm"] = rms_torque
+                peak_torque_list.append(peak_torque)
+                rms_torque_list.append(rms_torque)
+
+            rw_torque = data.get("rw_torque")
+            sat_pct = float("nan")
+            if rw_torque is not None and cfg.rw_max_torque_nm:
+                rw_arr = np.array(rw_torque, dtype=float)
+                if rw_arr.ndim == 2 and rw_arr.shape[1] > 1:
+                    rw_mag = np.max(np.abs(rw_arr), axis=1)
+                else:
+                    rw_mag = np.abs(rw_arr).flatten()
+                if len(rw_mag):
+                    sat_count = np.sum(rw_mag >= float(cfg.rw_max_torque_nm) * 0.99)
+                    sat_pct = 100.0 * sat_count / len(rw_mag)
+            metrics[f"{key}_rw_saturation_percent"] = sat_pct
+            if np.isfinite(sat_pct):
+                sat_list.append(sat_pct)
+
+        metrics["rms_pointing_error_deg"] = max(rms_list) if rms_list else float("nan")
+        metrics["peak_torque_nm"] = max(peak_torque_list) if peak_torque_list else float("nan")
+        metrics["rms_torque_nm"] = max(rms_torque_list) if rms_torque_list else float("nan")
+        metrics["rms_vibration_mm"] = max(vib_list) if vib_list else float("nan")
+        metrics["torque_saturation_percent"] = max(sat_list) if sat_list else float("nan")
+
+        return metrics
+
+    def _empty_metrics(self) -> Dict[str, float]:
+        metrics: Dict[str, float] = {}
+        for method in METHODS:
+            for controller in CONTROLLERS:
+                prefix = f"{method}_{controller}"
+                metrics[f"{prefix}_rms_pointing_error_deg"] = float("nan")
+                metrics[f"{prefix}_peak_pointing_error_deg"] = float("nan")
+                metrics[f"{prefix}_rms_vibration_mm"] = float("nan")
+                metrics[f"{prefix}_peak_torque_nm"] = float("nan")
+                metrics[f"{prefix}_rms_torque_nm"] = float("nan")
+                metrics[f"{prefix}_rw_saturation_percent"] = float("nan")
+        for key in self.SUMMARY_METRICS:
+            metrics[key] = float("nan")
+        return metrics
+
+    def _evaluate_run(self, metrics: Dict[str, float]) -> Tuple[bool, List[str]]:
+        reasons: List[str] = []
+        for key in self.SUMMARY_METRICS:
+            val = metrics.get(key, float("nan"))
+            if not np.isfinite(val):
+                reasons.append(f"{key} invalid")
+        if np.isfinite(metrics.get("rms_pointing_error_deg", np.nan)) and metrics["rms_pointing_error_deg"] > self.thresholds["rms_pointing_error_deg"]:
+            reasons.append("rms_pointing_error_deg exceeds threshold")
+        if np.isfinite(metrics.get("rms_vibration_mm", np.nan)) and metrics["rms_vibration_mm"] > self.thresholds["rms_vibration_mm"]:
+            reasons.append("rms_vibration_mm exceeds threshold")
+        if np.isfinite(metrics.get("peak_torque_nm", np.nan)) and metrics["peak_torque_nm"] > self.thresholds["peak_torque_nm"]:
+            reasons.append("peak_torque_nm exceeds threshold")
+        if np.isfinite(metrics.get("torque_saturation_percent", np.nan)) and metrics["torque_saturation_percent"] > self.thresholds["torque_saturation_percent"]:
+            reasons.append("torque_saturation_percent exceeds threshold")
+        return len(reasons) == 0, reasons
+
+    def run(self) -> MonteCarloSummary:
+        runs: List[MonteCarloRun] = []
+        start = time_module.time()
+        last = start
+        total = self.n_runs
+        _update_progress("Monte Carlo", 0, total, start, last)
+        for run_id in range(self.n_runs):
+            cfg, perturb, overrides = self._perturb()
+            run_ok = False
+            fail_log = ""
+            for attempt in range(2):
+                try:
+                    _run_vizard_demo_batch(overrides, self.mc_work_dir)
+                    run_ok = True
+                    break
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                    fail_log = _write_mc_failure_log(run_id, exc, self.mc_work_dir)
+                    if attempt == 0:
+                        continue
+            if not run_ok:
+                metrics = self._empty_metrics()
+                reasons = ["vizard_demo failed"]
+                if fail_log:
+                    reasons.append(f"see {os.path.basename(fail_log)}")
+                runs.append(MonteCarloRun(run_id, perturb, metrics, False, reasons))
+                last = _update_progress("Monte Carlo", run_id + 1, total, start, last)
+                continue
+
+            feedback_vibration = ms._collect_feedback_data(cfg, data_dir=self.mc_work_dir, prefer_npz=True)
+            pointing_data = ms._load_all_pointing_data(self.mc_work_dir, config=cfg, generate_if_missing=False)
+
+            metrics = self._compute_metrics(cfg, feedback_vibration, pointing_data)
+            passed, reasons = self._evaluate_run(metrics)
+            runs.append(MonteCarloRun(run_id, perturb, metrics, passed, reasons))
+
+            last = _update_progress("Monte Carlo", run_id + 1, total, start, last)
+
+        summary = self._compute_summary(runs)
+        self._save_results(summary, runs)
+        self._plot_histograms(summary)
+        return summary
+
+    def _compute_summary(self, runs: List[MonteCarloRun]) -> MonteCarloSummary:
+        n_passed = sum(1 for r in runs if r.passed)
+        pass_rate = n_passed / len(runs) if runs else 0.0
+
+        percentiles: Dict[str, Dict[str, float]] = {}
+        histograms: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+        for name in self.SUMMARY_METRICS:
+            values = np.array([r.metrics.get(name, np.nan) for r in runs], dtype=float)
+            values = values[np.isfinite(values)]
+            if values.size == 0:
+                continue
+            percentiles[name] = {
+                "P50": float(np.percentile(values, 50)),
+                "P95": float(np.percentile(values, 95)),
+                "P99": float(np.percentile(values, 99)),
+                "mean": float(np.mean(values)),
+                "std": float(np.std(values)),
+                "min": float(np.min(values)),
+                "max": float(np.max(values)),
+            }
+            hist, bins = np.histogram(values, bins=50)
+            histograms[name] = (hist, bins)
+
+        return MonteCarloSummary(
+            n_runs=len(runs),
+            n_passed=n_passed,
+            pass_rate=pass_rate,
+            percentiles=percentiles,
+            histograms=histograms,
+        )
+
+    def _save_results(self, summary: MonteCarloSummary, runs: List[MonteCarloRun]) -> None:
+        report_path = os.path.join(self.out_dir, "monte_carlo_report.json")
+
+        criteria = {
+            "rms_pointing_error_deg_P95": summary.percentiles.get("rms_pointing_error_deg", {}).get("P95", float("nan")),
+            "rms_vibration_mm_P95": summary.percentiles.get("rms_vibration_mm", {}).get("P95", float("nan")),
+            "peak_torque_nm_P99": summary.percentiles.get("peak_torque_nm", {}).get("P99", float("nan")),
+            "torque_saturation_percent_P95": summary.percentiles.get("torque_saturation_percent", {}).get("P95", float("nan")),
+        }
+
+        report = {
+            "timestamp": datetime.now().isoformat(),
+            "n_runs": summary.n_runs,
+            "n_passed": summary.n_passed,
+            "pass_rate": summary.pass_rate,
+            "thresholds": self.thresholds,
+            "percentiles": summary.percentiles,
+            "criteria": criteria,
+            "uncertainties": {
+                "inertia_pct": 0.2,
+                "modal_freq_pct": 0.1,
+                "modal_damping_pct": 0.5,
+                "modal_gain_pct": 0.2,
+                "sensor_noise_pct": 0.5,
+                "disturbance_pct": 0.5,
+                "filter_cutoff_pct": 0.2,
+            },
+            "noise_disturbance_nominal": {
+                "sensor_noise_std_rad_s": self.sensor_noise_std_rad_s,
+                "disturbance_torque_nm": self.disturbance_torque_nm,
+            },
+        }
+
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2)
+
+        csv_path = os.path.join(self.out_dir, "monte_carlo_runs.csv")
+        if runs:
+            headers = ["run_id", "passed"] + list(runs[0].metrics.keys())
+            rows = []
+            for run in runs:
+                row = [run.run_id, run.passed]
+                row.extend([run.metrics.get(k, "") for k in headers[2:]])
+                rows.append(row)
+            _write_csv(csv_path, headers, rows)
+
+        pct_path = os.path.join(self.out_dir, "monte_carlo_percentiles.csv")
+        pct_rows = []
+        for name, stats in summary.percentiles.items():
+            pct_rows.append([
+                name,
+                stats.get("P50", ""),
+                stats.get("P95", ""),
+                stats.get("P99", ""),
+                stats.get("mean", ""),
+                stats.get("std", ""),
+                stats.get("min", ""),
+                stats.get("max", ""),
+            ])
+        _write_csv(pct_path, ["metric", "P50", "P95", "P99", "mean", "std", "min", "max"], pct_rows)
+
+    def _plot_histograms(self, summary: MonteCarloSummary) -> None:
+        metric_names = list(summary.histograms.keys())
+        if not metric_names:
+            return
+
+        n_cols = min(3, len(metric_names))
+        n_rows = (len(metric_names) + n_cols - 1) // n_cols
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+        axes = np.atleast_1d(axes).flatten()
+
+        for idx, metric in enumerate(metric_names):
+            ax = axes[idx]
+            hist, bins = summary.histograms[metric]
+            centers = (bins[:-1] + bins[1:]) / 2
+            ax.bar(centers, hist, width=bins[1] - bins[0], alpha=0.7, edgecolor="black")
+            stats = summary.percentiles.get(metric, {})
+            if stats:
+                ax.axvline(stats.get("P50", 0), color="g", linestyle="-", label="P50")
+                ax.axvline(stats.get("P95", 0), color="orange", linestyle="--", label="P95")
+                ax.axvline(stats.get("P99", 0), color="r", linestyle=":", label="P99")
+            ax.set_xlabel(metric)
+            ax.set_ylabel("Count")
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=8)
+
+        for idx in range(len(metric_names), len(axes)):
+            axes[idx].set_visible(False)
+
+        plt.suptitle(f"Monte Carlo Results ({summary.n_runs} runs, {summary.pass_rate*100:.1f}% pass rate)")
+        plt.tight_layout()
+        plot_path = os.path.join(self.out_dir, "monte_carlo_histograms.png")
+        plt.savefig(plot_path, dpi=150)
+        plt.close()
 
 # ============================================================================
 # 1. VERIFICATION TESTS
@@ -1766,6 +2958,12 @@ def main():
     parser.add_argument("--all", action="store_true", help="Run all tests")
     parser.add_argument("--mc-runs", type=int, default=500, help="Number of MC runs (default: 500)")
     parser.add_argument("--output-dir", type=str, default=None, help="Output directory")
+    parser.add_argument("--data-dir", type=str, default=None, help="Directory containing NPZ data")
+    parser.add_argument("--sensor-noise-std", type=float, default=1e-5,
+                        help="Nominal gyro noise std dev (rad/s) for validation/MC")
+    parser.add_argument("--disturbance-torque", type=float, default=1e-5,
+                        help="Nominal disturbance torque bias (N*m) for validation/MC")
+    parser.add_argument("--legacy", action="store_true", help="Use legacy runner (not plan compliant)")
 
     args = parser.parse_args()
 
@@ -1776,6 +2974,7 @@ def main():
     # Setup output directory
     out_dir = args.output_dir or os.path.join(basilisk_dir, "analysis")
     _ensure_dir(out_dir)
+    data_dir = args.data_dir or basilisk_dir
 
     print("=" * 60)
     print("SPACECRAFT INPUT SHAPING V&V SUITE")
@@ -1783,32 +2982,66 @@ def main():
     print(f"\nOutput directory: {out_dir}")
     print(f"Timestamp: {datetime.now().isoformat()}")
 
-    # Create base config
-    config = ValidationConfig()
-
     all_passed = True
 
-    # 1. Verification
-    if args.verification or args.all:
-        verification = VerificationSuite(config, out_dir)
-        v_results = verification.run_all()
-        if not all(r.passed for r in v_results):
-            all_passed = False
+    if args.legacy:
+        # Legacy runner (not plan compliant)
+        config = ValidationConfig()
+        if args.verification or args.all:
+            verification = VerificationSuite(config, out_dir)
+            v_results = verification.run_all()
+            if not all(r.passed for r in v_results):
+                all_passed = False
 
-    # 2. Validation
-    if args.validation or args.all:
-        validation = ValidationSuite(config, out_dir, data_dir=basilisk_dir)
-        val_results = validation.run_all()
-        if not all(r.passed for r in val_results):
-            all_passed = False
+        if args.validation or args.all:
+            validation = ValidationSuite(config, out_dir, data_dir=basilisk_dir)
+            val_results = validation.run_all()
+            if not all(r.passed for r in val_results):
+                all_passed = False
 
-    # 3. Monte Carlo
-    if args.monte_carlo or args.all:
-        n_runs = args.monte_carlo or args.mc_runs
-        mc_runner = MonteCarloRunner(config, out_dir, n_runs=n_runs)
-        mc_summary = mc_runner.run()
-        if mc_summary.pass_rate < 0.95:
-            all_passed = False
+        if args.monte_carlo or args.all:
+            n_runs = args.monte_carlo or args.mc_runs
+            mc_runner = MonteCarloRunner(config, out_dir, n_runs=n_runs)
+            mc_summary = mc_runner.run()
+            if mc_summary.pass_rate < 0.95:
+                all_passed = False
+    else:
+        runner = PlanCompliantRunner(
+            out_dir=out_dir,
+            data_dir=data_dir,
+            sensor_noise_std_rad_s=args.sensor_noise_std,
+            disturbance_torque_nm=args.disturbance_torque,
+        )
+
+        if args.verification or args.all:
+            v_results = runner.run_verification()
+            if not all(r.passed for r in v_results):
+                all_passed = False
+
+        if args.validation or args.all:
+            val_results = runner.run_validation()
+            if not all(r.passed for r in val_results):
+                all_passed = False
+
+        if args.monte_carlo or args.all:
+            n_runs = args.monte_carlo or args.mc_runs
+            mc_summary = runner.run_monte_carlo(n_runs=n_runs)
+            # Apply P95/P99 criteria from validation_mc.md
+            p95_err = mc_summary.percentiles.get("rms_pointing_error_deg", {}).get("P95", float("nan"))
+            p95_vib = mc_summary.percentiles.get("rms_vibration_mm", {}).get("P95", float("nan"))
+            p99_peak = mc_summary.percentiles.get("peak_torque_nm", {}).get("P99", float("nan"))
+            p95_sat = mc_summary.percentiles.get("torque_saturation_percent", {}).get("P95", float("nan"))
+            if (
+                not np.isfinite(p95_err)
+                or not np.isfinite(p95_vib)
+                or not np.isfinite(p99_peak)
+                or not np.isfinite(p95_sat)
+                or p95_err > PLAN_THRESHOLDS["rms_pointing_error_deg"]
+                or p95_vib > PLAN_THRESHOLDS["rms_vibration_mm"]
+                or p99_peak > PLAN_THRESHOLDS["peak_torque_nm"]
+                or p95_sat > PLAN_THRESHOLDS["torque_saturation_percent"]
+            ):
+                all_passed = False
 
     # Final summary
     print("\n" + "=" * 60)

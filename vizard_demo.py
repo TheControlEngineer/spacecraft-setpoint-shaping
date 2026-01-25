@@ -8,8 +8,10 @@ in test_gravity_effect.py and check_rotation.py which both achieve ~179.7 deg.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import numpy as np
+from typing import Optional
 
 from Basilisk.utilities import SimulationBaseClass
 from Basilisk.utilities import macros
@@ -62,7 +64,8 @@ class CometPhotographyDemo:
     """Demonstrates comet photography with input shaping - uses FlexibleSpacecraft class."""
 
     def __init__(self, shaping_method='fourth', controller='standard_pd', run_mode='combined',
-                 use_trajectory_tracking=True, jitter_lever_arm=4.0, pixel_scale_arcsec=2.0):
+                 use_trajectory_tracking=True, jitter_lever_arm=4.0, pixel_scale_arcsec=2.0,
+                 config_overrides: Optional[dict] = None):
         """
         Initialize the demo.
 
@@ -111,6 +114,22 @@ class CometPhotographyDemo:
         # Filter cutoff: high enough to preserve phase margin with low bandwidth
         self.filter_cutoff_hz = None
 
+        # Optional injection parameters (for V&V / MC)
+        self.sensor_noise_std_rad_s = 0.0
+        self.sensor_noise_type = "white"
+        self.sensor_noise_frequency_hz = 0.0
+        self.sensor_noise_axis = np.array([0.0, 0.0, 1.0])
+        self.disturbance_torque_nm = 0.0
+        self.disturbance_type = "bias"
+        self.disturbance_amplitude_nm = 0.0
+        self.disturbance_frequency_hz = 0.0
+        self.disturbance_axis = np.array([0.0, 0.0, 1.0])
+        self.modal_gains_scale = 1.0
+
+        # Apply optional overrides (MC/validation support)
+        if config_overrides:
+            self._apply_config_overrides(config_overrides)
+
         # Target attitude for a +Z yaw slew
         self.initial_sigma = [0.0, 0.0, 0.0]
         self.target_sigma = [0.0, 0.0, float(np.tan(self.slew_angle / 4.0))]
@@ -136,6 +155,116 @@ class CometPhotographyDemo:
         self.total_torque_log = []
         self.rw_torque_log = []
         self.camera_error_log = []
+        self.rng = np.random.default_rng(42)
+
+    def _apply_config_overrides(self, overrides: dict) -> None:
+        """Apply configuration overrides for MC/validation runs."""
+        if not isinstance(overrides, dict):
+            return
+
+        # Trajectory overrides
+        if "slew_angle_deg" in overrides:
+            self.slew_angle_deg = float(overrides["slew_angle_deg"])
+            self.slew_angle = np.radians(self.slew_angle_deg)
+        if "slew_duration_s" in overrides:
+            self.slew_duration = float(overrides["slew_duration_s"])
+
+        # Control overrides
+        if "control_filter_cutoff_hz" in overrides:
+            self.filter_cutoff_hz = float(overrides["control_filter_cutoff_hz"])
+
+        # Disturbance/noise overrides
+        if "sensor_noise_std_rad_s" in overrides:
+            self.sensor_noise_std_rad_s = float(overrides["sensor_noise_std_rad_s"])
+        if "sensor_noise_type" in overrides:
+            self.sensor_noise_type = str(overrides["sensor_noise_type"]).lower()
+        if "sensor_noise_frequency_hz" in overrides:
+            try:
+                self.sensor_noise_frequency_hz = float(overrides["sensor_noise_frequency_hz"])
+            except (TypeError, ValueError):
+                self.sensor_noise_frequency_hz = 0.0
+        if "sensor_noise_axis" in overrides:
+            axis = overrides["sensor_noise_axis"]
+            if isinstance(axis, (list, tuple, np.ndarray)) and len(axis) == 3:
+                axis_vec = np.array(axis, dtype=float)
+                norm = np.linalg.norm(axis_vec)
+                if norm > 0:
+                    self.sensor_noise_axis = axis_vec / norm
+        if "disturbance_torque_nm" in overrides:
+            dist = overrides["disturbance_torque_nm"]
+            if isinstance(dist, (list, tuple, np.ndarray)) and len(dist) == 3:
+                self.disturbance_torque_nm = np.array(dist, dtype=float)
+            else:
+                self.disturbance_torque_nm = float(dist)
+        if "disturbance_type" in overrides:
+            self.disturbance_type = str(overrides["disturbance_type"]).lower()
+        if "disturbance_amplitude_nm" in overrides:
+            try:
+                self.disturbance_amplitude_nm = float(overrides["disturbance_amplitude_nm"])
+            except (TypeError, ValueError):
+                self.disturbance_amplitude_nm = 0.0
+        if "disturbance_frequency_hz" in overrides:
+            try:
+                self.disturbance_frequency_hz = float(overrides["disturbance_frequency_hz"])
+            except (TypeError, ValueError):
+                self.disturbance_frequency_hz = 0.0
+        if "disturbance_axis" in overrides:
+            axis = overrides["disturbance_axis"]
+            if isinstance(axis, (list, tuple, np.ndarray)) and len(axis) == 3:
+                axis_vec = np.array(axis, dtype=float)
+                norm = np.linalg.norm(axis_vec)
+                if norm > 0:
+                    self.disturbance_axis = axis_vec / norm
+
+        # Spacecraft / flexible mode overrides
+        inertia_scale = overrides.get("inertia_scale")
+        if inertia_scale is not None:
+            try:
+                scale = float(inertia_scale)
+                self.sc.hub_inertia = (np.array(self.sc.hub_inertia, dtype=float) * scale).tolist()
+            except (TypeError, ValueError):
+                pass
+
+        if "rw_max_torque_nm" in overrides:
+            try:
+                self.sc.rw_max_torque = float(overrides["rw_max_torque_nm"])
+            except (TypeError, ValueError):
+                pass
+
+        if "modal_mass_kg" in overrides:
+            try:
+                self.sc.modal_mass = float(overrides["modal_mass_kg"])
+            except (TypeError, ValueError):
+                pass
+
+        if "modal_freqs_hz" in overrides or "modal_damping" in overrides:
+            freqs = overrides.get("modal_freqs_hz")
+            damping = overrides.get("modal_damping")
+            if freqs is not None:
+                try:
+                    freqs = [float(f) for f in freqs]
+                except Exception:
+                    freqs = None
+            if damping is not None:
+                try:
+                    damping = [float(d) for d in damping]
+                except Exception:
+                    damping = None
+            if freqs is not None and damping is not None and len(freqs) == len(damping) == len(self.sc.array_modes):
+                for i, mode in enumerate(self.sc.array_modes):
+                    mode["frequency"] = freqs[i]
+                    mode["damping"] = damping[i]
+                if freqs:
+                    self.control_bandwidth_hz = min(freqs) / 2.5
+
+        if "modal_gains_scale" in overrides:
+            try:
+                self.modal_gains_scale = float(overrides["modal_gains_scale"])
+            except (TypeError, ValueError):
+                self.modal_gains_scale = 1.0
+
+        # Update target sigma after overrides
+        self.target_sigma = [0.0, 0.0, float(np.tan(self.slew_angle / 4.0))]
 
     def build_simulation(self):
         """Build simulation using FlexibleSpacecraft class."""
@@ -256,6 +385,8 @@ class CometPhotographyDemo:
         self.modal_gains = compute_modal_gains(self.inertia_for_control, rotation_axis)
         if not self.modal_gains:
             self.modal_gains = [0.0] * len(self.sc.array_modes)
+        if self.modal_gains_scale != 1.0:
+            self.modal_gains = [float(g) * self.modal_gains_scale for g in self.modal_gains]
 
         self.ff_controller = FeedforwardController(
             ff_inertia, self.Gs_matrix, max_torque=self.sc.rw_max_torque
@@ -506,6 +637,16 @@ class CometPhotographyDemo:
         def compute_feedback_torque(sim_time: float):
             sigma_current = np.array(self.scObject.scStateOutMsg.read().sigma_BN)
             omega_current = np.array(self.scObject.scStateOutMsg.read().omega_BN_B)
+            if self.sensor_noise_type == "sine" and self.sensor_noise_std_rad_s > 0:
+                omega_current = omega_current + (
+                    self.sensor_noise_axis
+                    * self.sensor_noise_std_rad_s
+                    * np.sin(2.0 * np.pi * self.sensor_noise_frequency_hz * sim_time)
+                )
+            elif self.sensor_noise_std_rad_s > 0:
+                omega_current = omega_current + self.rng.normal(
+                    0.0, self.sensor_noise_std_rad_s, size=omega_current.shape
+                )
 
             # Get modal displacements for logging
             mode1 = 0.5 * (self.mode1_port_rho.getState()[0][0] - self.mode1_stbd_rho.getState()[0][0])
@@ -564,8 +705,21 @@ class CometPhotographyDemo:
                     else:
                         control_mode = "FF(0)"
 
-            # COMBINED control: FF + FB
+            # COMBINED control: FF + FB (+ disturbance)
             body_torque = ff_torque + fb_torque
+            if self.disturbance_type == "sine" and self.disturbance_amplitude_nm > 0:
+                disturbance_vec = (
+                    self.disturbance_axis
+                    * self.disturbance_amplitude_nm
+                    * np.sin(2.0 * np.pi * self.disturbance_frequency_hz * current_time)
+                )
+                body_torque = body_torque + disturbance_vec
+            elif np.any(self.disturbance_torque_nm):
+                if isinstance(self.disturbance_torque_nm, np.ndarray):
+                    disturbance_vec = self.disturbance_torque_nm
+                else:
+                    disturbance_vec = np.array([0.0, 0.0, float(self.disturbance_torque_nm)])
+                body_torque = body_torque + disturbance_vec
             rw_torque_cmd = body_torque_to_rw_torque(body_torque.reshape(1, 3), self.Gs_matrix)[0]
 
             if self.run_mode == "combined" and not switched_to_feedback and current_time > self.actual_duration:
@@ -722,6 +876,15 @@ class CometPhotographyDemo:
                  control_filter_cutoff_hz=self.filter_cutoff_hz,
                  control_damping_ratio=self.control_damping_ratio,
                  control_gains=np.array([self.mrp_K, self.mrp_P, self.mrp_Ki], dtype=float),
+                 sensor_noise_std_rad_s=self.sensor_noise_std_rad_s,
+                 sensor_noise_type=self.sensor_noise_type,
+                 sensor_noise_frequency_hz=self.sensor_noise_frequency_hz,
+                 sensor_noise_axis=self.sensor_noise_axis,
+                 disturbance_torque_nm=self.disturbance_torque_nm,
+                 disturbance_type=self.disturbance_type,
+                 disturbance_amplitude_nm=self.disturbance_amplitude_nm,
+                 disturbance_frequency_hz=self.disturbance_frequency_hz,
+                 disturbance_axis=self.disturbance_axis,
                  inertia_control=self.inertia_for_control,
                  inertia_feedforward=self.inertia_feedforward,
                  use_trajectory_tracking=self.use_trajectory_tracking,
@@ -743,11 +906,21 @@ if __name__ == "__main__":
                         help="Camera lever arm in meters (default: 4.0)")
     parser.add_argument("--pixel-scale", type=float, default=2.0,
                         help="Camera plate scale in arcsec/pixel (default: 2.0)")
+    parser.add_argument("--config", default=None,
+                        help="Optional JSON config override file")
     args = parser.parse_args()
 
     print(f"\nMethod: {args.method}")
     print(f"Controller: {args.controller}")
     print(f"Run mode: {args.mode}")
+
+    config_overrides = None
+    if args.config:
+        try:
+            with open(args.config, "r", encoding="utf-8") as f:
+                config_overrides = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            config_overrides = None
 
     demo = CometPhotographyDemo(
         args.method,
@@ -755,6 +928,7 @@ if __name__ == "__main__":
         run_mode=args.mode,
         jitter_lever_arm=args.lever_arm,
         pixel_scale_arcsec=args.pixel_scale,
+        config_overrides=config_overrides,
     )
     demo.build_simulation()
     demo.run()
