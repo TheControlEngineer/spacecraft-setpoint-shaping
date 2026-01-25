@@ -1878,14 +1878,49 @@ def _compute_pointing_error(sigma: np.ndarray, target_sigma: np.ndarray) -> np.n
     return errors
 
 
-def _extract_pointing_error(data: Dict[str, object]) -> np.ndarray:
-    """Return pointing error time series using camera error if available."""
+def _extract_pointing_error(
+    data: Dict[str, object],
+    config: Optional[MissionConfig] = None,
+) -> np.ndarray:
+    """Return pointing error time series, optionally including flex-induced jitter."""
     camera_error = data.get("camera_error_deg")
     if camera_error is not None and len(camera_error) > 0:
-        return np.array(camera_error, dtype=float)
-    sigma = data.get("sigma")
-    target = data.get("target_sigma", np.zeros(3))
-    return _compute_pointing_error(sigma, target)
+        base_error = np.array(camera_error, dtype=float)
+    else:
+        sigma = data.get("sigma")
+        target = data.get("target_sigma", np.zeros(3))
+        base_error = _compute_pointing_error(sigma, target)
+
+    if config is None:
+        return base_error
+
+    lever_arm = float(config.camera_lever_arm_m or 0.0)
+    if lever_arm <= 0:
+        return base_error
+
+    mode1 = data.get("mode1")
+    mode2 = data.get("mode2")
+    if mode1 is None and mode2 is None:
+        return base_error
+
+    displacement = _combine_modal_displacement(
+        np.array(mode1, dtype=float) if mode1 is not None else np.array([]),
+        np.array(mode2, dtype=float) if mode2 is not None else np.array([]),
+    )
+    if len(displacement) == 0:
+        return base_error
+
+    flex_angle_rad = displacement / lever_arm
+    flex_error_deg = np.degrees(np.abs(flex_angle_rad))
+
+    n = min(len(base_error), len(flex_error_deg))
+    if n == 0:
+        return base_error if len(base_error) else flex_error_deg
+
+    base = base_error[:n]
+    flex = flex_error_deg[:n]
+    total = np.sqrt(base**2 + flex**2)
+    return total
 
 
 def run_pointing_summary(
@@ -1939,7 +1974,7 @@ def run_pointing_summary(
                 rms_vib = 0.0
 
             # Pointing error metrics
-            error = _extract_pointing_error(data)
+            error = _extract_pointing_error(data, config=config)
             if len(error) > 0 and len(time) > 0:
                 if maneuver_end_idx < len(error) - min_residual_samples:
                     residual_error = error[maneuver_end_idx:]
@@ -2404,6 +2439,7 @@ def _plot_modal_excitation(
 def _plot_pointing_error(
     pointing_errors: Dict[str, Dict[str, object]],
     out_dir: str,
+    config: Optional[MissionConfig] = None,
 ) -> Optional[str]:
     """Plot pointing error time series."""
     if not pointing_errors:
@@ -2432,7 +2468,7 @@ def _plot_pointing_error(
             if len(time) == 0:
                 continue
 
-            errors = _extract_pointing_error(data)
+            errors = _extract_pointing_error(data, config=config)
             if len(errors) == 0:
                 continue
             time, aligned = _align_series(time, errors)
@@ -3676,6 +3712,7 @@ def _export_vibration_csv(
 def _export_pointing_error_csv(
     pointing_data: Dict[str, Dict[str, object]],
     out_dir: str,
+    config: Optional[MissionConfig] = None,
 ) -> None:
     """Export pointing error data to CSV."""
     _ensure_dir(out_dir)
@@ -3683,7 +3720,7 @@ def _export_pointing_error_csv(
     for method, method_data in pointing_data.items():
         for controller, data in method_data.items():
             time = data.get("time", [])
-            errors = _extract_pointing_error(data)
+            errors = _extract_pointing_error(data, config=config)
             if len(errors) == 0:
                 continue
             time, aligned = _align_series(np.array(time, dtype=float), errors)
@@ -3894,7 +3931,7 @@ def run_mission_simulation(
     # Export remaining CSVs
     if export_csv:
         _export_vibration_csv(feedforward_vibration, feedback_vibration, out_dir)
-        _export_pointing_error_csv(pointing_data, out_dir)
+        _export_pointing_error_csv(pointing_data, out_dir, config=config)
         _export_psd_csv(feedforward_torque, feedback_vibration, out_dir, mission_psd_data)
         _export_sensitivity_csv(ctrl_data, out_dir)
         _export_nyquist_csv(ctrl_data, out_dir)
@@ -3910,7 +3947,7 @@ def run_mission_simulation(
         )
         sensitivity_plot = _plot_sensitivity_functions(ctrl_data, config, out_dir)
         modal_plot = _plot_modal_excitation(ctrl_data, config, out_dir)
-        pointing_plot = _plot_pointing_error(pointing_data, out_dir)
+        pointing_plot = _plot_pointing_error(pointing_data, out_dir, config=config)
         psd_plot = _plot_psd_comparison(mission_psd_data, config, out_dir)
         nyquist_plot = _plot_nyquist(ctrl_data, out_dir)
         disturbance_plot = _plot_disturbance_transfer(ctrl_data, config, out_dir)

@@ -1,0 +1,78 @@
+{
+  "timestamp": "2026-01-25T01:25:50.053009",
+  "n_runs": 500,
+  "n_passed": 0,
+  "pass_rate": 0.0,
+  "thresholds": {
+    "rms_pointing_error_deg": 0.005,
+    "peak_torque_nm": 70.0,
+    "rms_vibration_mm": 0.1,
+    "torque_saturation_percent": 5.0
+  },
+  "percentiles": {
+    "rms_pointing_error_deg": {
+      "P50": 0.018736021429742303,
+      "P95": 0.02790580870193878,
+      "P99": 0.03274273787882502,
+      "mean": 0.01974606977753913,
+      "std": 0.003892993709897104,
+      "min": 0.013748038627806351,
+      "max": 0.03424370731295883
+    },
+    "peak_torque_nm": {
+      "P50": 16.979926489740023,
+      "P95": 18.38562508547275,
+      "P99": 18.569196136357704,
+      "mean": 16.91460828491593,
+      "std": 0.9629454791212125,
+      "min": 15.200490887747119,
+      "max": 18.69784081284536
+    },
+    "rms_vibration_mm": {
+      "P50": 0.554023713857696,
+      "P95": 0.844870152527706,
+      "P99": 0.9878827044558108,
+      "mean": 0.5923960919884221,
+      "std": 0.12051272433154124,
+      "min": 0.41581123882476395,
+      "max": 1.025683816717528
+    },
+    "rms_torque_nm": {
+      "P50": 8.239810088999384,
+      "P95": 8.918105549835772,
+      "P99": 9.001009453805915,
+      "mean": 8.198676469276228,
+      "std": 0.467694018216728,
+      "min": 7.382081390496487,
+      "max": 9.021286686759685
+    },
+    "torque_saturation_percent": {
+      "P50": 0.0,
+      "P95": 0.0,
+      "P99": 0.0,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    }
+  },
+  "criteria": {
+    "rms_pointing_error_deg_P95": 0.02790580870193878,
+    "rms_vibration_mm_P95": 0.844870152527706,
+    "peak_torque_nm_P99": 18.569196136357704,
+    "torque_saturation_percent_P95": 0.0
+  },
+  "uncertainties": {
+    "inertia_pct": 0.2,
+    "modal_freq_pct": 0.1,
+    "modal_damping_pct": 0.5,
+    "modal_gain_pct": 0.2,
+    "sensor_noise_pct": 0.5,
+    "disturbance_pct": 0.5,
+    "filter_cutoff_pct": 0.2
+  },
+  "noise_disturbance_nominal": {
+    "sensor_noise_std_rad_s": 1e-05,
+    "disturbance_torque_nm": 1e-05
+  }
+}

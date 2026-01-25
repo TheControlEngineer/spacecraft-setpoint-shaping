@@ -1,0 +1,1 @@
+{"modal_freqs_hz": [0.4, 1.3], "modal_damping": [0.02, 0.015], "modal_gains_scale": 1.0, "control_filter_cutoff_hz": 8.0, "inertia_scale": 1.0, "rw_max_torque_nm": 70.0, "slew_angle_deg": 180.0, "slew_duration_s": 30.0, "sensor_noise_std_rad_s": 1e-05, "disturbance_torque_nm": 0.0}
