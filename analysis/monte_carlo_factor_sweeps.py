@@ -29,16 +29,18 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Ensure repo paths are on sys.path
-repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-basilisk_dir = os.path.join(repo_root, "basilisk_simulation")
-src_root = os.path.join(repo_root, "src")
-for path in (repo_root, basilisk_dir, src_root):
-    if path not in sys.path:
-        sys.path.insert(0, path)
+# Ensure package paths are on sys.path
+from pathlib import Path
+_analysis_dir = Path(__file__).parent.resolve()
+_basilisk_dir = _analysis_dir.parent
+_src_dir = _basilisk_dir / "src"
+_scripts_dir = _basilisk_dir / "scripts"
+for path in (_src_dir, _scripts_dir):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
-import mission_simulation as ms
-from spacecraft_properties import HUB_INERTIA, compute_effective_inertia, compute_modal_gains
+import run_mission as ms
+from basilisk_sim.spacecraft_properties import HUB_INERTIA, compute_effective_inertia, compute_modal_gains
 
 
 COMBOS = [
@@ -122,7 +124,7 @@ def _run_vizard_demo_batch(overrides: Dict[str, object], output_dir: str) -> Non
     with open(cfg_path, "w", encoding="utf-8") as f:
         json.dump(overrides, f)
 
-    script_path = os.path.join(os.path.dirname(__file__), "..", "vizard_demo.py")
+    script_path = os.path.join(os.path.dirname(__file__), "..", "scripts", "run_vizard_demo.py")
     script_path = os.path.abspath(script_path)
 
     for method, controller, _, _ in COMBOS:
@@ -136,6 +138,8 @@ def _run_vizard_demo_batch(overrides: Dict[str, object], output_dir: str) -> Non
             "combined",
             "--config",
             cfg_path,
+            "--output-dir",
+            output_dir,
         ]
         subprocess.run(cmd, cwd=output_dir, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -423,7 +427,7 @@ def _run_sweep(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="One-factor Monte Carlo sweep plots.")
-    parser.add_argument("--out-dir", default=os.path.dirname(__file__), help="Output directory for plots")
+    parser.add_argument("--out-dir", default=os.path.join(os.path.dirname(__file__), "..", "output"), help="Output directory for plots")
     parser.add_argument("--work-dir", default=None, help="Working directory for temporary NPZs")
     parser.add_argument("--noise-baseline", type=float, default=0.0, help="Baseline sensor noise (rad/s)")
     parser.add_argument("--disturbance-bias", type=float, default=0.0, help="Baseline disturbance bias (N·m)")
@@ -464,6 +468,12 @@ def main() -> int:
 
     out_dir = os.path.abspath(args.out_dir)
     os.makedirs(out_dir, exist_ok=True)
+
+    # Separate directories for plots and metrics
+    plots_dir = os.path.join(out_dir, "plots")
+    metrics_dir = os.path.join(out_dir, "metrics")
+    os.makedirs(plots_dir, exist_ok=True)
+    os.makedirs(metrics_dir, exist_ok=True)
 
     work_dir = os.path.abspath(args.work_dir or os.path.join(out_dir, "mc_sweep_work"))
     os.makedirs(work_dir, exist_ok=True)
@@ -517,14 +527,14 @@ def main() -> int:
         inertia_results,
         "Sweep: Inertia Error (±20%)",
         "Inertia scale factor",
-        os.path.join(out_dir, "mc_sweep_inertia.png"),
+        os.path.join(plots_dir, "mc_sweep_inertia.png"),
         log_x=False,
         bins=args.bins,
         metrics=METRICS,
         log_y=log_y,
     )
     _write_raw_csv(
-        os.path.join(out_dir, "mc_sweep_inertia.csv"),
+        os.path.join(metrics_dir, "mc_sweep_inertia.csv"),
         "inertia_scale",
         inertia_vals,
         inertia_results,
@@ -557,14 +567,14 @@ def main() -> int:
         freq_results,
         "Sweep: Modal Frequency Error",
         "Modal frequency scale factor",
-        os.path.join(out_dir, "mc_sweep_modal_frequency.png"),
+        os.path.join(plots_dir, "mc_sweep_modal_frequency.png"),
         log_x=False,
         bins=args.bins,
         metrics=METRICS,
         log_y=log_y,
     )
     _write_raw_csv(
-        os.path.join(out_dir, "mc_sweep_modal_frequency.csv"),
+        os.path.join(metrics_dir, "mc_sweep_modal_frequency.csv"),
         "modal_frequency_scale",
         freq_vals,
         freq_results,
@@ -597,14 +607,14 @@ def main() -> int:
         damping_results,
         "Sweep: Modal Damping Variation",
         "Modal damping scale factor",
-        os.path.join(out_dir, "mc_sweep_modal_damping.png"),
+        os.path.join(plots_dir, "mc_sweep_modal_damping.png"),
         log_x=False,
         bins=args.bins,
         metrics=METRICS,
         log_y=log_y,
     )
     _write_raw_csv(
-        os.path.join(out_dir, "mc_sweep_modal_damping.csv"),
+        os.path.join(metrics_dir, "mc_sweep_modal_damping.csv"),
         "modal_damping_scale",
         damping_vals,
         damping_results,
@@ -642,7 +652,7 @@ def main() -> int:
         dist_results,
         "Sweep: Disturbance Frequency (sinusoidal torque)",
         "Disturbance frequency (Hz)",
-        os.path.join(out_dir, "mc_sweep_disturbance_frequency.png"),
+        os.path.join(plots_dir, "mc_sweep_disturbance_frequency.png"),
         log_x=True,
         bins=args.bins,
         metrics=METRICS,
@@ -653,14 +663,14 @@ def main() -> int:
         dist_results,
         "Sweep: Disturbance Frequency (frequency-targeted metrics)",
         "Disturbance frequency (Hz)",
-        os.path.join(out_dir, "mc_sweep_disturbance_frequency_targeted.png"),
+        os.path.join(plots_dir, "mc_sweep_disturbance_frequency_targeted.png"),
         log_x=True,
         bins=args.bins,
         metrics=FREQ_METRICS,
         log_y=log_y,
     )
     _write_raw_csv(
-        os.path.join(out_dir, "mc_sweep_disturbance_frequency.csv"),
+        os.path.join(metrics_dir, "mc_sweep_disturbance_frequency.csv"),
         "disturbance_frequency_hz",
         dist_freq_vals,
         dist_results,
@@ -697,7 +707,7 @@ def main() -> int:
         noise_results,
         "Sweep: Sensor Noise Frequency (sinusoidal)",
         "Sensor noise frequency (Hz)",
-        os.path.join(out_dir, "mc_sweep_noise_level.png"),
+        os.path.join(plots_dir, "mc_sweep_noise_level.png"),
         log_x=True,
         bins=args.bins,
         metrics=METRICS,
@@ -708,21 +718,22 @@ def main() -> int:
         noise_results,
         "Sweep: Sensor Noise Frequency (frequency-targeted metrics)",
         "Sensor noise frequency (Hz)",
-        os.path.join(out_dir, "mc_sweep_noise_level_targeted.png"),
+        os.path.join(plots_dir, "mc_sweep_noise_level_targeted.png"),
         log_x=True,
         bins=args.bins,
         metrics=FREQ_METRICS,
         log_y=log_y,
     )
     _write_raw_csv(
-        os.path.join(out_dir, "mc_sweep_noise_level.csv"),
+        os.path.join(metrics_dir, "mc_sweep_noise_level.csv"),
         "sensor_noise_frequency_hz",
         noise_vals,
         noise_results,
         metrics=METRICS + FREQ_METRICS,
     )
 
-    print("Saved sweep plots to:", out_dir)
+    print("Saved plots to:", plots_dir)
+    print("Saved metrics to:", metrics_dir)
     return 0
 
 
