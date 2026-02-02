@@ -1,0 +1,622 @@
+{
+  "timestamp": "2026-02-01 18:06:25",
+  "duration_seconds": 167.4045774936676,
+  "summary": {
+    "total_tests": 43,
+    "passed": 43,
+    "failed": 0,
+    "pass_rate": 1.0,
+    "by_category": {
+      "correctness": {
+        "total": 7,
+        "passed": 7
+      },
+      "convergence": {
+        "total": 2,
+        "passed": 2
+      },
+      "robustness": {
+        "total": 16,
+        "passed": 16
+      },
+      "numerical": {
+        "total": 7,
+        "passed": 7
+      },
+      "api": {
+        "total": 6,
+        "passed": 6
+      },
+      "statistical": {
+        "total": 1,
+        "passed": 1
+      },
+      "sweep": {
+        "total": 4,
+        "passed": 4
+      }
+    }
+  },
+  "tests": [
+    {
+      "name": "pure_sinusoid_amplitude",
+      "category": "correctness",
+      "passed": "True",
+      "metric_name": "amplitude_error_pct",
+      "metric_value": 0.026968109900528392,
+      "threshold": 2.0,
+      "details": {
+        "true_amplitude": 0.01,
+        "estimated_amplitude": 0.009997303189009947,
+        "freq_hz": 0.4,
+        "bw_hz": 0.03
+      }
+    },
+    {
+      "name": "pure_sinusoid_phase",
+      "category": "correctness",
+      "passed": "True",
+      "metric_name": "phase_error_deg",
+      "metric_value": 0.0013316579924742516,
+      "threshold": 5.0,
+      "details": {
+        "true_phase_deg": 0.0,
+        "estimated_phase_deg": -0.0013316579924742516
+      }
+    },
+    {
+      "name": "multi_mode_separation",
+      "category": "correctness",
+      "passed": true,
+      "metric_name": "max_nrmse",
+      "metric_value": 0.05707937756077756,
+      "threshold": 0.1,
+      "details": {
+        "per_mode_nrmse": [
+          0.04523772161962153,
+          0.05707937756077756
+        ],
+        "freqs_hz": [
+          0.4,
+          1.3
+        ],
+        "amplitudes": [
+          0.01,
+          0.005
+        ]
+      }
+    },
+    {
+      "name": "rigid_body_extraction",
+      "category": "correctness",
+      "passed": true,
+      "metric_name": "nrmse",
+      "metric_value": 0.07800797117076444,
+      "threshold": 0.1,
+      "details": {
+        "mode_freq_hz": 0.4,
+        "rigid_freq_hz": 0.02
+      }
+    },
+    {
+      "name": "multi_axis_independence",
+      "category": "correctness",
+      "passed": "True",
+      "metric_name": "max_amplitude_error",
+      "metric_value": 0.0002926051761597062,
+      "threshold": 0.05,
+      "details": {
+        "per_axis_errors": [
+          0.0002696810990071921,
+          0.0002926051761597062,
+          0.0002691096137418895
+        ],
+        "true_amplitudes": [
+          0.01,
+          0.005,
+          0.015
+        ],
+        "true_phases": [
+          0.0,
+          0.7853981633974483,
+          1.5707963267948966
+        ]
+      }
+    },
+    {
+      "name": "decaying_mode_tracking",
+      "category": "correctness",
+      "passed": true,
+      "metric_name": "amplitude_tracking_nrmse",
+      "metric_value": 0.29694190786661623,
+      "threshold": 0.35,
+      "details": {
+        "freq_hz": 0.4,
+        "damping_ratio": 0.02,
+        "decay_time_constant": 19.894367886486915
+      }
+    },
+    {
+      "name": "spectral_rejection",
+      "category": "correctness",
+      "passed": "True",
+      "metric_name": "rejection_db",
+      "metric_value": 28.54055709608933,
+      "threshold": 20.0,
+      "details": {
+        "mode_freq_hz": 0.4,
+        "peak_input": 15.0,
+        "peak_rigid": 0.5611298914726354
+      }
+    },
+    {
+      "name": "settling_time",
+      "category": "convergence",
+      "passed": "True",
+      "metric_name": "settling_ratio",
+      "metric_value": 0.8727193112005934,
+      "threshold": 1.5,
+      "details": {
+        "actual_settling_s": 13.870000000000001,
+        "theoretical_settling_s": 15.892853317201318,
+        "bw_hz": 0.03,
+        "time_constant_s": 5.305164769729845
+      }
+    },
+    {
+      "name": "step_amplitude_response",
+      "category": "convergence",
+      "passed": "True",
+      "metric_name": "final_tracking_error",
+      "metric_value": 0.0025800953186244646,
+      "threshold": 0.1,
+      "details": {
+        "amp_before": 0.01,
+        "amp_after": 0.02,
+        "final_estimate": 0.01994839809362751,
+        "step_time": 30.0
+      }
+    },
+    {
+      "name": "frequency_mismatch_2.0pct",
+      "category": "robustness",
+      "passed": true,
+      "metric_name": "reconstruction_nrmse",
+      "metric_value": 0.22083784888785002,
+      "threshold": 0.8,
+      "details": {
+        "true_freq_hz": 0.4,
+        "assumed_freq_hz": 0.40800000000000003,
+        "mismatch_pct": 2.0,
+        "amplitude_cv": 0.02711324059669287,
+        "amplitude_mean": 0.009666654550541538
+      }
+    },
+    {
+      "name": "frequency_mismatch_5.0pct",
+      "category": "robustness",
+      "passed": true,
+      "metric_name": "reconstruction_nrmse",
+      "metric_value": 0.5236923452545471,
+      "threshold": 0.8,
+      "details": {
+        "true_freq_hz": 0.4,
+        "assumed_freq_hz": 0.42000000000000004,
+        "mismatch_pct": 5.0,
+        "amplitude_cv": 0.031056872061473728,
+        "amplitude_mean": 0.008323477836763515
+      }
+    },
+    {
+      "name": "frequency_mismatch_10.0pct",
+      "category": "robustness",
+      "passed": true,
+      "metric_name": "reconstruction_nrmse",
+      "metric_value": 0.7766738863141448,
+      "threshold": 0.8,
+      "details": {
+        "true_freq_hz": 0.4,
+        "assumed_freq_hz": 0.44000000000000006,
+        "mismatch_pct": 10.0,
+        "amplitude_cv": 0.04198816618829889,
+        "amplitude_mean": 0.006003106036577937
+      }
+    },
+    {
+      "name": "noise_sensitivity_30dB",
+      "category": "robustness",
+      "passed": "True",
+      "metric_name": "noise_amplification",
+      "metric_value": 1.2008378198569503,
+      "threshold": 2.0,
+      "details": {
+        "input_snr_db": 30.0,
+        "input_noise_std": 0.00022360679774997898,
+        "output_noise_std": 0.0002685154995152788
+      }
+    },
+    {
+      "name": "noise_sensitivity_20dB",
+      "category": "robustness",
+      "passed": "True",
+      "metric_name": "noise_amplification",
+      "metric_value": 0.3935797514909968,
+      "threshold": 2.0,
+      "details": {
+        "input_snr_db": 20.0,
+        "input_noise_std": 0.0007071067811865475,
+        "output_noise_std": 0.000278302911217
+      }
+    },
+    {
+      "name": "noise_sensitivity_10dB",
+      "category": "robustness",
+      "passed": "True",
+      "metric_name": "noise_amplification",
+      "metric_value": 0.14267690685372036,
+      "threshold": 2.0,
+      "details": {
+        "input_snr_db": 10.0,
+        "input_noise_std": 0.00223606797749979,
+        "output_noise_std": 0.0003190352625443244
+      }
+    },
+    {
+      "name": "bw_sensitivity_0.020Hz",
+      "category": "robustness",
+      "passed": "True",
+      "metric_name": "amplitude_error",
+      "metric_value": 0.005831145291975218,
+      "threshold": 0.05,
+      "details": {
+        "bw_hz": 0.02,
+        "settling_time_s": 21.400000000000002
+      }
+    },
+    {
+      "name": "bw_sensitivity_0.031Hz",
+      "category": "robustness",
+      "passed": "True",
+      "metric_name": "amplitude_error",
+      "metric_value": 0.00010868237577295325,
+      "threshold": 0.05,
+      "details": {
+        "bw_hz": 0.03111111111111111,
+        "settling_time_s": 12.700000000000001
+      }
+    },
+    {
+      "name": "bw_sensitivity_0.042Hz",
+      "category": "robustness",
+      "passed": "True",
+      "metric_name": "amplitude_error",
+      "metric_value": 0.000648461446305787,
+      "threshold": 0.05,
+      "details": {
+        "bw_hz": 0.04222222222222222,
+        "settling_time_s": 8.93
+      }
+    },
+    {
+      "name": "bw_sensitivity_0.053Hz",
+      "category": "robustness",
+      "passed": "True",
+      "metric_name": "amplitude_error",
+      "metric_value": 0.0010986899361277447,
+      "threshold": 0.05,
+      "details": {
+        "bw_hz": 0.05333333333333333,
+        "settling_time_s": 6.5
+      }
+    },
+    {
+      "name": "bw_sensitivity_0.064Hz",
+      "category": "robustness",
+      "passed": "True",
+      "metric_name": "amplitude_error",
+      "metric_value": 0.0016059142700685161,
+      "threshold": 0.05,
+      "details": {
+        "bw_hz": 0.06444444444444444,
+        "settling_time_s": 5.21
+      }
+    },
+    {
+      "name": "bw_sensitivity_0.076Hz",
+      "category": "robustness",
+      "passed": "True",
+      "metric_name": "amplitude_error",
+      "metric_value": 0.0022014970979141596,
+      "threshold": 0.05,
+      "details": {
+        "bw_hz": 0.07555555555555556,
+        "settling_time_s": 5.07
+      }
+    },
+    {
+      "name": "bw_sensitivity_0.087Hz",
+      "category": "robustness",
+      "passed": "True",
+      "metric_name": "amplitude_error",
+      "metric_value": 0.002887150334233632,
+      "threshold": 0.05,
+      "details": {
+        "bw_hz": 0.08666666666666666,
+        "settling_time_s": 3.87
+      }
+    },
+    {
+      "name": "bw_sensitivity_0.098Hz",
+      "category": "robustness",
+      "passed": "True",
+      "metric_name": "amplitude_error",
+      "metric_value": 0.003661578202138367,
+      "threshold": 0.05,
+      "details": {
+        "bw_hz": 0.09777777777777777,
+        "settling_time_s": 3.8000000000000003
+      }
+    },
+    {
+      "name": "bw_sensitivity_0.109Hz",
+      "category": "robustness",
+      "passed": "True",
+      "metric_name": "amplitude_error",
+      "metric_value": 0.004523032433387253,
+      "threshold": 0.05,
+      "details": {
+        "bw_hz": 0.10888888888888888,
+        "settling_time_s": 2.67
+      }
+    },
+    {
+      "name": "bw_sensitivity_0.120Hz",
+      "category": "robustness",
+      "passed": "True",
+      "metric_name": "amplitude_error",
+      "metric_value": 0.005469578406936369,
+      "threshold": 0.05,
+      "details": {
+        "bw_hz": 0.12,
+        "settling_time_s": 2.6
+      }
+    },
+    {
+      "name": "long_run_stability",
+      "category": "numerical",
+      "passed": "True",
+      "metric_name": "amplitude_drift_cv",
+      "metric_value": 0.026463004688396245,
+      "threshold": 0.03,
+      "details": {
+        "duration_s": 600.0,
+        "n_samples": 60000,
+        "carrier_deviation": 8.804068585277491e-14
+      }
+    },
+    {
+      "name": "dt_variation",
+      "category": "numerical",
+      "passed": true,
+      "metric_name": "nrmse",
+      "metric_value": 0.03750325415400102,
+      "threshold": 0.1,
+      "details": {
+        "dt_variation_pct": 10.0,
+        "mean_dt": 0.009989492134279503,
+        "std_dt": 0.0005765197463698533
+      }
+    },
+    {
+      "name": "edge_freq_very_low_freq",
+      "category": "numerical",
+      "passed": true,
+      "metric_name": "nrmse",
+      "metric_value": 0.1959824390080271,
+      "threshold": 0.2,
+      "details": {
+        "freq_hz": 0.05,
+        "bw_hz": 0.02,
+        "duration": 120.0,
+        "nyquist": 50.0,
+        "error": null
+      }
+    },
+    {
+      "name": "edge_freq_low_freq",
+      "category": "numerical",
+      "passed": true,
+      "metric_name": "nrmse",
+      "metric_value": 0.09915831587436676,
+      "threshold": 0.2,
+      "details": {
+        "freq_hz": 0.1,
+        "bw_hz": 0.02,
+        "duration": 60.0,
+        "nyquist": 50.0,
+        "error": null
+      }
+    },
+    {
+      "name": "edge_freq_mid_freq",
+      "category": "numerical",
+      "passed": true,
+      "metric_name": "nrmse",
+      "metric_value": 0.0249767079490418,
+      "threshold": 0.2,
+      "details": {
+        "freq_hz": 1.0,
+        "bw_hz": 0.05,
+        "duration": 30.0,
+        "nyquist": 50.0,
+        "error": null
+      }
+    },
+    {
+      "name": "edge_freq_high_freq",
+      "category": "numerical",
+      "passed": true,
+      "metric_name": "nrmse",
+      "metric_value": 0.02020212761960633,
+      "threshold": 0.2,
+      "details": {
+        "freq_hz": 5.0,
+        "bw_hz": 0.2,
+        "duration": 30.0,
+        "nyquist": 50.0,
+        "error": null
+      }
+    },
+    {
+      "name": "edge_freq_near_nyquist",
+      "category": "numerical",
+      "passed": true,
+      "metric_name": "nrmse",
+      "metric_value": 0.051774515079634965,
+      "threshold": 0.2,
+      "details": {
+        "freq_hz": 40.0,
+        "bw_hz": 1.0,
+        "duration": 30.0,
+        "nyquist": 50.0,
+        "error": null
+      }
+    },
+    {
+      "name": "api_empty_modes",
+      "category": "api",
+      "passed": true,
+      "metric_name": "raises_error",
+      "metric_value": 1.0,
+      "threshold": 1.0,
+      "details": {}
+    },
+    {
+      "name": "api_mismatched_lengths",
+      "category": "api",
+      "passed": true,
+      "metric_name": "raises_error",
+      "metric_value": 1.0,
+      "threshold": 1.0,
+      "details": {}
+    },
+    {
+      "name": "api_invalid_dt",
+      "category": "api",
+      "passed": true,
+      "metric_name": "raises_error",
+      "metric_value": 1.0,
+      "threshold": 1.0,
+      "details": {}
+    },
+    {
+      "name": "api_invalid_bandwidth",
+      "category": "api",
+      "passed": true,
+      "metric_name": "raises_error",
+      "metric_value": 1.0,
+      "threshold": 1.0,
+      "details": {}
+    },
+    {
+      "name": "api_invalid_n_axes",
+      "category": "api",
+      "passed": true,
+      "metric_name": "raises_error",
+      "metric_value": 1.0,
+      "threshold": 1.0,
+      "details": {}
+    },
+    {
+      "name": "api_reset",
+      "category": "api",
+      "passed": true,
+      "metric_name": "reset_works",
+      "metric_value": 1.0,
+      "threshold": 1.0,
+      "details": {}
+    },
+    {
+      "name": "monte_carlo_validation",
+      "category": "statistical",
+      "passed": true,
+      "metric_name": "pass_rate",
+      "metric_value": 0.99,
+      "threshold": 0.85,
+      "details": {
+        "n_trials": 200,
+        "n_passed": 198,
+        "n_failed": 2,
+        "per_trial_tolerance": 0.1
+      }
+    },
+    {
+      "name": "sweep_frequency",
+      "category": "sweep",
+      "passed": true,
+      "metric_name": "p95_nrmse",
+      "metric_value": 0.02409857460206965,
+      "threshold": 0.1,
+      "details": {
+        "freq_range": [
+          0.1,
+          50.0
+        ],
+        "amplitude": 0.025500000000000002,
+        "phase_rad": 0.0,
+        "bw_hz": 0.060000000000000005,
+        "n_points": 200
+      }
+    },
+    {
+      "name": "sweep_amplitude",
+      "category": "sweep",
+      "passed": true,
+      "metric_name": "p95_nrmse",
+      "metric_value": 0.0018803133444711866,
+      "threshold": 0.1,
+      "details": {
+        "amp_range": [
+          0.001,
+          0.05
+        ],
+        "freq_hz": 25.05,
+        "phase_rad": 0.0,
+        "bw_hz": 0.060000000000000005,
+        "n_points": 200
+      }
+    },
+    {
+      "name": "sweep_phase",
+      "category": "sweep",
+      "passed": true,
+      "metric_name": "p95_nrmse",
+      "metric_value": 0.0018803133444940975,
+      "threshold": 0.1,
+      "details": {
+        "freq_hz": 25.05,
+        "amplitude": 0.025500000000000002,
+        "bw_hz": 0.060000000000000005,
+        "n_points": 200
+      }
+    },
+    {
+      "name": "sweep_bandwidth",
+      "category": "sweep",
+      "passed": true,
+      "metric_name": "p95_nrmse",
+      "metric_value": 0.0031728372197597342,
+      "threshold": 0.1,
+      "details": {
+        "bw_range": [
+          0.02,
+          0.1
+        ],
+        "freq_hz": 25.05,
+        "amplitude": 0.025500000000000002,
+        "phase_rad": 0.0,
+        "n_points": 200
+      }
+    }
+  ]
+}

@@ -139,6 +139,19 @@ def main() -> None:
     fig3.tight_layout()
     fig3.savefig(out_dir / "rw_cant_axis_authority.png", dpi=200)
 
+    # Plot 4: Axis-wise authority normalized to max possible (u_max=1)
+    # X and Y each use two wheels -> max possible is 2; Z uses one wheel -> max is 1.
+    fig4, ax4 = plt.subplots(figsize=(7.2, 4.5))
+    ax4.plot(alpha, results["max_tau_x"] / 2.0, label="normalised tau_x", linewidth=2)
+    ax4.plot(alpha, results["max_tau_y"] / 2.0, label="normalised tau_y", linewidth=2)
+    ax4.plot(alpha, results["max_tau_z"], label="normalised tau_z", linewidth=2)
+    ax4.axvline(45.0, color="tab:blue", linestyle="--", linewidth=1)
+    _style_axes(ax4, "Cant angle alpha (deg)", "Normalized axis authority", "Axis Authority vs Cant Angle (Normalized)")
+    ax4.set_xlim(0.0, 90.0)
+    ax4.legend()
+    fig4.tight_layout()
+    fig4.savefig(out_dir / "rw_cant_axis_authority_normalized.png", dpi=200)
+
     print(f"Saved plots to: {out_dir}")
 
 
