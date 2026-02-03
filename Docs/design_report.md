@@ -77,7 +77,7 @@ We define our hub as :
 
 ```math
 \begin{aligned}
-m_{hub} = 750 kg \tag{1}
+m_{hub} = 750 kg 
 \end{aligned}
 ```
 
