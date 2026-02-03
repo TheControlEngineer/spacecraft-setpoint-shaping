@@ -75,14 +75,16 @@ After that, we’ll take a look at the linearised model derived from the nonline
 ### 2.1 Hub Properties
 We define our hub as :
 
-$$
-`m_{hub} = 750 kg \tag{1}`
-$$
+```math
+m_{hub} = 750 kg \tag{1}
+```
 
 
-$$I_{hub} = \begin{bmatrix} 900 & 0 & 0 \\ 0 & 800 & 0 \\ 0 & 0 & 600 \end{bmatrix} \text{ kg} \cdot \text{m}^2 \tag{2}$$
+```math
+I_{hub} = \begin{bmatrix} 900 & 0 & 0 \\ 0 & 800 & 0 \\ 0 & 0 & 600 \end{bmatrix} \text{ kg} \cdot \text{m}^2 \tag{2}
+```
 
-The goal here is to pick values for $m_{hub}$ and $I_{hub}$ that are representative of a medium sized satellite. I’ve chosen a *diagonal* inertia tensor on purpose; this corresponds to defining the body frame so it aligns with the hub’s principal axes of inertia, which keeps the rotational dynamics nice and simple.
+The goal here is to pick values for $`m_{hub}`$ and $`I_{hub}`$ that are representative of a medium sized satellite. I’ve chosen a *diagonal* inertia tensor on purpose; this corresponds to defining the body frame so it aligns with the hub’s principal axes of inertia, which keeps the rotational dynamics nice and simple.
 
 ### 2.2 Euler's Rotational Equations of Motion
 
