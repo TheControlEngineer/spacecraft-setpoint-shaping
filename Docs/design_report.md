@@ -497,4 +497,28 @@ Before we pick a controller, let’s first get a feel for the basic properties o
 
 Now, if we drive this plant with a sinusoid at a frequency that’s not near a flexible mode, the output will be roughly shifted by $-180\degree$. In plain english, the plant mostly behaves like a sign inversion, except around the resonance/anti resonance neighbourhood where the flexible dynamics take over.
 
+### 6.1 Nyquist Stability Criteria
+
+Now that we have a decent feel for the plant and its key quirks, we can look at how to stabilise this (double integrator) system. More precisely, we want to choose a controller such that the open loop transfer function
+
+$$
+L(s) = G_{flex}(s) C(s) \tag{35}
+$$
+
+does not encircle the point $(-1,0)$ in the complex plane.
+
+Away from the flexible modes, the double integrator part of the plant contributes roughly $-180°$ of phase. So at the gain crossover frequency $\omega_c$ (where $|L(j\omega_c)| = 1$), we can write:
+
+$$\angle L(j\omega_c) = \angle C(j\omega_c) - 180° \tag{36}$$
+
+For a stable closed loop system we want a positive phase margin, i.e.:
+
+$$PM = 180° + \angle L(j\omega_c) > 0 \tag{37}$$
+
+which (under the double integrator phase assumption) boils down to:
+
+$$\angle C(j\omega_c) > 0$$
+
+This means that we need a controller that provides a phase lead! and points us in the direction of using a derivative term ( natural phase lead!)
+
 
