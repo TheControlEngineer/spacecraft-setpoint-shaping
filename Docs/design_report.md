@@ -76,7 +76,9 @@ After that, we’ll take a look at the linearised model derived from the nonline
 We define our hub as :
 
 ```math
+\begin{aligned}
 m_{hub} = 750 kg \tag{1}
+\end{aligned}
 ```
 
 
