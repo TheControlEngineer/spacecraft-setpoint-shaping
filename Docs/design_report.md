@@ -29,7 +29,7 @@ So if you don’t mind a casual tone and a slightly unconventional writing style
 
 ### 1.1 Mission Scenario
 
-A 750 kg spacecraft must perform a $180 \degree$ [slew manoeuvre](https://en.wikipedia.org/wiki/Slew_(spacecraft)) about the Z axis in the [body frame](https://www.sbg-systems.com/glossary/body-frame/#:~:text=The%20sensor%20coordinate%20frame%20or,base%2C%20depending%20on%20the%20application.) (i.e., a yaw rotation) within 30 seconds.
+A 750 kg spacecraft must perform a $`180 \degree`$ [slew manoeuvre](https://en.wikipedia.org/wiki/Slew_(spacecraft)) about the Z axis in the [body frame](https://www.sbg-systems.com/glossary/body-frame/#:~:text=The%20sensor%20coordinate%20frame%20or,base%2C%20depending%20on%20the%20application.) (i.e., a yaw rotation) within 30 seconds.
 
 In practice, achieving such a manoeuvre within this narrow time window is in the neighbourhood of “keep dreaming,” due to limitations such as [reaction wheel](https://en.wikipedia.org/wiki/Reaction_wheel) torque constraints and disturbances from [slosh dynamics](https://en.wikipedia.org/wiki/Slosh_dynamics), to name just a few. For the purpose of this project, we deliberately disregard these limitations and focus only on the flexible dynamics of the [solar array](https://en.wikipedia.org/wiki/Solar_panels_on_spacecraft), aiming for [arcsecond](https://en.wikipedia.org/wiki/Minute_and_second_of_arc) level post manoeuvre pointing stability to enable high resolution imaging of a comet. 
 
@@ -75,43 +75,30 @@ After that, we’ll take a look at the linearised model derived from the nonline
 ### 2.1 Hub Properties
 We define our hub as :
 
-$$
- m_{hub} = 750 kg \tag{1}
-$$
+$`m_{hub} = 750 kg`$
 
 
-$$
-I_{hub} = \begin{bmatrix} 900 & 0 & 0 \\ 0 & 800 & 0 \\ 0 & 0 & 600 \end{bmatrix} \text{ kg} \cdot \text{m}^2 \tag{2}
-$$
+$`I_{hub} = \begin{bmatrix} 900 & 0 & 0 \\ 0 & 800 & 0 \\ 0 & 0 & 600 \end{bmatrix} \text{ kg} \cdot \text{m}^2`$
 
-The goal here is to pick values for $m_{hub}$ and $I_{hub}$ that are representative of a medium sized satellite. I’ve chosen a *diagonal* inertia tensor on purpose; this corresponds to defining the body frame so it aligns with the hub’s principal axes of inertia, which keeps the rotational dynamics nice and simple.
+The goal here is to pick values for $`m_{hub}`$ and $`I_{hub}`$ that are representative of a medium sized satellite. I’ve chosen a *diagonal* inertia tensor on purpose; this corresponds to defining the body frame so it aligns with the hub’s principal axes of inertia, which keeps the rotational dynamics nice and simple.
 
 ### 2.2 Euler's Rotational Equations of Motion
 
 To capture the hub’s rigid body dynamics, we use Euler’s rotational equation. In the body frame, the attitude dynamics follow from conservation of angular momentum:
 
-$$
-I_{hub}\,\dot{\boldsymbol{\omega}} \;+\; \boldsymbol{\omega} \times \left(I_{hub}\,\boldsymbol{\omega}\right)
-\;=\; \boldsymbol{\tau}_{ext} \tag{3}
-$$
+$`I_{hub}\,\dot{\boldsymbol{\omega}} \;+\; \boldsymbol{\omega} \times \left(I_{hub}\,\boldsymbol{\omega}\right) \;=\; \boldsymbol{\tau}_{ext}`$
 
-Here, $I_{hub}$ is the inertia tensor defined above, and $\omega $ and $ \dot\omega$  are the hub’s angular velocity and angular acceleration, respectively.
+Here, $`I_{hub}`$ is the inertia tensor defined above, and $`\omega`$ and $`\dot\omega`$  are the hub’s angular velocity and angular acceleration, respectively.
 
 Expanding the equation into components (for our diagonal inertia tensor):
 
-$$
-I_{xx}\dot{\omega}_x \;-\; (I_{yy}-I_{zz})\,\omega_y\omega_z \;=\; \tau_x \tag{4}
-$$
+$`I_{xx}\dot{\omega}_x \;-\; (I_{yy}-I_{zz})\,\omega_y\omega_z \;=\; \tau_x`$
 
-$$
-I_{yy}\dot{\omega}_y \;-\; (I_{zz}-I_{xx})\,\omega_z\omega_x \;=\; \tau_y \tag{5}
-$$
+$`I_{yy}\dot{\omega}_y \;-\; (I_{zz}-I_{xx})\,\omega_z\omega_x \;=\; \tau_y`$
 
-$$
-I_{zz}\dot{\omega}_z \;-\; (I_{xx}-I_{yy})\,\omega_x\omega_y \;=\; \tau_z \tag{6}
-$$
+$`I_{zz}\dot{\omega}_z \;-\; (I_{xx}-I_{yy})\,\omega_x\omega_y \;=\; \tau_z`$
 
-The terms $(I_{yy}-I_{zz})$,$\omega_y\omega_z$, etc., are the **gyroscopic coupling terms**. They transfer angular momentum between axes during multi axis rotation.
+The terms $`(I_{yy}-I_{zz})`$,$`\omega_y\omega_z`$, etc., are the **gyroscopic coupling terms**. They transfer angular momentum between axes during multi axis rotation.
 
 *Note: I found an interesting reference to angular momentum transfer, and its removal from a spacecraft using gravity gradient moments. Even though its from the late 60's i still found it quiet inetersting. You can find the documentation [here](https://ntrs.nasa.gov/api/citations/19660011641/downloads/19660011641.pdf).*
 
@@ -126,34 +113,23 @@ To parameterize our attitude representation, we’ll use [MRPs](https://ntrs.nas
 
 - Quadratic kinematics : the kinematic equation is a polynomial and not [transcendental](https://en.wikipedia.org/wiki/Transcendental_equation)
 
-So, for a rotation of angle $ \Phi$ about an axis $ \hat e$ , the MRP can be computed as :
+So, for a rotation of angle $`\Phi`$ about an axis $`\hat e`$ , the MRP can be computed as :
 
-$$\boldsymbol{\sigma} = \hat{\mathbf{e}} \tan\left(\frac{\Phi}{4}\right) \tag{7}$$
+$`\boldsymbol{\sigma} = \hat{\mathbf{e}} \tan\left(\frac{\Phi}{4}\right)`$
 
 *Note:- notice how MRPs are computed? we can leverage this formula to force a small angle approximation to linearise our plant to design our control system down the lane.*
 
 With the MRP computation now defined, we’ll leverage the MRP representation and define the [kinematic differential equation](https://digitalcommons.odu.edu/cgi/viewcontent.cgi?article=1374&context=mae_etds)  as:
 
-$$
-
-\dot\sigma = \frac{1}{4} B(\sigma)\omega \tag{8}
-
-$$
+$`\dot\sigma = \frac{1}{4} B(\sigma)\omega`$
 
 Where:
 
-$$
-
-B(\sigma)=(1-\sigma^2)I_3 + 2[\sigma_\times]+2\sigma\sigma^T \tag{9}
-
-$$
+$`B(\sigma)=(1-\sigma^2)I_3 + 2[\sigma_\times]+2\sigma\sigma^T`$
 
 and as we surely recall from vector algebra lectures that:
 
-$$
- \sigma^2 = \sigma^T\sigma \tag{10}
- 
-$$
+$`\sigma^2 = \sigma^T\sigma`$
 
 
 ## 3. Reaction Wheels
@@ -168,43 +144,27 @@ Reaction wheels let the spacecraft rotate by exploiting conservation of angular 
 
 To characterize the reaction wheels and how they influence the spacecraft’s rotation, we model them as a torque source. That said, we *don’t* treat them as an ideal torque actuator as we explicitly account for the wheel/rotor inertia.
 
-With that in mind, the torque produced by the \(i\) th reaction wheel can be written as:
+With that in mind, the torque produced by the $`i`$ th reaction wheel can be written as:
 
-$$
+$`\tau_{RW,i} = -J_{s,i} \dot\Omega_i \hat g_{s,i}`$
 
-\tau_{RW,i} = -J_{s,i} \dot\Omega_i \hat g_{s,i} \tag{11}
+Here, $`J_s`$ is the rotor inertia and  $`\Omega_i`$ is the wheel spin rate, so the inertia matrix becomes:
 
-$$
-
-Here, $ J_s$ is the rotor inertia and  $ \Omega_i$ is the wheel spin rate, so the inertia matrix becomes:
-
-$$
-
-J_s = \begin{bmatrix} 0.05 & 0 & 0 \\ 0 & 0.05 & 0 \\ 0 & 0 & 0.05 \end{bmatrix} kg \cdot m^2 \tag{12}
-
-$$
+$`J_s = \begin{bmatrix} 0.05 & 0 & 0 \\ 0 & 0.05 & 0 \\ 0 & 0 & 0.05 \end{bmatrix} kg \cdot m^2`$
 
 Using this, the total torque from the full reaction wheel set can be expressed as:
 
-$$
-
-\tau_{RW} = -G_s J_s \dot\Omega \tag{13}
-$$
+$`\tau_{RW} = -G_s J_s \dot\Omega`$
 
 This can be rewritten more compactly as:
 
-$$
-\tau_{RW} = -G_su_{motor}\tag{14}
+$`\tau_{RW} = -G_su_{motor}`$
 
-$$
+where $`u_{motor}`$ = $`J_s\dot\Omega`$ is the vector of motor torques.
 
-where $u_{motor} $ = $ J_s\dot\Omega $ is the vector of motor torques.
+Since $`G_s`$ is the spin axis matrix defined by:
 
-Since $ G_s $ is the spin axis matrix defined by:
-
-$$\mathbf{G}_s = \begin{bmatrix} | & | & | \\ \hat{\mathbf{g}}_{s1} & \hat{\mathbf{g}}_{s2} & \hat{\mathbf{g}}_{s3} \\ | & | & | \end{bmatrix} \tag{15}
-
-$$
+$`\mathbf{G}_s = \begin{bmatrix} | & | & | \\ \hat{\mathbf{g}}_{s1} & \hat{\mathbf{g}}_{s2} & \hat{\mathbf{g}}_{s3} \\ | & | & | \end{bmatrix}`$
 
 we can see from (14) that the torque we get depends directly on how we choose the wheel spin axes. So before we go any further, we need to pick those axes 
 which brings us to our first real design decision 🤓.
@@ -215,25 +175,21 @@ To figure out the best way to orient our reaction wheels, we first need to under
 
 Before we run the sweep, I’m going to explicitly align one wheel with the body Z axis. The main reason is simple; our big repositioning manoeuvre is about Z (yaw), so having one wheel dedicated to the Z axis gives us clean, direct authority on the exact axis we care about most. That leaves the orientation of the other two wheels as the real design choice.
 
-Lets properly write out our spin axis matrix $ G_s$ from eq (15), so we get:
+Lets properly write out our spin axis matrix $`G_s`$ from eq (15), so we get:
 
-$$
-
-G_s = \begin{bmatrix} + sin(\alpha) & - sin(\alpha) & 0 \\ + cos(\alpha) & + cos(\alpha) & 0 \\ 0 & 0 & 1 \end{bmatrix} \tag{16}
-
-$$
+$`G_s = \begin{bmatrix} + sin(\alpha) & - sin(\alpha) & 0 \\ + cos(\alpha) & + cos(\alpha) & 0 \\ 0 & 0 & 1 \end{bmatrix}`$
 
 From this matrix, we can see that the wheel aligned with the body Z axis has full control authority in Z, and contributes no torque about the body X and Y axes. For the other two wheels, we deliberately share control authority over the XY plane, so we don’t end up relying on a single wheel for a single axis (which helps reduce individual wheel effort by spreading the load).
 
 Notice how the cosine terms are both positive; this is intentional. The X axis authority comes from the difference in wheel torques (because the X components are opposite), while the Y axis authority comes from the sum (because the Y components are the same and positive).
 
-Suppose you had flipped one cosine term to negative, you’d effectively point one wheel toward \(-Y\), and the Y components would start cancelling out. That would reduce your Y authority, which is not what we want.
+Suppose you had flipped one cosine term to negative, you’d effectively point one wheel toward $`-Y`$, and the Y components would start cancelling out. That would reduce your Y authority, which is not what we want.
 
-Now we pick our rotation axes angles $ \alpha $, based on the following paramteres:
+Now we pick our rotation axes angles $`\alpha`$, based on the following paramteres:
 
-- [Condition number](https://en.wikipedia.org/wiki/Condition_number) of the allocation matrix $G_sG_s^T $ : We aim for a lower condition number as it represents better numerical conditioning and more isotropic control.
+- [Condition number](https://en.wikipedia.org/wiki/Condition_number) of the allocation matrix $`G_sG_s^T`$ : We aim for a lower condition number as it represents better numerical conditioning and more isotropic control.
 
-- Axis wise torque autority: we compute the max body torque achievable along X and Y for a fixed wheel torque limit, since the control authority changes with the angle $ \alpha$ 
+- Axis wise torque autority: we compute the max body torque achievable along X and Y for a fixed wheel torque limit, since the control authority changes with the angle $`\alpha`$ 
 
 
 With our parameter sweep now complete, we analyse the results given in the figures below:
@@ -247,36 +203,36 @@ With our parameter sweep now complete, we analyse the results given in the figur
 </div>
 
 
-$\newline$
+$`\newline`$
 
 
-After analysing the plots, we quickly notice that the a cant angle ($ \alpha$) of $ 45\degree$ has the lowest conditioning number. Furthermore, we also notice that the same $ \alpha$ value gives equal torque authority along both the X and Y axes (for the same wheel torque limit).
+After analysing the plots, we quickly notice that the a cant angle ($`\alpha`$) of $`45\degree`$ has the lowest conditioning number. Furthermore, we also notice that the same $`\alpha`$ value gives equal torque authority along both the X and Y axes (for the same wheel torque limit).
 
 *Note:- Equal X/Y authority gives a more uniform control capability over the XY plane, which makes [gain balancing](https://patentscope.wipo.int/search/en/WO2024245715) a lot less painful (the effort is naturally shared).*
 
-Thus from these analyses, we decide our cant angle to be set to $\alpha = 45 \degree$
+Thus from these analyses, we decide our cant angle to be set to $`\alpha = 45 \degree`$
 
-Hence the spin axis matrix $ G_s$ becomes:
+Hence the spin axis matrix $`G_s`$ becomes:
 
-$$\mathbf{G}_s = \begin{bmatrix} \frac{\sqrt{2}}{2} & -\frac{\sqrt{2}}{2} & 0 \\ \frac{\sqrt{2}}{2} & \frac{\sqrt{2}}{2} & 0 \\ 0 & 0 & 1 \end{bmatrix} \tag{17}$$
+$`\mathbf{G}_s = \begin{bmatrix} \frac{\sqrt{2}}{2} & -\frac{\sqrt{2}}{2} & 0 \\ \frac{\sqrt{2}}{2} & \frac{\sqrt{2}}{2} & 0 \\ 0 & 0 & 1 \end{bmatrix}`$
 
-With the spin axis determined, we ask ourselves " can this orientation enable control on all three axises?" or more mathematically, " can the torque mapping span $ \mathbb{R}^3 ?$ . we answer this by looking at the rank of this matrix.
+With the spin axis determined, we ask ourselves " can this orientation enable control on all three axises?" or more mathematically, " can the torque mapping span $`\mathbb{R}^3 ?`$ . we answer this by looking at the rank of this matrix.
 
-For full 3 axis attitude control, the reaction wheel spin axes must span $\mathbb{R}^3$. Mathematically, the spin axis matrix from eq (15):
+For full 3 axis attitude control, the reaction wheel spin axes must span $`\mathbb{R}^3`$. Mathematically, the spin axis matrix from eq (15):
 
-$$\mathbf{G}_s = \begin{bmatrix} | & | & | \\ \hat{\mathbf{g}}_{s1} & \hat{\mathbf{g}}_{s2} & \hat{\mathbf{g}}_{s3} \\ | & | & | \end{bmatrix}$$
+$`\mathbf{G}_s = \begin{bmatrix} | & | & | \\ \hat{\mathbf{g}}_{s1} & \hat{\mathbf{g}}_{s2} & \hat{\mathbf{g}}_{s3} \\ | & | & | \end{bmatrix}`$
 
 must have rank 3 (be invertible for a 3 wheel system).
 
 Let's verify our configuration:
 
-$$\mathbf{G}_s = \begin{bmatrix} \frac{\sqrt{2}}{2} & -\frac{\sqrt{2}}{2} & 0 \\ \frac{\sqrt{2}}{2} & \frac{\sqrt{2}}{2} & 0 \\ 0 & 0 & 1 \end{bmatrix}$$
+$`\mathbf{G}_s = \begin{bmatrix} \frac{\sqrt{2}}{2} & -\frac{\sqrt{2}}{2} & 0 \\ \frac{\sqrt{2}}{2} & \frac{\sqrt{2}}{2} & 0 \\ 0 & 0 & 1 \end{bmatrix}`$
 
 Computing the determinant:
 
-$$\det(\mathbf{G}_s) = 1 \cdot \det\begin{bmatrix} \frac{\sqrt{2}}{2} & -\frac{\sqrt{2}}{2} \\ \frac{\sqrt{2}}{2} & \frac{\sqrt{2}}{2} \end{bmatrix} = 1 \cdot \left(\frac{1}{2} + \frac{1}{2}\right) = 1 \tag{18}$$
+$`\det(\mathbf{G}_s) = 1 \cdot \det\begin{bmatrix} \frac{\sqrt{2}}{2} & -\frac{\sqrt{2}}{2} \\ \frac{\sqrt{2}}{2} & \frac{\sqrt{2}}{2} \end{bmatrix} = 1 \cdot \left(\frac{1}{2} + \frac{1}{2}\right) = 1`$
 
-Since $\det(\mathbf{G}_s) = 1 \neq 0$, the system has full 3 axis controllability.
+Since $`\det(\mathbf{G}_s) = 1 \neq 0`$, the system has full 3 axis controllability.
 
 *Note :- In many spacecraft, reaction wheels are mounted rigidly (body fixed). Systems that use gimbals to reorient a spinning actuator are more commonly referred to as control moment gyros ([CMGs](https://en.wikipedia.org/wiki/Control_moment_gyroscope)), or gimballed wheel setups. In this simulation, the reaction wheels are assumed to be fixed at a canted orientation, so there is no gimbal and no controllability over the wheel spin axis direction. therefore only the wheel torque is commanded.*
 
@@ -298,31 +254,23 @@ To get an intuition for what the slew does to the arrays, let’s momentarily pr
 
 Consider a point on the array located at
 
-$$
-r = \begin{bmatrix} 0 & r_y & 0 \end{bmatrix}^T
-$$
+$`r = \begin{bmatrix} 0 & r_y & 0 \end{bmatrix}^T`$
 
-i.e., it sits a distance $r_y $ away from the hub center along the body \(Y\) axis.
+i.e., it sits a distance $`r_y`$ away from the hub center along the body $`Y`$ axis.
 
 The absolute acceleration of this point is:
 
-$$
-\ddot r_{abs} = \dot \omega \times r + \omega \times (\omega \times r ) \tag{19}
-$$
+$`\ddot r_{abs} = \dot \omega \times r + \omega \times (\omega \times r )`$
 
-For a pure yaw rotation $ \omega = [0,0,\omega_z]^T $ (which is exactly the kind of motion we have during the slew), the tangential term becomes:
+For a pure yaw rotation $`\omega = [0,0,\omega_z]^T`$ (which is exactly the kind of motion we have during the slew), the tangential term becomes:
 
-$$
-\dot \omega \times r = \begin{bmatrix} 0 \\ 0 \\ \dot \omega_z \end{bmatrix} \times \begin{bmatrix} 0 \\ r_y \\ 0 \end{bmatrix} =  \begin{bmatrix} -\dot \omega_z r_y \\ 0 \\ 0 \end{bmatrix} \tag{20}
-$$
+$`\dot \omega \times r = \begin{bmatrix} 0 \\ 0 \\ \dot \omega_z \end{bmatrix} \times \begin{bmatrix} 0 \\ r_y \\ 0 \end{bmatrix} = \begin{bmatrix} -\dot \omega_z r_y \\ 0 \\ 0 \end{bmatrix}`$
 
 And the centripetal acceleration is:
 
-$$
-\boldsymbol{\omega} \times (\boldsymbol{\omega} \times \mathbf{r}) = \begin{bmatrix} 0 \\ -\omega_z^2 r_y \\ 0 \end{bmatrix} \tag{21}
-$$
+$`\boldsymbol{\omega} \times (\boldsymbol{\omega} \times \mathbf{r}) = \begin{bmatrix} 0 \\ -\omega_z^2 r_y \\ 0 \end{bmatrix}`$
 
-Notice what (20) is telling us? the tangential acceleration points along the body \(X\) axis (perpendicular to both the rotation axis \(Z\) and the array direction \(Y\)). Intuitively, when the hub accelerates in yaw, it “drags” the array attachment points sideways in the tangential direction. The array tip has inertia, so it can’t follow instantly and it lags behind, the array bends, and that’s how the vibration starts.
+Notice what (20) is telling us? the tangential acceleration points along the body $`X`$ axis (perpendicular to both the rotation axis $`Z`$ and the array direction $`Y`$). Intuitively, when the hub accelerates in yaw, it “drags” the array attachment points sideways in the tangential direction. The array tip has inertia, so it can’t follow instantly and it lags behind, the array bends, and that’s how the vibration starts.
 
 *Note :- By looking at the phenomenon above, we can  frame it as a [base excitation problem](https://community.wvu.edu/~bpbettig/MAE340/Lecture_2_4_Base_excitation.pdf). This is a classic concept taught in the " Advanced Vibration " course modules.*
 
@@ -332,44 +280,40 @@ In the previous subsection we saw why the slew excites the solar array. Now let�
 
 A super common way to do this is to approximate the flexible motion with a [mass spring damper model](https://en.wikipedia.org/wiki/Mass-spring-damper_model). It’s not trying to capture every tiny structural detail, but it does a great job at capturing the stuff we actually care about! the vibration frequency, the amplitude of the response (for a given excitation), and how fast the oscillations die out thanks to damping.
 
-For a modal coordinate $ \rho$, we form our equation of motion as:
+For a modal coordinate $`\rho`$, we form our equation of motion as:
 
-$$
-
-m\ddot\rho + c \dot \rho + k \rho = F_{excitation} \tag{22}
-
-$$
+$`m\ddot\rho + c \dot \rho + k \rho = F_{excitation}`$
 
 where:
-- $\rho$ is the modal displacement (bending deflection)
-- $m$ is the effective modal mass
-- $c = 2\zeta\omega_n m$ is the damping coefficient
-- $k = \omega_n^2 m$ is the spring stiffness
-- $F_{excitation}$ is the basen excitation (inertial) forcing term
+- $`\rho`$ is the modal displacement (bending deflection)
+- $`m`$ is the effective modal mass
+- $`c = 2\zeta\omega_n m`$ is the damping coefficient
+- $`k = \omega_n^2 m`$ is the spring stiffness
+- $`F_{excitation}`$ is the basen excitation (inertial) forcing term
 
-The excitation comes from the tangential base acceleration during the yaw slew. Using $a_{tangential} = -\dot{\omega}_z r_y$ (from Eq. (20)), the equivalent inertial forcing can be written as:
+The excitation comes from the tangential base acceleration during the yaw slew. Using $`a_{tangential} = -\dot{\omega}_z r_y`$ (from Eq. (20)), the equivalent inertial forcing can be written as:
 
-$$F_{excitation} = -m \cdot a_{tangential} = -m \cdot (-\dot{\omega}_z r_y) = m \cdot r_y \cdot \dot{\omega}_z \tag{23}$$
+$`F_{excitation} = -m \cdot a_{tangential} = -m \cdot (-\dot{\omega}_z r_y) = m \cdot r_y \cdot \dot{\omega}_z`$
 
 for yaw manoeuvre (so we can neglect the cross coupling term in Eq. (6)), we use:
 
-$$\dot{\omega}_z = \tau_z / I_{zz}$$
+$`\dot{\omega}_z = \tau_z / I_{zz}`$
 
 and substitute into the modal equation:
 
-$$m\ddot{\rho} + c\dot{\rho} + k\rho = \frac{m \cdot r_y}{I_{zz}} \cdot \tau_z \tag{24}$$
+$`m\ddot{\rho} + c\dot{\rho} + k\rho = \frac{m \cdot r_y}{I_{zz}} \cdot \tau_z`$
 
-Dividing by $m$ gives the standard second order form:
+Dividing by $`m`$ gives the standard second order form:
 
-$$\ddot{\rho} + 2\zeta\omega_n\dot{\rho} + \omega_n^2\rho = \frac{r_y}{I_{zz}} \cdot \tau_z \tag{25}$$
+$`\ddot{\rho} + 2\zeta\omega_n\dot{\rho} + \omega_n^2\rho = \frac{r_y}{I_{zz}} \cdot \tau_z`$
 
 This reveals the modal gain:
 
-$$G_{modal} = \frac{r_y}{I_{zz}} \tag{26}$$
+$`G_{modal} = \frac{r_y}{I_{zz}}`$
 
 ### 4.4 Modal Parameters
 
-| Mode | Frequency $f_n$ | $\omega_n$ (rad/s) | Damping $\zeta$ | Lever Arm $r$ | Modal Gain |
+| Mode | Frequency $`f_n`$ | $`\omega_n`$ (rad/s) | Damping $`\zeta`$ | Lever Arm $`r`$ | Modal Gain |
 |------|-----------------|-------------------|-----------------|---------------|------------|
 | 1 | 0.4 Hz | 2.51 | 0.02 | 3.5 m | 0.0056 |
 | 2 | 1.3 Hz | 8.17 | 0.015 | 4.5 m | 0.0073 |
@@ -381,11 +325,11 @@ $$G_{modal} = \frac{r_y}{I_{zz}} \tag{26}$$
 
 Since we’ve modelled the vibration as a second order mass spring damper system, we can estimate its settling time using a standard percent criterion. The most common choices are the 2% or 5% settling time definitions. For this project, I’ll use the 2% criterion, which gives the well known approximation:
 
-$$t_s \approx \frac{4}{\zeta \omega_n} \tag{27}$$
+$`t_s \approx \frac{4}{\zeta \omega_n}`$
 
-For Mode 1 ($\zeta = 0.02$, $\omega_n = 2.51$ rad/s):
+For Mode 1 ($`\zeta = 0.02`$, $`\omega_n = 2.51`$ rad/s):
 
-$$t_s \approx \frac{4}{0.02 \times 2.51} = \frac{4}{0.05} = 80 \text{ seconds} \tag{28}$$
+$`t_s \approx \frac{4}{0.02 \times 2.51} = \frac{4}{0.05} = 80 \text{ seconds}`$
 
 So yeah… this mode takes on the order of 80 seconds to settle, which is more than twice our slew time! That’s exactly why we’d like to avoid (as much as possible) exciting these flexible mode frequencies during the manoeuvre.
 
@@ -395,8 +339,8 @@ So yeah… this mode takes on the order of 80 seconds to settle, which is more t
 
 The Basilisk simulation is running the full nonlinear model, which includes:
 
-1. **Nonlinear kinematics**: $\dot{\boldsymbol{\sigma}} = \frac{1}{4}\mathbf{B}(\boldsymbol{\sigma})\boldsymbol{\omega}$
-2. **Gyroscopic coupling**: $\boldsymbol{\omega} \times \mathbf{I}\boldsymbol{\omega}$
+1. **Nonlinear kinematics**: $`\dot{\boldsymbol{\sigma}} = \frac{1}{4}\mathbf{B}(\boldsymbol{\sigma})\boldsymbol{\omega}`$
+2. **Gyroscopic coupling**: $`\boldsymbol{\omega} \times \mathbf{I}\boldsymbol{\omega}`$
 3. **Reaction wheel momentum**: the wheel angular momentum contributes to (and couples into) the total spacecraft momentum
 4. **Flexible mode coupling**: the flexible modes exchange momentum with the hub
 
@@ -408,11 +352,11 @@ My take is pretty straightforward here. linearisation works best when the nonlin
 
 Since our slew manoeuvre is about the body Z axis, it’s worth checking what that does to the gyroscopic coupling terms. To do that, let’s look at eq. (6):
 
-$$I_{zz}\dot{\omega}_z - (I_{xx} - I_{yy})\omega_x\omega_y = \tau_z$$
+$`I_{zz}\dot{\omega}_z - (I_{xx} - I_{yy})\omega_x\omega_y = \tau_z`$
 
-Now, if we enforce a pure yaw motion by setting $ \omega_x \omega_y = 0 $ (i.e., no roll/pitch rotation), the coupling term drops out and we’re left with:
+Now, if we enforce a pure yaw motion by setting $`\omega_x \omega_y = 0`$ (i.e., no roll/pitch rotation), the coupling term drops out and we’re left with:
 
-$$ I_{zz} \dot \omega_z = \tau_z$$
+$`I_{zz} \dot \omega_z = \tau_z`$
 
 And importantly, this isn’t an approximation, it’s exact! So for a yaw only manoeuvre (assuming we don’t pick up roll/pitch motion from disturbances or coupling), the Z axis dynamics are perfectly linear!
 
@@ -420,11 +364,11 @@ And importantly, this isn’t an approximation, it’s exact! So for a yaw only 
 
 To see if we can perform a small angle approx of MRP kinematics, we refer to eqs (8) & (9), and we write:
 
-$$\dot{\boldsymbol{\sigma}} = \frac{1}{4}\left[(1 - \sigma^2)\mathbf{I}_3 + 2[\boldsymbol{\sigma}\times] + 2\boldsymbol{\sigma}\boldsymbol{\sigma}^T\right]\boldsymbol{\omega}$$
+$`\dot{\boldsymbol{\sigma}} = \frac{1}{4}\left[(1 - \sigma^2)\mathbf{I}_3 + 2[\boldsymbol{\sigma}\times] + 2\boldsymbol{\sigma}\boldsymbol{\sigma}^T\right]\boldsymbol{\omega}`$
 
-For small $|\boldsymbol{\sigma}|$ (small attitude errors):
+For small $`|\boldsymbol{\sigma}|`$ (small attitude errors):
 
-$$\dot{\boldsymbol{\sigma}} \approx \frac{1}{4}\boldsymbol{\omega}$$
+$`\dot{\boldsymbol{\sigma}} \approx \frac{1}{4}\boldsymbol{\omega}`$
 
 So this has linearised our kinematics!
 
@@ -437,23 +381,23 @@ So this has linearised our kinematics!
 Combining the above:
 
 **Dynamics:**
-$$I_{zz}\dot{\omega}_z = \tau_z$$
+$`I_{zz}\dot{\omega}_z = \tau_z`$
 
 **Kinematics (single axis):**
-$$\dot{\sigma}_z = \frac{1}{4}\omega_z$$
+$`\dot{\sigma}_z = \frac{1}{4}\omega_z`$
 
 Taking Laplace transforms:
 
-$$sI_{zz}\Omega(s) = T(s) \tag{29}$$
-$$s\Sigma(s) = \frac{1}{4}\Omega(s) \tag{30}$$
+$`sI_{zz}\Omega(s) = T(s)`$
+$`s\Sigma(s) = \frac{1}{4}\Omega(s)`$
 
-Eliminating $\Omega(s)$:
+Eliminating $`\Omega(s)`$:
 
-$$\Sigma(s) = \frac{1}{4s}\Omega(s) = \frac{1}{4s} \cdot \frac{T(s)}{sI_{zz}} \tag{31}$$
+$`\Sigma(s) = \frac{1}{4s}\Omega(s) = \frac{1}{4s} \cdot \frac{T(s)}{sI_{zz}}`$
 
-$$G_{rigid}(s) = \frac{\Sigma(s)}{T(s)} = \frac{1}{4I_{zz}s^2} \tag{32}$$
+$`G_{rigid}(s) = \frac{\Sigma(s)}{T(s)} = \frac{1}{4I_{zz}s^2}`$
 
-This is basically a double [integrator](https://electronics.stackexchange.com/questions/333888/why-is-the-frequency-domain-representation-of-an-integrator-1-s)! two poles sitting at the origin. In frequency domain terms, it carries about $180 \degree$ of phase lag right out of the gate, which is not unstable by itself (it’s marginal in open loop), but it definitely makes the feedback design a tad bit more challenging.
+This is basically a double [integrator](https://electronics.stackexchange.com/questions/333888/why-is-the-frequency-domain-representation-of-an-integrator-1-s)! two poles sitting at the origin. In frequency domain terms, it carries about $`180 \degree`$ of phase lag right out of the gate, which is not unstable by itself (it’s marginal in open loop), but it definitely makes the feedback design a tad bit more challenging.
 
 *Note :- As you’ve probably already guessed, I’m a little biased toward frequency domain control (life is just easier here) 😄*
 
@@ -461,15 +405,15 @@ This is basically a double [integrator](https://electronics.stackexchange.com/qu
 
 For each flexible mode, the transfer function from torque to modal displacement is:
 
-$$\frac{P_i(s)}{T(s)} = \frac{G_{modal,i}}{s^2 + 2\zeta_i\omega_{n,i}s + \omega_{n,i}^2} \tag{33}$$
+$`\frac{P_i(s)}{T(s)} = \frac{G_{modal,i}}{s^2 + 2\zeta_i\omega_{n,i}s + \omega_{n,i}^2}`$
 
 The complete plant from torque to attitude includes the coupling:
 
-$$G_{flex}(s) = \frac{1}{4I_{eff}s^2} \cdot \prod_{i=1}^{N_{modes}} \frac{s^2 + 2\zeta_i\omega_i s + \omega_i^2 + \Delta_i}{s^2 + 2\zeta_i\omega_i s + \omega_i^2} \tag{34}$$
+$`G_{flex}(s) = \frac{1}{4I_{eff}s^2} \cdot \prod_{i=1}^{N_{modes}} \frac{s^2 + 2\zeta_i\omega_i s + \omega_i^2 + \Delta_i}{s^2 + 2\zeta_i\omega_i s + \omega_i^2}`$
 
-where $I_{eff}$ includes the effective inertia from modal masses, and $\Delta_i$ represents the anti resonance shifts from coupling.
+where $`I_{eff}`$ includes the effective inertia from modal masses, and $`\Delta_i`$ represents the anti resonance shifts from coupling.
 
-So yeah, in the Bode plot of our flexible plant (torque $\rightarrow$ attitude) below, you can clearly spot both the resonance and the anti resonance.
+So yeah, in the Bode plot of our flexible plant (torque $`\rightarrow`$ attitude) below, you can clearly spot both the resonance and the anti resonance.
 
 
 <div style="display: flex; justify-content: center; gap: 10px;">
@@ -480,7 +424,7 @@ So yeah, in the Bode plot of our flexible plant (torque $\rightarrow$ attitude) 
 
 </div>
 
-$\newline$
+$`\newline`$
 
 *Note :- notice how the anti resonance shows up before the resonance? this is because our plant model is [collocated](https://www.pml.uliege.be/wp-content/uploads/2022/07/1-s2.0-S0888327022006082-main.pdf). So, each flexible mode introduces a zero (anti resoannce) slightly below its pole (resonance)*
 
@@ -490,11 +434,10 @@ Before we pick a controller, let’s first get a feel for the basic properties o
 
 | Property | Value |
 |----------|-------|
-| Magnitude at DC | $\infty$ (two poles at the origin) |
+| Magnitude at DC | $`\infty`$ (two poles at the origin) |
 | Magnitude slope | -40 dB/decade (away from flexible modes) |
-| Phase | $\approx -180°$ (away from resonance/anti resonance) |
-| Gain margin | Not very informative in the usual sense (the phase sits near $-180°$ for most frequencies, and flexible mode distort the standard crossover picture) |
+| Phase | $`\approx -180°`$ (away from resonance/anti resonance) |
+| Gain margin | Not very informative in the usual sense (the phase sits near $`-180°`$ for most frequencies, and flexible mode distort the standard crossover picture) |
 
-Now, if we drive this plant with a sinusoid at a frequency that’s not near a flexible mode, the output will be roughly shifted by $-180\degree$. In plain english, the plant mostly behaves like a sign inversion, except around the resonance/anti resonance neighbourhood where the flexible dynamics take over.
-
+Now, if we drive this plant with a sinusoid at a frequency that’s not near a flexible mode, the output will be roughly shifted by $`-180\degree`$. In plain english, the plant mostly behaves like a sign inversion, except around the resonance/anti resonance neighbourhood where the flexible dynamics take over.
 
