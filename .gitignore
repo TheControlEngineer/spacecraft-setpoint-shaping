@@ -1,0 +1,58 @@
+# Output directories (generated files)
+output/viz/
+output/plots/
+output/metrics/
+output/cache/
+!output/.gitkeep
+
+# Analysis working directories
+analysis/mc_work/
+analysis/mc_sweep_work/
+analysis/validation_*/
+
+# Python cache and build
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Virtual environments
+venv/
+venv_basilisk/
+env/
+.env/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# Large binary files (except reference data)
+*.npz
+!data/trajectories/*.npz
+
+# Generated visualization files
+*.bin
+
+# Temporary files
+*.tmp
+*.temp
+nul

@@ -38,17 +38,18 @@ from scipy import signal
 from scipy.fft import fft, fftfreq
 
 # Add paths for module imports
-repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-basilisk_dir = os.path.join(repo_root, "basilisk_simulation")
-src_root = os.path.join(repo_root, "src")
-for path in (repo_root, basilisk_dir, src_root):
-    if path not in sys.path:
-        sys.path.insert(0, path)
+_analysis_dir = Path(__file__).parent.resolve()
+_basilisk_dir = _analysis_dir.parent
+_src_dir = _basilisk_dir / "src"
+_scripts_dir = _basilisk_dir / "scripts"
+for path in (_src_dir, _scripts_dir):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
-# Import mission_simulation for plan-compliant analysis (after path setup)
-import mission_simulation as ms
+# Import run_mission (formerly mission_simulation) for plan-compliant analysis
+import run_mission as ms
 
-from spacecraft_properties import (
+from basilisk_sim.spacecraft_properties import (
     HUB_INERTIA,
     FLEX_MODE_MASS,
     FLEX_MODE_LOCATIONS,
@@ -313,7 +314,7 @@ def _run_vizard_demo_batch(
     with open(cfg_path, "w", encoding="utf-8") as f:
         json.dump(overrides, f)
 
-    script_path = os.path.join(basilisk_dir, "vizard_demo.py")
+    script_path = os.path.join(basilisk_dir, "scripts", "run_vizard_demo.py")
     for method in METHODS:
         for controller in CONTROLLERS:
             cmd = [
@@ -326,6 +327,8 @@ def _run_vizard_demo_batch(
                 run_mode,
                 "--config",
                 cfg_path,
+                "--output-dir",
+                output_dir,
             ]
             subprocess.run(
                 cmd,
@@ -507,6 +510,7 @@ class PlanCompliantRunner:
 
                 if method == "fourth":
                     traj_candidates = [
+                        os.path.join(basilisk_dir, "data", "trajectories", "spacecraft_trajectory_4th_180deg_30s.npz"),
                         os.path.join(basilisk_dir, "spacecraft_trajectory_4th_180deg_30s.npz"),
                         os.path.abspath(os.path.join(basilisk_dir, "..", "spacecraft_trajectory_4th_180deg_30s.npz")),
                     ]
@@ -529,7 +533,7 @@ class PlanCompliantRunner:
         details: Dict[str, Any] = {}
         issues: List[str] = []
         try:
-            from feedback_control import MRPFeedbackController, FilteredDerivativeController
+            from basilisk_sim.feedback_control import MRPFeedbackController, FilteredDerivativeController
 
             axis = _normalize_axis(self.config.rotation_axis)
             I_axis = float(axis @ self.config.inertia @ axis)
@@ -1469,7 +1473,7 @@ class VerificationSuite:
         issues = []
 
         # Check fourth-order trajectory file
-        traj_path = os.path.join(basilisk_dir, "spacecraft_trajectory_4th_180deg_30s.npz")
+        traj_path = os.path.join(basilisk_dir, "data", "trajectories", "spacecraft_trajectory_4th_180deg_30s.npz")
         if not os.path.isfile(traj_path):
             issues.append("Fourth-order trajectory file not found")
         else:
@@ -1531,7 +1535,7 @@ class VerificationSuite:
         """1.2 Verify feedback controller implementation."""
         print("\n[V1.2] Controller Implementation...")
 
-        from feedback_control import MRPFeedbackController, FilteredDerivativeController
+        from basilisk_sim.feedback_control import MRPFeedbackController, FilteredDerivativeController
 
         details = {}
         issues = []
@@ -2213,7 +2217,7 @@ class ValidationSuite:
         """Validate control system stability margins."""
         print("\n[V2.6] Stability Margins...")
 
-        from feedback_control import MRPFeedbackController, FilteredDerivativeController
+        from basilisk_sim.feedback_control import MRPFeedbackController, FilteredDerivativeController
 
         metrics = {}
         issues = []
@@ -2686,7 +2690,7 @@ class MonteCarloRunner:
 
     def _simulate_response(self, config: ValidationConfig) -> Dict[str, float]:
         """Simulate closed-loop response and compute metrics."""
-        from feedback_control import FilteredDerivativeController
+        from basilisk_sim.feedback_control import FilteredDerivativeController
 
         # Time array
         dt = UNIFIED_SAMPLE_DT
@@ -2972,7 +2976,7 @@ def main():
         args.all = True
 
     # Setup output directory
-    out_dir = args.output_dir or os.path.join(basilisk_dir, "analysis")
+    out_dir = args.output_dir or os.path.join(basilisk_dir, "output")
     _ensure_dir(out_dir)
     data_dir = args.data_dir or basilisk_dir
 

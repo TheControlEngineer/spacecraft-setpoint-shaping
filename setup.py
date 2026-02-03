@@ -4,14 +4,13 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="input-shaping",
+    name="basilisk-sim",
     version="0.1.0",
-    author="Your Name",
-    author_email="your.email@example.com",
-    description="Input shaping library for vibration suppression in flexible structures",
+    author="Jomin Joseph Karukakalam",
+    description="Spacecraft input shaping simulation with Basilisk",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/spacecraft_input_shaping",
+    url="https://github.com/TheControlEngineer/spacecraft_input_shaping",
     package_dir={"": "src"},
     packages=find_packages(where="src"),
     classifiers=[
@@ -29,5 +28,6 @@ setup(
     ],
     extras_require={
         "dev": ["pytest>=6.0", "pytest-cov", "black", "flake8"],
+        "basilisk": ["Basilisk"],
     },
 )

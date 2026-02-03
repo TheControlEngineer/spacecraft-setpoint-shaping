@@ -1,5 +1,0 @@
-method,rms_vibration_mm,rms_pointing_error_deg
-unshaped_standard_pd,0.5530,0.019119
-unshaped_filtered_pd,0.4979,0.017022
-fourth_standard_pd,0.0531,0.001357
-fourth_filtered_pd,0.0505,0.001087
