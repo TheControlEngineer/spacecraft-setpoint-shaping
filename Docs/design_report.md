@@ -75,14 +75,10 @@ After that, we’ll take a look at the linearised model derived from the nonline
 ### 2.1 Hub Properties
 We define our hub as :
 
-$$
- m_{hub} = 750 kg \tag{1}
-$$
+$$m_{hub} = 750 kg \tag{1}$$
 
 
-$$
-I_{hub} = \begin{bmatrix} 900 & 0 & 0 \\ 0 & 800 & 0 \\ 0 & 0 & 600 \end{bmatrix} \text{ kg} \cdot \text{m}^2 \tag{2}
-$$
+$$I_{hub} = \begin{bmatrix} 900 & 0 & 0 \\ 0 & 800 & 0 \\ 0 & 0 & 600 \end{bmatrix} \text{ kg} \cdot \text{m}^2 \tag{2}$$
 
 The goal here is to pick values for $m_{hub}$ and $I_{hub}$ that are representative of a medium sized satellite. I’ve chosen a *diagonal* inertia tensor on purpose; this corresponds to defining the body frame so it aligns with the hub’s principal axes of inertia, which keeps the rotational dynamics nice and simple.
 
@@ -90,28 +86,19 @@ The goal here is to pick values for $m_{hub}$ and $I_{hub}$ that are representat
 
 To capture the hub’s rigid body dynamics, we use Euler’s rotational equation. In the body frame, the attitude dynamics follow from conservation of angular momentum:
 
-$$
-I_{hub}\,\dot{\boldsymbol{\omega}} \;+\; \boldsymbol{\omega} \times \left(I_{hub}\,\boldsymbol{\omega}\right)
-\;=\; \boldsymbol{\tau}_{ext} \tag{3}
-$$
+$$I_{hub}\dot{\boldsymbol{\omega}}+\boldsymbol{\omega} \times \left(I_{hub}\boldsymbol{\omega}\right)=\boldsymbol{\tau}_{ext}\tag{3}$$
 
 Here, $I_{hub}$ is the inertia tensor defined above, and $\omega $ and $ \dot\omega$  are the hub’s angular velocity and angular acceleration, respectively.
 
 Expanding the equation into components (for our diagonal inertia tensor):
 
-$$
-I_{xx}\dot{\omega}_x \;-\; (I_{yy}-I_{zz})\,\omega_y\omega_z \;=\; \tau_x \tag{4}
-$$
+$$I_{xx}\dot{\omega}_x - (I_{yy}-I_{zz})\omega_y\omega_z = \tau_x \tag{4}$$
 
-$$
-I_{yy}\dot{\omega}_y \;-\; (I_{zz}-I_{xx})\,\omega_z\omega_x \;=\; \tau_y \tag{5}
-$$
+$$I_{yy}\dot{\omega}_y - (I_{zz}-I_{xx})\omega_z\omega_x = \tau_y \tag{5}$$
 
-$$
-I_{zz}\dot{\omega}_z \;-\; (I_{xx}-I_{yy})\,\omega_x\omega_y \;=\; \tau_z \tag{6}
-$$
+$$I_{zz}\dot{\omega}_z - (I_{xx}-I_{yy})\omega_x\omega_y = \tau_z \tag{6}$$
 
-The terms $(I_{yy}-I_{zz})$,$\omega_y\omega_z$, etc., are the **gyroscopic coupling terms**. They transfer angular momentum between axes during multi axis rotation.
+The terms $(I_{yy}-I_{zz})$ $\omega_y\omega_z$  etc., are the gyroscopic coupling terms. They transfer angular momentum between axes during multi axis rotation.
 
 *Note: I found an interesting reference to angular momentum transfer, and its removal from a spacecraft using gravity gradient moments. Even though its from the late 60's i still found it quiet inetersting. You can find the documentation [here](https://ntrs.nasa.gov/api/citations/19660011641/downloads/19660011641.pdf).*
 
@@ -126,7 +113,7 @@ To parameterize our attitude representation, we’ll use [MRPs](https://ntrs.nas
 
 - Quadratic kinematics : the kinematic equation is a polynomial and not [transcendental](https://en.wikipedia.org/wiki/Transcendental_equation)
 
-So, for a rotation of angle $ \Phi$ about an axis $ \hat e$ , the MRP can be computed as :
+So, for a rotation of angle $\Phi$ about an axis $\hat e$ , the MRP can be computed as :
 
 $$\boldsymbol{\sigma} = \hat{\mathbf{e}} \tan\left(\frac{\Phi}{4}\right) \tag{7}$$
 
@@ -519,6 +506,6 @@ which (under the double integrator phase assumption) boils down to:
 
 $$\angle C(j\omega_c) > 0$$
 
-This means that we need a controller that provides a phase lead! and points us in the direction of using a derivative term ( natural phase lead!)
+This means that we need a controller that provides a phase lead! and points us in the direction of using a derivative term (natural phase lead!)
 
 
