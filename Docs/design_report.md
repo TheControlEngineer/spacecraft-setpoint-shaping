@@ -29,7 +29,7 @@ So if you don’t mind a casual tone and a slightly unconventional writing style
 
 ### 1.1 Mission Scenario
 
-A 750 kg spacecraft must perform a $180 \degree$ [slew manoeuvre](https://en.wikipedia.org/wiki/Slew_(spacecraft)) about the Z axis in the [body frame](https://www.sbg-systems.com/glossary/body-frame/#:~:text=The%20sensor%20coordinate%20frame%20or,base%2C%20depending%20on%20the%20application.) (i.e., a yaw rotation) within 30 seconds.
+A 750 kg spacecraft must perform a $180^\circ$ [slew manoeuvre](https://en.wikipedia.org/wiki/Slew_(spacecraft)) about the Z axis in the [body frame](https://www.sbg-systems.com/glossary/body-frame/#:~:text=The%20sensor%20coordinate%20frame%20or,base%2C%20depending%20on%20the%20application.) (i.e., a yaw rotation) within 30 seconds.
 
 In practice, achieving such a manoeuvre within this narrow time window is in the neighbourhood of “keep dreaming,” due to limitations such as [reaction wheel](https://en.wikipedia.org/wiki/Reaction_wheel) torque constraints and disturbances from [slosh dynamics](https://en.wikipedia.org/wiki/Slosh_dynamics), to name just a few. For the purpose of this project, we deliberately disregard these limitations and focus only on the flexible dynamics of the [solar array](https://en.wikipedia.org/wiki/Solar_panels_on_spacecraft), aiming for [arcsecond](https://en.wikipedia.org/wiki/Minute_and_second_of_arc) level post manoeuvre pointing stability to enable high resolution imaging of a comet. 
 
@@ -45,7 +45,7 @@ This residual motion degrades pointing accuracy and can force the spacecraft to 
 
 | Requirement | Value | Rationale |
 |-------------|-------|-----------|
-| Slew angle | 180° | Mission geometry |
+| Slew angle | $180^\circ$ | Mission geometry |
 | Slew time | 30 s | Operational constraint |
 | Post-slew settling | < 5 s to 1 arcsec | Imaging window |
 | Residual vibration | < 1 mm modal displacement | Payload requirement 
@@ -168,7 +168,7 @@ Reaction wheels let the spacecraft rotate by exploiting conservation of angular 
 
 To characterize the reaction wheels and how they influence the spacecraft’s rotation, we model them as a torque source. That said, we *don’t* treat them as an ideal torque actuator as we explicitly account for the wheel/rotor inertia.
 
-With that in mind, the torque produced by the \(i\) th reaction wheel can be written as:
+With that in mind, the torque produced by the $i$ th reaction wheel can be written as:
 
 $$
 
@@ -227,7 +227,7 @@ From this matrix, we can see that the wheel aligned with the body Z axis has ful
 
 Notice how the cosine terms are both positive; this is intentional. The X axis authority comes from the difference in wheel torques (because the X components are opposite), while the Y axis authority comes from the sum (because the Y components are the same and positive).
 
-Suppose you had flipped one cosine term to negative, you’d effectively point one wheel toward \(-Y\), and the Y components would start cancelling out. That would reduce your Y authority, which is not what we want.
+Suppose you had flipped one cosine term to negative, you’d effectively point one wheel toward $-Y$, and the Y components would start cancelling out. That would reduce your Y authority, which is not what we want.
 
 Now we pick our rotation axes angles $ \alpha $, based on the following paramteres:
 
@@ -247,14 +247,14 @@ With our parameter sweep now complete, we analyse the results given in the figur
 </div>
 
 
-$\newline$
+<br>
 
 
-After analysing the plots, we quickly notice that the a cant angle ($ \alpha$) of $ 45\degree$ has the lowest conditioning number. Furthermore, we also notice that the same $ \alpha$ value gives equal torque authority along both the X and Y axes (for the same wheel torque limit).
+After analysing the plots, we quickly notice that the a cant angle ($ \alpha$) of $ 45^\circ$ has the lowest conditioning number. Furthermore, we also notice that the same $ \alpha$ value gives equal torque authority along both the X and Y axes (for the same wheel torque limit).
 
 *Note:- Equal X/Y authority gives a more uniform control capability over the XY plane, which makes [gain balancing](https://patentscope.wipo.int/search/en/WO2024245715) a lot less painful (the effort is naturally shared).*
 
-Thus from these analyses, we decide our cant angle to be set to $\alpha = 45 \degree$
+Thus from these analyses, we decide our cant angle to be set to $\alpha = 45^\circ$
 
 Hence the spin axis matrix $ G_s$ becomes:
 
@@ -302,7 +302,7 @@ $$
 r = \begin{bmatrix} 0 & r_y & 0 \end{bmatrix}^T
 $$
 
-i.e., it sits a distance $r_y $ away from the hub center along the body \(Y\) axis.
+i.e., it sits a distance $r_y $ away from the hub center along the body $Y$ axis.
 
 The absolute acceleration of this point is:
 
@@ -322,7 +322,7 @@ $$
 \boldsymbol{\omega} \times (\boldsymbol{\omega} \times \mathbf{r}) = \begin{bmatrix} 0 \\ -\omega_z^2 r_y \\ 0 \end{bmatrix} \tag{21}
 $$
 
-Notice what (20) is telling us? the tangential acceleration points along the body \(X\) axis (perpendicular to both the rotation axis \(Z\) and the array direction \(Y\)). Intuitively, when the hub accelerates in yaw, it “drags” the array attachment points sideways in the tangential direction. The array tip has inertia, so it can’t follow instantly and it lags behind, the array bends, and that’s how the vibration starts.
+Notice what (20) is telling us? the tangential acceleration points along the body $X$ axis (perpendicular to both the rotation axis $Z$ and the array direction $Y$). Intuitively, when the hub accelerates in yaw, it “drags” the array attachment points sideways in the tangential direction. The array tip has inertia, so it can’t follow instantly and it lags behind, the array bends, and that’s how the vibration starts.
 
 *Note :- By looking at the phenomenon above, we can  frame it as a [base excitation problem](https://community.wvu.edu/~bpbettig/MAE340/Lecture_2_4_Base_excitation.pdf). This is a classic concept taught in the " Advanced Vibration " course modules.*
 
@@ -428,7 +428,7 @@ $$\dot{\boldsymbol{\sigma}} \approx \frac{1}{4}\boldsymbol{\omega}$$
 
 So this has linearised our kinematics!
 
-*Note :- This actually highlights an important constraint for our controller design. the small angle (linearised) plant only behaves linear when the attitude errors stay small. So we can’t expect a small angle linear feedback controller to take us from a huge initial error (like a 180° slew) all the way to the target by itself! that’s way outside the region where the linear model is valid.*
+*Note :- This actually highlights an important constraint for our controller design. the small angle (linearised) plant only behaves linear when the attitude errors stay small. So we can’t expect a small angle linear feedback controller to take us from a huge initial error (like a $180^\circ$ slew) all the way to the target by itself! that’s way outside the region where the linear model is valid.*
 
 *Instead, we use a tracking setup. a feedforward generates an instantaneous reference trajectory (and the corresponding torque/motion profile), and the feedback controller’s job is mainly to correct small deviations around that trajectory. In other words, the feedforward does the heavy lifting, and the feedback keeps us on the rails!*
 
@@ -453,7 +453,7 @@ $$\Sigma(s) = \frac{1}{4s}\Omega(s) = \frac{1}{4s} \cdot \frac{T(s)}{sI_{zz}} \t
 
 $$G_{rigid}(s) = \frac{\Sigma(s)}{T(s)} = \frac{1}{4I_{zz}s^2} \tag{32}$$
 
-This is basically a double [integrator](https://electronics.stackexchange.com/questions/333888/why-is-the-frequency-domain-representation-of-an-integrator-1-s)! two poles sitting at the origin. In frequency domain terms, it carries about $180 \degree$ of phase lag right out of the gate, which is not unstable by itself (it’s marginal in open loop), but it definitely makes the feedback design a tad bit more challenging.
+This is basically a double [integrator](https://electronics.stackexchange.com/questions/333888/why-is-the-frequency-domain-representation-of-an-integrator-1-s)! two poles sitting at the origin. In frequency domain terms, it carries about $180^\circ$ of phase lag right out of the gate, which is not unstable by itself (it’s marginal in open loop), but it definitely makes the feedback design a tad bit more challenging.
 
 *Note :- As you’ve probably already guessed, I’m a little biased toward frequency domain control (life is just easier here) 😄*
 
@@ -480,7 +480,7 @@ So yeah, in the Bode plot of our flexible plant (torque $\rightarrow$ attitude) 
 
 </div>
 
-$\newline$
+<br>
 
 *Note :- notice how the anti resonance shows up before the resonance? this is because our plant model is [collocated](https://www.pml.uliege.be/wp-content/uploads/2022/07/1-s2.0-S0888327022006082-main.pdf). So, each flexible mode introduces a zero (anti resoannce) slightly below its pole (resonance)*
 
@@ -492,9 +492,7 @@ Before we pick a controller, let’s first get a feel for the basic properties o
 |----------|-------|
 | Magnitude at DC | $\infty$ (two poles at the origin) |
 | Magnitude slope | -40 dB/decade (away from flexible modes) |
-| Phase | $\approx -180°$ (away from resonance/anti resonance) |
-| Gain margin | Not very informative in the usual sense (the phase sits near $-180°$ for most frequencies, and flexible mode distort the standard crossover picture) |
+| Phase | $\approx -180^\circ$ (away from resonance/anti resonance) |
+| Gain margin | Not very informative in the usual sense (the phase sits near $-180^\circ$ for most frequencies, and flexible mode distort the standard crossover picture) |
 
-Now, if we drive this plant with a sinusoid at a frequency that’s not near a flexible mode, the output will be roughly shifted by $-180\degree$. In plain english, the plant mostly behaves like a sign inversion, except around the resonance/anti resonance neighbourhood where the flexible dynamics take over.
-
-
+Now, if we drive this plant with a sinusoid at a frequency that’s not near a flexible mode, the output will be roughly shifted by $-180^\circ$. In plain english, the plant mostly behaves like a sign inversion, except around the resonance/anti resonance neighbourhood where the flexible dynamics take over.
