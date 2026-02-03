@@ -229,7 +229,7 @@ Notice how the cosine terms are both positive; this is intentional. The X axis a
 
 Suppose you had flipped one cosine term to negative, you’d effectively point one wheel toward $-Y$, and the Y components would start cancelling out. That would reduce your Y authority, which is not what we want.
 
-Now we pick our rotation axes angles $ \alpha $, based on the following paramteres:
+Now we pick our rotation axes angles $ \alpha $, based on the following parameters:
 
 - [Condition number](https://en.wikipedia.org/wiki/Condition_number) of the allocation matrix $G_sG_s^T $ : We aim for a lower condition number as it represents better numerical conditioning and more isotropic control.
 
@@ -482,7 +482,7 @@ So yeah, in the Bode plot of our flexible plant (torque $\rightarrow$ attitude) 
 
 <br>
 
-*Note :- notice how the anti resonance shows up before the resonance? this is because our plant model is [collocated](https://www.pml.uliege.be/wp-content/uploads/2022/07/1-s2.0-S0888327022006082-main.pdf). So, each flexible mode introduces a zero (anti resoannce) slightly below its pole (resonance)*
+*Note :- notice how the anti resonance shows up before the resonance? this is because our plant model is [collocated](https://www.pml.uliege.be/wp-content/uploads/2022/07/1-s2.0-S0888327022006082-main.pdf). So, each flexible mode introduces a zero (anti resonance) slightly below its pole (resonance)*
 
 ## 6 Feedback Control Design
 
