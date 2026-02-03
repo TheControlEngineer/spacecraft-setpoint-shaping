@@ -52,16 +52,6 @@ This residual motion degrades pointing accuracy and can force the spacecraft to 
 
  *Note:- These requirements are defined solely for this project and do not represent any known ongoing or past mission requirements.*
 
-
- <details>
-<summary>Reasoning as to why this holds.</summary>
-
-![Trust me, I'm an engineer meme](https://media3.giphy.com/media/v1.Y2lkPTZjMDliOTUyeWwzaDUzMHJ3amdvMno0bnpuZ3M3Nnp3ajB1eXBrYTV3MG55c2V5NyZlcD12MV9naWZzX3NlYXJjaCZjdD1n/LqW9dLVjQm3cs/giphy.gif)
-
-</details>
-
-
-
  ## 2. Spacecraft Model
 
 In this section, we’ll walk through how we build the spacecraft model. We’ll start with the nonlinear model used for simulation, and then move on to the linearised model we’ll use for controller design.
@@ -641,7 +631,7 @@ PM = 180° + \angle L(j\omega_c) > 0
 \end{aligned}
 ```
 
-which (under the double integrator phase assumption) boils down to:
+which (under the double integrator phase) boils down to:
 
 ```math
 \begin{aligned}
@@ -650,5 +640,26 @@ which (under the double integrator phase assumption) boils down to:
 ```
 
 This means that we need a controller that provides a phase lead! and points us in the direction of using a derivative term (natural phase lead!)
+
+
+### 6.2 Proportional Derivative Control (PD)
+
+Since we have established that we need a phase lead from the controller side to imporve the stability of our closed loop system, the natural choice is to persue a derivating term which supply a phase lead. Mathematically one can represent a PD controller as:
+
+```math
+\begin{aligned}
+C_{PD}(s) = K_p + K_d s
+\end{aligned}
+```
+Where $`K_p`$ is the proportional gain and $`K_d`$ is the derivative gain. 
+
+Naturally, the phase contribution of this controller can be mathematically written as:
+
+```math
+\begin{align}
+\angle C_{PD}(j\omega) = arctan \left(\frac{P\omega}{K}\right) \in [0°, 90°)
+\end{align}
+```
+
 
 
