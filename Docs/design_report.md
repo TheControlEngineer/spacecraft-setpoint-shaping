@@ -644,22 +644,203 @@ This means that we need a controller that provides a phase lead! and points us i
 
 ### 6.2 Proportional Derivative Control (PD)
 
-Since we have established that we need a phase lead from the controller side to imporve the stability of our closed loop system, the natural choice is to persue a derivating term which supply a phase lead. Mathematically one can represent a PD controller as:
+Since we’ve established we need some phase lead from the controller to improve closed loop stability, the most straightforward move is to add a derivative term (because it contributes positive phase).
+
+A PD controller can be written as:
 
 ```math
 \begin{aligned}
 C_{PD}(s) = K_p + K_d s
 \end{aligned}
 ```
-Where $`K_p`$ is the proportional gain and $`K_d`$ is the derivative gain. 
+with $`K_p`$ and $`K_d`$ being the proportional and derivative gain respectively.
 
-Naturally, the phase contribution of this controller can be mathematically written as:
+Since $`s = j\omega`$, we can evaluate our controller on the imaginary axis, yeilding:
 
 ```math
-\begin{align}
-\angle C_{PD}(j\omega) = arctan \left(\frac{P\omega}{K}\right) \in [0°, 90°)
-\end{align}
+\begin{aligned}
+\angle C_{PD}(j\omega) = \arctan \left(\frac{K_d\omega}{K_p}\right) \in [0°, 90°)
+\end{aligned}
+```
+Notice that this phase contribution is always positive? The derivative term naturally provides the phase lead we need. At the crossover frequency $`\omega_c`$:
+
+```math
+\begin{aligned}
+\angle L(j\omega_c) = \arctan\left(\frac{K_d\omega_c}{K_p}\right) - 180°
+\end{aligned}
+```
+So our phase margin becomes:
+
+```math
+\begin{aligned}
+PM = \arctan\left(\frac{K_d\omega_c}{K_p}\right)
+\end{aligned}
 ```
 
+*Note :- For example, if $`K_d\omega_c/K_p = 1`$, we get $`PM = 45°`$. If $`K_d\omega_c/K_p = 2`$, we get $`PM = 63°`$. Pretty neat, right?* 😀
 
+Before we move on to gain selection, it's worth pausing to think about what PD control actually does physically. In the time domain, our control law is:
+
+```math
+\begin{aligned}
+\tau = -K_p\sigma_e - K_d\omega_e
+\end{aligned}
+```
+
+Where $`\sigma_e`$ is the attitude error (in MRPs) and $`\omega_e`$ is the rate error.
+
+- Proportional term ($`-K_p\sigma_e`$): This creates a torque proportional to how far off we are from the target. It's essentially a virtual spring that pulls the spacecraft toward the desired attitude.
+
+- Derivative term ($`-K_d\omega_e`$): This creates a torque proportional to how fast we're moving relative to the target. It's essentially a virtual damper that resists motion and prevents overshoot.
+
+*Note:-  remember how a torsional spring ends up with a static twist $`\delta`$ under a constant (DC) torque? That’s pretty similar to what happens with proportional control, you end up with a steady state error!*
+
+So PD control is  adds virtual spring and damper dynamics to our spacecraft!
+
+### 6.3 Controller Gain Selection
+
+With our controller now defined, we need to perform the gain selection. though I admit, I did plenty of trial and error during development, there is actually a much more principled way to derive it from our closed loop system requirements!
+
+Our control law in the MRP/rate domain, mentioned in the previous sectionas :
+
+```math
+\begin{aligned}
+\tau = -K_p\sigma_e - K_d\omega_e
+\end{aligned}
+```
+Since $`\dot{\sigma} \approx \omega/4`$ for small angles (remember that linearisation from earlier?), we have $`\omega \approx 4\dot{\sigma}`$. So the controller in the Laplace domain, operating on $`\sigma`$, becomes:
+
+```math
+\begin{aligned}
+T(s) = -(K_p + 4K_d s)\Sigma_e(s)
+\end{aligned}
+```
+So effectively, our controller is $`C(s) = K_p + 4K_d s`$.
+
+
+With our plant $`G(s) = 1/(4I_{zz}s^2)`$, the loop transfer function becomes:
+
+```math
+\begin{aligned}
+L(s) = G(s)C(s) = \frac{K_p + 4K_d s}{4I_{zz}s^2}
+\end{aligned}
+```
+
+Similarly, our closed loop transfer function takes the form:
+
+```math
+\begin{aligned}
+G_{CL}(s) = \frac{L(s)}{1 + L(s)} = \frac{K_p + 4K_d s}{4I_{zz}s^2 + 4K_d s + K_p}
+\end{aligned}
+```
+
+Thus he characteristic polynomial of our closed loop system is:
+
+```math
+\begin{aligned}
+4I_{zz}s^2 + 4K_d s + K_p = 0
+\end{aligned}
+```
+Dividing through by $`4I_{zz}`$ we get:
+
+```math
+\begin{aligned}
+s^2 + \frac{K_d}{I_{zz}}s + \frac{K_p}{4I_{zz}} = 0
+\end{aligned}
+```
+Now, let's recall the standard second order form:
+
+```math
+\begin{aligned}
+s^2 + 2\zeta_{CL}\omega_n s + \omega_n^2 = 0
+\end{aligned}
+```
+
+When we match the coefficients, we get:
+
+```math
+\begin{aligned}
+\omega_n = \sqrt{\frac{K_p}{4I_{zz}}}
+\end{aligned}
+```
+
+```math
+\begin{aligned}
+\zeta_{CL} = \frac{K_d}{2I_{zz}\omega_n} = \frac{K_d}{2\sqrt{K_p I_{zz}}}
+\end{aligned}
+```
+
+*Note :- $`\omega_n`$ and $`\zeta_{CL}`$ are the closed loop natural frequency and damping ratio. Together, they’re a convenient way to describe (and design for) the closed loop transient response! things like rise time,settling speed and overshoot are connected to them, for as long as the closed loop behavior is well approximated by a dominant second order response.*
+
+Given a desired natural frequency $`\omega_n`$ and damping ratio $`\zeta_{CL}`$, we can directly translate our performance specs into controller gains as:
+
+```math
+\begin{aligned}
+\boxed{K_p = 4\omega_n^2 I_{zz}}
+\end{aligned}
+```
+
+```math
+\begin{aligned}
+\boxed{K_d = 2\zeta_{CL}\omega_n I_{zz}}
+\end{aligned}
+```
+
+However, we can’t just choose any $`\omega_n`$ we want. In principle we can set it wherever, but in practice we need to keep $`\omega_n`$  away from our plant’s resonant modes. otherwise may excite those resonances and end up with extra peaking, vibration, noise sensitivity, or even instability.
+
+*Note :- for most practical designs (especially when the closed loop looks roughly second order), $`\omega_n`$ is a good proxy for closed loop bandwidth. eventhough its not an exact match, but it's usually the right handle on how fast the loop responds.*
+
+Now, we know that our sensitivity fucntion can be written as:
+
+```math
+\begin{aligned}
+S(s) = \frac{1}{1+ L(s)}
+\end{aligned}
+```
+So if $`|L(j\omega_{mode})| > 1`$, the controller has significant gain at the modal frequency and will interact with (and potentially destabilise) the flexible dynamics.
+
+To keep our closed loop bandwidth well below the resonance frequency, i propose:
+
+
+```math
+\begin{aligned}
+f_{BW} < \frac{f_{mode,1}}{2.5}
+\end{aligned}
+```
+
+where $`f_{mode,1}`$ is the first resonannce frequency.
+
+*Note:- The “2.5×” separation is a bit conservative, but with modes this lightly damped ($`\zeta \approx 0.02`$) I’d rather play it safe. That said, I might be able to push the bandwidth depending on how well the trajectory shaping (feedforward) keeps energy out of the first resonance. If the reference the feedback loop has to track has low spectral content near the first resonant mode, we can usually get away with a bit more bandwidth. And if we’re lucky, the control design might add some apparent damping around the resonance! but with low bandwidth, any damping injection there will likely be limited. SO no hopes of active damping here in the traditional sense atleast.*
+
+In the case our spacecraft:
+
+- First mode: $`f_1 = 0.4`$ Hz
+- Maximum bandwidth: $`f_{BW,max} = 0.4/2.5 = 0.16`$ Hz
+- Corresponding $`\omega_n = 2\pi \times 0.16 \approx 1.0`$ rad/s
+
+Now that we have our bandwidth, we can back calculate our gains. But first we consider our effective inertia abut the Z axis, so we have:
+
+```math
+\begin{aligned}
+I_{eff,zz} = I_{hub,zz} + \sum_1 ^4 M_{modal} r_i^2
+\end{aligned}
+```
+where $`M_{modal}`$ is the modal point masses of our solar array (5 $`kg`$ each per mode) and  $`r_i`$ is the ditance of the  $`i^{th}`$ modal mass from the hub's center.
+
+*Note :- You can find the schematics in the first section should you need a visualisation*
+
+So we have:
+```math
+\begin{aligned}
+I_{eff,zz} = 600 + 325 = 925 kg\cdot m^2 
+\end{aligned}
+```
+
+Since our $`\omega_n \approx 0.1 rad/sec`$
+
+```math
+\begin{aligned}
+\boxed{K_p = 4 \times 1.0^2 \times 925 = 3700N\cdot m}
+\end{aligned}
+```
 
