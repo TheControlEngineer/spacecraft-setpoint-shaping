@@ -49,6 +49,7 @@ This residual motion degrades pointing accuracy and can force the spacecraft to 
 | Slew time | 30 s | Operational constraint |
 | Post-slew settling | < 5 s to 1 arcsec | Imaging window |
 | Residual vibration | < 1 mm modal displacement | Payload requirement 
+|Phase margin | 70°-75°| Robustness requirement
 
  *Note:- These requirements are defined solely for this project and do not represent any known ongoing or past mission requirements.*
 
@@ -615,7 +616,7 @@ L(s) = G_{flex}(s) C(s)
 
 does not encircle the point $`(-1,0)`$ in the complex plane.
 
-Away from the flexible modes, the double integrator part of the plant contributes roughly $`-180°`$ of phase. So at the gain crossover frequency $`\omega_c`$ (where $`|L(j\omega_c)| = 1`$), we can write:
+Away from the flexible modes, the double integrator part of the plant contributes roughly $`-180°`$ of phase. So at the [gain crossover frequency](https://www.mathworks.com/help/control/ref/dynamicsystem.margin.html) $`\omega_c`$ (where $`|L(j\omega_c)| = 1`$), we can write:
 
 ```math
 \begin{aligned}
@@ -623,7 +624,7 @@ Away from the flexible modes, the double integrator part of the plant contribute
 \end{aligned}
 ```
 
-For a stable closed loop system we want a positive phase margin, i.e.:
+For a stable closed loop system we want a positive [phase margin](https://en.wikipedia.org/wiki/Phase_margin), i.e.:
 
 ```math
 \begin{aligned}
@@ -734,7 +735,7 @@ G_{CL}(s) = \frac{L(s)}{1 + L(s)} = \frac{K_p + 4K_d s}{4I_{zz}s^2 + 4K_d s + K_
 \end{aligned}
 ```
 
-Thus he characteristic polynomial of our closed loop system is:
+Thus he [characteristic polynomial](https://en.wikipedia.org/wiki/Closed-loop_pole) of our closed loop system is:
 
 ```math
 \begin{aligned}
@@ -748,7 +749,7 @@ Dividing through by $`4I_{zz}`$ we get:
 s^2 + \frac{K_d}{I_{zz}}s + \frac{K_p}{4I_{zz}} = 0
 \end{aligned}
 ```
-Now, let's recall the standard second order form:
+Now, let's recall the [standard second order](https://apmonitor.com/pdc/index.php/Main/SecondOrderSystems) form:
 
 ```math
 \begin{aligned}
@@ -790,7 +791,7 @@ However, we can’t just choose any $`\omega_n`$ we want. In principle we can se
 
 *Note :- for most practical designs (especially when the closed loop looks roughly second order), $`\omega_n`$ is a good proxy for closed loop bandwidth. eventhough its not an exact match, but it's usually the right handle on how fast the loop responds.*
 
-Now, we know that our sensitivity fucntion can be written as:
+Now, we know that our [sensitivity fucntion](https://en.wikipedia.org/wiki/Sensitivity_(control_systems)) can be written as:
 
 ```math
 \begin{aligned}
@@ -836,11 +837,119 @@ I_{eff,zz} = 600 + 325 = 925 kg\cdot m^2
 \end{aligned}
 ```
 
-Since our $`\omega_n \approx 0.1 rad/sec`$
+Since our $`\omega_n \approx 1.0 \text{ rad/s}`$ (from $`2\pi \times 0.16`$):
 
 ```math
 \begin{aligned}
-\boxed{K_p = 4 \times 1.0^2 \times 925 = 3700N\cdot m}
+\boxed{K_p = 4 \times 1.0^2 \times 925 = 3700\ \text{N}\cdot\text{m}}
 \end{aligned}
 ```
+
+With the proportional gain set, we choose a closed loop damping ratio of $`\zeta_{CL}=0.9`$. This corresponds to a phase margin of about $`73^\circ`$ for a standard second order loop, which sits right in our $`70^\circ`$ to $`75^\circ`$ robustness target.
+
+Using the gain relation derived above,
+
+```math
+\begin{aligned}
+\boxed{K_d = 2\zeta_{CL}\omega_n I_{zz}}
+\end{aligned}
+```
+
+we obtain
+
+```math
+\begin{aligned}
+\boxed{K_d = 2 \times 0.9 \times 1.0 \times 925 = 1665\ \text{N}\cdot\text{m}\cdot\text{s}}
+\end{aligned}
+```
+*Note: This derivation uses a second order approximation, so expect some follow up tuning in simulation. You can do this manually  or set up an optimizer to selcet PD gains that satisfy the closed loop requirements (objective,constraints...etc). i used an optimizer to tune $`K_p = 3.74\times10^3`$ and $`K_d = 1.67\times10^3`$ and validated the outcome in simulation. (tools like copilot ot chatgpt can help with grunt work and setups, but the specs and validation are still on us🤷‍♂️.)*
+
+
+Now with our gains finalised, we look at the bode plot of our loop transfer function $`L(s)`$ :
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+
+<image src = "image-4.png" width = 500>
+
+</div>
+
+From the Bode plot, we observe that the loop gain satisfies $`|L(j\omega)| > 1`$ for $`\omega \le 0.3 Hz`$, which supports good low frequency tracking of the shaped reference spectrum. Note that the first resonant mode lies above the $`0 dB`$ line? this is indicating that the loop has significant interaction with that mode. Next, we evaluate whether this interaction excites the resonance or provides additional damping.
+
+### 6.4 Closed Loop System Characteristics
+
+In our prevous sections we have repeatedly introduced our plant model in the frequency domain:
+
+```math
+\begin{aligned}
+G_{flex}(s) = \frac{1}{4I_{eff}s^2} \cdot \prod_{i=1}^{N_{modes}} \frac{s^2 + 2\zeta_i\omega_i s + \omega_i^2 + \Delta_i}{s^2 + 2\zeta_i\omega_i s + \omega_i^2}
+\end{aligned}
+```
+
+and we have also derived the dependancy of our closed loop damping ration on our derivative gain given as:
+
+```math
+\begin{aligned}
+\boxed{K_d = 2\zeta_{CL}\omega_n I_{zz}}
+\end{aligned}
+```
+
+Now we will see if our derivative term is actually injecting viscous damping at $`L(j\omega_{mode1})`$ since $`|L(j\omega_{mode1})|> 1`$.
+
+For a loop transfer fucntion $`L(j\omega)`$ one can easily determine the damping (or anti damping) of a particular frequency by considering the real part! i.e :
+
+
+```math
+\begin{aligned}
+\Re (L(j\omega)) = |L(j\omega)|cos(\angle L(j\omega))
+\end{aligned}
+```
+
+So, if:
+
+```math
+\begin{aligned}
+\Re (L(j\omega))>0 \rightarrow damping
+\end{aligned}
+```
+
+```math
+\begin{aligned}
+\Re (L(j\omega))<0 \rightarrow excitation
+\end{aligned}
+```
+
+Since our first resonant mode has a loop gain of $`3.5 dB`$ and a phase of $`-66^\circ`$ , we have:
+
+```math
+\begin{aligned}
+|L (\omega_{mode1})| \approx 10^{\frac{3.5}{20}} \approx 1.50
+\end{aligned}
+```
+
+```math
+\begin{aligned}
+\Re(L(\omega_{mode 1})) \approx 1.5cos(-66^\circ) \approx 0.61 > 0 
+\end{aligned}
+```
+
+Therefore, at the first resonance frequency, the loop exhibits a damping  contribution, since the in phase component satisfies $`\Re\{L(j\omega_{mode1})\} > 0`$ (using the standard rate loop interpretation).
+
+*Note: for the second resonance mode, $`\Re\{L(j\omega_{mode2})\} \approx 0.788`$ (with $`|L|=-0.2\,\mathrm{dB}`$ and phase $`-36.3^\circ`$).*
+
+This also highlights that setting the closed loop bandwidth below the first resonance does not guarantee zero interaction  if the open loop gain remains non negligible at $`\omega_{mode}`$, the controller can still influence the mode, potentially exciting them depending on their phase in the rate loop.
+
+
+Now, we look into the stability of our closed loop system. Looking back at the Nyquist satibility criteria introduced in section 6.1, we assess our nyquist plot given below:
+
+
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+
+<image src = "image-5.png" width = 500>
+
+</div>
+
+From the Nyquist plot, we immediately see that the closed loop system is stable, since the open loop locus does not encircle the critical point $`(-1, 0)`$. The plot also confirms that the phase margin target is preserved, which is consistent with the derivative gain back calculation used in the design. Finally, the two rapid phase rotations are clearly visible, corresponding to the sharp phase transitions associated with the first and second resonant modes.
+
+*Note :- you can verify the phase transition from our bode plot of $`L(s)`$ given in the previous section.*
 
