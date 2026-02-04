@@ -47,7 +47,7 @@ This residual motion degrades pointing accuracy and can force the spacecraft to 
 |-------------|-------|-----------|
 | Slew angle | 180° | Mission geometry |
 | Slew time | 30 s | Operational constraint |
-| Post-slew settling | < 5 s to 1 arcsec | Imaging window |
+| Post-slew settling | < 5 s to 5 arcsec | Imaging window |
 | Residual vibration | < 1 mm modal displacement | Payload requirement 
 |Phase margin | 70°-75°| Robustness requirement
 
@@ -934,7 +934,7 @@ Since our first resonant mode has a loop gain of $`3.5 dB`$ and a phase of $`-66
 
 Therefore, at the first resonance frequency, the loop exhibits a damping  contribution, since the in phase component satisfies $`\Re\{L(j\omega_{mode1})\} > 0`$ (using the standard rate loop interpretation).
 
-*Note: for the second resonance mode, $`\Re\{L(j\omega_{mode2})\} \approx 0.788`$ (with $`|L|=-0.2\,\mathrm{dB}`$ and phase $`-36.3^\circ`$).*
+*Note: if you are wondering about the second resonance mode, $`\Re\{L(j\omega_{mode2})\} \approx 0.788`$ (with $`|L|=-0.2\,\mathrm{dB}`$ and phase $`-36.3^\circ`$).*
 
 This also highlights that setting the closed loop bandwidth below the first resonance does not guarantee zero interaction  if the open loop gain remains non negligible at $`\omega_{mode}`$, the controller can still influence the mode, potentially exciting them depending on their phase in the rate loop.
 
@@ -952,4 +952,23 @@ Now, we look into the stability of our closed loop system. Looking back at the N
 From the Nyquist plot, we immediately see that the closed loop system is stable, since the open loop locus does not encircle the critical point $`(-1, 0)`$. The plot also confirms that the phase margin target is preserved, which is consistent with the derivative gain back calculation used in the design. Finally, the two rapid phase rotations are clearly visible, corresponding to the sharp phase transitions associated with the first and second resonant modes.
 
 *Note :- you can verify the phase transition from our bode plot of $`L(s)`$ given in the previous section.*
+
+Now that we’ve checked the Nyquist plot and convinced ourselves the closed loop is stable (with a decent phase margin), the next step is to look at how the loop behaves for tracking, disturbance rejection, and noise rejection. The standard way to do that is by plotting the sensitivity functions: the sensitivity $`S(s)`$ (disturbance rejection) and complementary sensitivity $`T(s)`$ (tracking / noise shaping).
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <image src="image-6.png" width=500>
+</div>
+
+From the sensitivity plot, it looks like we get strong disturbance rejection up to about $`0.25\,\text{Hz}`$ (highlighted in green). Around the two resonance frequencies, $`S(s)`$ shows dips (roughly $`-5\,\text{dB}`$ in our plot). That’s consistent with the loop having meaningful authority at those frequencies (and in our case, with the added damping from rate feedback helping to keep the resonances under control).
+
+Also notice the dip at the first resonance is deeper than the one at the second resonance? that typically lines up with higher loop gain at the first mode (you can cross check this directly in the bode plot of the loop transfer function).
+
+One thing we need to keep an eye on is the anti resonance region. you can see $`S`$ rises there, meaning disturbances near the anti resonance are rejected less effectively. Practically, that’s a bit risky because a disturbance around the anti resonance frequency can excite the array dynamics while producing relatively little motion at the hub! so it can shake our arrays without an obvious hub response.
+
+*Note:- Honestly, I find anti resonances even scarier than resonances. Around those frequencies, the hub response can look harmlessly small, even while our arrays are moving a lot. That means a disturbance or noise near that frequency could excite array vibration without it showing up clearly in the attitude signal! So we should make sure our reference shaping  keeps energy out of those anti resonance bands as well.*
+
+As we move to higher frequencies, the loop doesn’t reject disturbances very well (the yellowish orange looking region), and that’s pretty expected. In those bands the loop gain is low, so $`S(j\omega)\approx 1`$, meaning disturbances mostly pass through. The upside is that low loop gain makes $`T(j\omega)\approx 0`$, so measurement noise is attenuated. In other words, you generally can’t get strong disturbance rejection and strong noise rejection in the *same* frequency range. Sadly, it’s an inherent trade off (since $`S+T=1`$ for unity feedback).
+
+
+
 

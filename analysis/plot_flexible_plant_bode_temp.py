@@ -198,158 +198,78 @@ def main() -> None:
 
     plt.tight_layout()
 
-    # Open-loop plot
+    # Sensitivity and complementary sensitivity
     _, L = signal.freqresp(open_loop, w=w)
-    L_mag_db = 20.0 * np.log10(np.maximum(np.abs(L), 1e-20))
-    L_phase_deg = np.rad2deg(np.angle(L))
-    _, C_resp = signal.freqresp(controller, w=w)
+    S = 1.0 / (1.0 + L)
+    T = L / (1.0 + L)
+    S_mag_db = 20.0 * np.log10(np.maximum(np.abs(S), 1e-20))
+    T_mag_db = 20.0 * np.log10(np.maximum(np.abs(T), 1e-20))
 
-    fig2, (ax_mag2, ax_phase2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
-    ax_mag2.semilogx(freqs_hz, L_mag_db, "b")
-    ax_mag2.set_ylabel("Magnitude (dB)")
-    ax_mag2.set_title("Open-Loop L(s) Bode")
-    ax_mag2.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.6)
+    fig2, (ax_s, ax_t) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+    ax_s.semilogx(freqs_hz, S_mag_db, "b")
+    ax_s.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.6)
+    ax_s.axhline(-3.0, color="#666666", linestyle=":", linewidth=1.0, alpha=0.8)
     for f_mode in resonance_freqs:
-        ax_mag2.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
-    ax_mag2.grid(True, which="both", alpha=0.3)
+        ax_s.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
+    y_min = -25.0
+    s_green = S_mag_db <= -3.0
+    s_orange = (S_mag_db > -3.0) & (S_mag_db <= 0.0)
+    s_red = S_mag_db > 0.0
+    ax_s.fill_between(freqs_hz, y_min, S_mag_db, where=s_green, interpolate=True,
+                      color="#2ca02c", alpha=0.25)
+    ax_s.fill_between(freqs_hz, y_min, S_mag_db, where=s_orange, interpolate=True,
+                      color="#ff7f0e", alpha=0.25)
+    ax_s.fill_between(freqs_hz, y_min, S_mag_db, where=s_red, interpolate=True,
+                      color="#d62728", alpha=0.25)
+    ax_s.set_ylabel("|S(jw)| (dB)")
+    ax_s.set_title("Sensitivity and Complementary Sensitivity")
+    ax_s.grid(True, which="both", alpha=0.3)
+    ax_s.set_ylim(y_min, max(5.0, float(np.nanmax(S_mag_db)) + 1.0))
 
-    ax_phase2.semilogx(freqs_hz, L_phase_deg, "g")
-    ax_phase2.set_ylabel("Phase (deg)")
-    ax_phase2.set_xlabel("Frequency (Hz)")
+    # Point to dips near resonance frequencies
+    arrow_tail = (0.50, 0.12)
     for f_mode in resonance_freqs:
-        ax_phase2.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
-    ax_phase2.grid(True, which="both", alpha=0.3)
-
-    # Print open-loop magnitude/phase and controller damping tendency at detected resonances
-    if len(resonance_freqs) > 0:
-        for f_mode in resonance_freqs:
-            idx = int(np.argmin(np.abs(freqs_hz - f_mode)))
-            c_val = C_resp[idx]
-            c_mag_db = 20.0 * np.log10(np.maximum(np.abs(c_val), 1e-20))
-            c_phase_deg = np.rad2deg(np.angle(c_val))
-            c_real = np.real(c_val)
-            c_imag = np.imag(c_val)
-            omega = 2.0 * np.pi * freqs_hz[idx]
-            c_eff = c_imag / omega if omega > 0 else 0.0
-            damping_flag = "DAMPING" if c_imag > 0 else "EXCITING"
-            print(
-                f"Open-loop at {freqs_hz[idx]:.3f} Hz: "
-                f"|L|={L_mag_db[idx]:.1f} dB, phase={L_phase_deg[idx]:.1f} deg"
-            )
-            print(
-                f"  Controller C(jw): |C|={c_mag_db:.1f} dB, phase={c_phase_deg:.1f} deg, "
-                f"Re={c_real:.3e}, Im={c_imag:.3e} => c_eff=Im/ω={c_eff:.3e} ({damping_flag})"
-            )
-
-    plt.tight_layout()
-
-    # Nyquist plot of open-loop L(s)
-    fig3, ax_nyq = plt.subplots(figsize=(6.5, 6.0))
-    ax_nyq.plot(np.real(L), np.imag(L), "b-", linewidth=1.2)
-    ax_nyq.plot(np.real(L), -np.imag(L), "b--", linewidth=1.0, alpha=0.5)
-    ax_nyq.plot([-1.0], [0.0], "ro", markersize=5)
-    ax_nyq.axhline(0.0, color="#999999", linewidth=0.8)
-    ax_nyq.axvline(0.0, color="#999999", linewidth=0.8)
-    ax_nyq.set_title("Nyquist plot")
-    ax_nyq.set_xlabel("Re")
-    ax_nyq.set_ylabel("Im")
-    ax_nyq.grid(True, alpha=0.3)
-
-    # Stability margins (computed from frequency response)
-    mag = np.abs(L)
-    phase = np.unwrap(np.angle(L))
-    phase_deg = np.rad2deg(phase)
-
-    # Gain crossover (|L| = 1)
-    pm = np.inf
-    wg = None
-    mag_db = 20.0 * np.log10(np.maximum(mag, 1e-20))
-    idx_gc = np.where(np.diff(np.sign(mag_db)))[0]
-    if len(idx_gc) > 0:
-        i = idx_gc[0]
-        m1, m2 = mag_db[i], mag_db[i + 1]
-        w1, w2 = w[i], w[i + 1]
-        if m2 != m1:
-            w_gc = w1 + (w2 - w1) * (-m1) / (m2 - m1)
-        else:
-            w_gc = w1
-        ph1, ph2 = phase_deg[i], phase_deg[i + 1]
-        if w2 != w1:
-            ph_gc = ph1 + (ph2 - ph1) * ((w_gc - w1) / (w2 - w1))
-        else:
-            ph_gc = ph1
-        pm = 180.0 + ph_gc
-        wg = w_gc
-
-    # Phase crossover (phase = -180 deg)
-    gm = np.inf
-    wp = None
-    phase_err = phase_deg + 180.0
-    idx_pc = np.where(np.diff(np.sign(phase_err)))[0]
-    if len(idx_pc) > 0:
-        i = idx_pc[0]
-        p1, p2 = phase_err[i], phase_err[i + 1]
-        w1, w2 = w[i], w[i + 1]
-        if p2 != p1:
-            w_pc = w1 + (w2 - w1) * (-p1) / (p2 - p1)
-        else:
-            w_pc = w1
-        m1, m2 = mag[i], mag[i + 1]
-        if w2 != w1:
-            m_pc = m1 + (m2 - m1) * ((w_pc - w1) / (w2 - w1))
-        else:
-            m_pc = m1
-        gm = 1.0 / m_pc if m_pc > 0 else np.inf
-        wp = w_pc
-
-    gm_db = 20.0 * np.log10(gm) if np.isfinite(gm) else np.inf
-    pm_text = f"{pm:.1f} deg" if np.isfinite(pm) else "inf"
-    gm_text = f"{gm_db:.1f} dB" if np.isfinite(gm_db) else "inf"
-    wg_hz = (wg / (2.0 * np.pi)) if wg is not None else None
-    wp_hz = (wp / (2.0 * np.pi)) if wp is not None else None
-
-    ax_nyq.text(
-        0.02, 0.02,
-        f"GM: {gm_text}\\nPM: {pm_text}",
-        transform=ax_nyq.transAxes,
-        fontsize=9,
-        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#666666", alpha=0.8),
-    )
-    if wg_hz is not None or wp_hz is not None:
-        print("Stability margins:")
-        print(f"  GM: {gm_text} at wp={wp_hz:.3f} Hz" if wp_hz is not None else f"  GM: {gm_text}")
-        print(f"  PM: {pm_text} at wg={wg_hz:.3f} Hz" if wg_hz is not None else f"  PM: {pm_text}")
-
-    # Margin (Bode-style) plot with crossover markers
-    fig4, (axm, axp) = plt.subplots(2, 1, figsize=(8.5, 6.0), sharex=True)
-    axm.semilogx(freqs_hz, 20.0 * np.log10(np.maximum(np.abs(L), 1e-20)), "b")
-    axm.axhline(0.0, color="#999999", linewidth=0.8)
-    if wg is not None:
-        axm.axvline(wg_hz, color="r", linestyle="--", alpha=0.7)
-    if wp is not None:
-        axm.axvline(wp_hz, color="g", linestyle="--", alpha=0.7)
-    axm.set_ylabel("Magnitude (dB)")
-    axm.set_title("Margin plot")
-    axm.grid(True, which="both", alpha=0.3)
-
-    axp.semilogx(freqs_hz, phase_deg, "g")
-    axp.axhline(-180.0, color="#999999", linewidth=0.8)
-    if wg is not None:
-        axp.axvline(wg_hz, color="r", linestyle="--", alpha=0.7, label="Gain crossover")
-    if wp is not None:
-        axp.axvline(wp_hz, color="g", linestyle="--", alpha=0.7, label="Phase crossover")
-    if wp is None:
-        axp.text(
-            0.02, 0.08,
-            "No phase crossover in range\n(phase does not reach -180°)",
-            transform=axp.transAxes,
-            fontsize=8,
-            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#666666", alpha=0.8),
+        if f_mode <= freqs_hz[0] or f_mode >= freqs_hz[-1]:
+            continue
+        idx0 = int(np.argmin(np.abs(freqs_hz - f_mode)))
+        i0 = max(0, idx0 - 3)
+        i1 = min(len(freqs_hz) - 1, idx0 + 3)
+        i_min = i0 + int(np.argmin(S_mag_db[i0 : i1 + 1]))
+        x_min = freqs_hz[i_min]
+        y_min_pt = S_mag_db[i_min]
+        ax_s.annotate(
+            "",
+            xy=(x_min, y_min_pt),
+            xytext=arrow_tail,
+            textcoords="axes fraction",
+            arrowprops=dict(arrowstyle="->", color="#111111", lw=1.2),
         )
-    axp.set_ylabel("Phase (deg)")
-    axp.set_xlabel("Frequency (Hz)")
-    axp.grid(True, which="both", alpha=0.3)
-    axp.legend(loc="best", fontsize=8)
+    ax_s.text(
+        arrow_tail[0],
+        arrow_tail[1],
+        "Damping of resonant modes",
+        transform=ax_s.transAxes,
+        fontsize=9,
+        va="top",
+        ha="left",
+        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#333333", alpha=0.9),
+    )
+
+    ax_t.semilogx(freqs_hz, T_mag_db, "g")
+    ax_t.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.6)
+    ax_t.axhline(-3.0, color="#666666", linestyle=":", linewidth=1.0, alpha=0.8)
+    for f_mode in resonance_freqs:
+        ax_t.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
+    t_green = T_mag_db >= -3.0
+    t_purple = T_mag_db < -3.0
+    ax_t.fill_between(freqs_hz, y_min, T_mag_db, where=t_green, interpolate=True,
+                      color="#2ca02c", alpha=0.25)
+    ax_t.fill_between(freqs_hz, y_min, T_mag_db, where=t_purple, interpolate=True,
+                      color="#9467bd", alpha=0.25)
+    ax_t.set_ylabel("|T(jw)| (dB)")
+    ax_t.set_xlabel("Frequency (Hz)")
+    ax_t.grid(True, which="both", alpha=0.3)
+    ax_t.set_ylim(y_min, max(5.0, float(np.nanmax(T_mag_db)) + 1.0))
 
     plt.tight_layout()
 
