@@ -836,3 +836,11 @@ I_{eff,zz} = 600 + 325 = 925 kg\cdot m^2
 \end{aligned}
 ```
 
+Since our $`\omega_n \approx 0.1 rad/sec`$
+
+```math
+\begin{aligned}
+\boxed{K_p = 4 \times 1.0^2 \times 925 = 3700N\cdot m}
+\end{aligned}
+```
+
