@@ -31,7 +31,7 @@ So if you don’t mind a casual tone and a slightly unconventional writing style
 
 A 750 kg spacecraft must perform a $`180 \degree`$ [slew manoeuvre](https://en.wikipedia.org/wiki/Slew_(spacecraft)) about the Z axis in the [body frame](https://www.sbg-systems.com/glossary/body-frame/#:~:text=The%20sensor%20coordinate%20frame%20or,base%2C%20depending%20on%20the%20application.) (i.e., a yaw rotation) within 30 seconds.
 
-In practice, achieving such a manoeuvre within this narrow time window is in the neighbourhood of “keep dreaming,” due to limitations such as [reaction wheel](https://en.wikipedia.org/wiki/Reaction_wheel) torque constraints and disturbances from [slosh dynamics](https://en.wikipedia.org/wiki/Slosh_dynamics), to name just a few. For the purpose of this project, we deliberately disregard these limitations and focus only on the flexible dynamics of the [solar array](https://en.wikipedia.org/wiki/Solar_panels_on_spacecraft), aiming for [arcsecond](https://en.wikipedia.org/wiki/Minute_and_second_of_arc) level post manoeuvre pointing stability to enable high resolution imaging of a comet. 
+In practice, achieving such a manoeuvre within this narrow time window is in the neighbourhood of “keep dreaming,” due to limitations such as [reaction wheel](https://en.wikipedia.org/wiki/Reaction_wheel) torque constraints and disturbances from [slosh dynamics](https://en.wikipedia.org/wiki/Slosh_dynamics), to name just a few. For the purpose of this hobby project, we deliberately disregard these limitations and focus only on the flexible dynamics of the [solar array](https://en.wikipedia.org/wiki/Solar_panels_on_spacecraft), aiming for [arcseconds](https://en.wikipedia.org/wiki/Minute_and_second_of_arc) level post manoeuvre pointing stability to enable high resolution imaging of a comet. 
 
 ### 1.2 Core Difficulty 
 
@@ -47,7 +47,7 @@ This residual motion degrades pointing accuracy and can force the spacecraft to 
 |-------------|-------|-----------|
 | Slew angle | 180° | Mission geometry |
 | Slew time | 30 s | Operational constraint |
-| Post-slew settling | < 5 s to 5 arcsec | Imaging window |
+| Post slew settling | < 5 s to 5 arcsec | Imaging window |
 | Residual vibration | < 1 mm modal displacement | Payload requirement 
 |Phase margin | 70°-75°| Robustness requirement
 
@@ -951,24 +951,89 @@ Now, we look into the stability of our closed loop system. Looking back at the N
 
 From the Nyquist plot, we immediately see that the closed loop system is stable, since the open loop locus does not encircle the critical point $`(-1, 0)`$. The plot also confirms that the phase margin target is preserved, which is consistent with the derivative gain back calculation used in the design. Finally, the two rapid phase rotations are clearly visible, corresponding to the sharp phase transitions associated with the first and second resonant modes.
 
-*Note :- you can verify the phase transition from our bode plot of $`L(s)`$ given in the previous section.*
+*Note :- you can verify the phase transition from our bode plot of $`L(j\omega)`$ given in the previous section.*
 
-Now that we’ve checked the Nyquist plot and convinced ourselves the closed loop is stable (with a decent phase margin), the next step is to look at how the loop behaves for tracking, disturbance rejection, and noise rejection. The standard way to do that is by plotting the sensitivity functions: the sensitivity $`S(s)`$ (disturbance rejection) and complementary sensitivity $`T(s)`$ (tracking / noise shaping).
+Now that we’ve checked the Nyquist plot and convinced ourselves the closed loop is stable (with a decent phase margin), the next step is to look at how the loop behaves for tracking, disturbance rejection, and noise rejection. The standard way to do that is by plotting the sensitivity functions: the sensitivity $`S(j\omega)`$ (disturbance rejection) and complementary sensitivity $`T(j\omega)`$ (tracking / noise shaping).
 
 <div style="display: flex; justify-content: center; gap: 10px;">
   <image src="image-6.png" width=500>
 </div>
 
-From the sensitivity plot, it looks like we get strong disturbance rejection up to about $`0.25\,\text{Hz}`$ (highlighted in green). Around the two resonance frequencies, $`S(s)`$ shows dips (roughly $`-5\,\text{dB}`$ in our plot). That’s consistent with the loop having meaningful authority at those frequencies (and in our case, with the added damping from rate feedback helping to keep the resonances under control).
+From the sensitivity plot, it looks like we get strong disturbance rejection up to about $`0.25\,\text{Hz}`$ (highlighted in green). Around the two resonance frequencies, $`S(j\omega)`$ shows dips (roughly $`-5dB`$ in our plot). That’s consistent with the loop having meaningful authority at those frequencies (and in our case, with the added damping from rate feedback helping to keep the resonances under control).
 
 Also notice the dip at the first resonance is deeper than the one at the second resonance? that typically lines up with higher loop gain at the first mode (you can cross check this directly in the bode plot of the loop transfer function).
 
-One thing we need to keep an eye on is the anti resonance region. you can see $`S`$ rises there, meaning disturbances near the anti resonance are rejected less effectively. Practically, that’s a bit risky because a disturbance around the anti resonance frequency can excite the array dynamics while producing relatively little motion at the hub! so it can shake our arrays without an obvious hub response.
+One thing we need to keep an eye on is the anti resonance region. you can see $`|S(j\omega)|`$ rises there, meaning disturbances near the anti resonance are rejected less effectively. Practically, that’s a bit risky because a disturbance around the anti resonance frequency can excite the array dynamics while producing relatively little motion at the hub! so it can shake our arrays without an obvious hub response.
 
 *Note:- Honestly, I find anti resonances even scarier than resonances. Around those frequencies, the hub response can look harmlessly small, even while our arrays are moving a lot. That means a disturbance or noise near that frequency could excite array vibration without it showing up clearly in the attitude signal! So we should make sure our reference shaping  keeps energy out of those anti resonance bands as well.*
 
-As we move to higher frequencies, the loop doesn’t reject disturbances very well (the yellowish orange looking region), and that’s pretty expected. In those bands the loop gain is low, so $`S(j\omega)\approx 1`$, meaning disturbances mostly pass through. The upside is that low loop gain makes $`T(j\omega)\approx 0`$, so measurement noise is attenuated. In other words, you generally can’t get strong disturbance rejection and strong noise rejection in the *same* frequency range. Sadly, it’s an inherent trade off (since $`S+T=1`$ for unity feedback).
+As we move to higher frequencies, the loop doesn’t reject disturbances very well (the yellowish orange looking region), and that’s pretty expected. In those bands the loop gain is low, so $`S(j\omega)\approx 1`$, meaning disturbances mostly pass through. The upside is that low loop gain makes $`T(j\omega)\approx 0`$, so measurement noise is attenuated. In other words, you generally can’t get strong disturbance rejection and strong noise rejection in the same frequency range. Sadly, it’s an inherent trade off (since $`S+T=1`$ for unity feedback).
+
+
+Moving on to our complementary sensitivity function $`T(j\omega)`$, one thing jumps out immediately, $`|T(j\omega)|>1`$ at frequencies leading up to about $`0.2\text{ Hz}`$. That peaking can be great for tracking in that band, since the output can follow reference components there very tightly ( in magnitude terms, even with gain greater than unity!).
+
+The catch is that it’s a bit of a double edged sword. Any signal that reaches the output through $`T(j\omega)`$ gets the same treatment, so measurement side effects like slow sensor drift or low frequency bias content in this band can also be passed through more strongly (and potentially amplified where $`|T|>1`$.). [Peaking](https://web.stanford.edu/class/archive/ee/ee392m/ee392m.1056/Lecture8_SISO_Design.pdf) is also a reminder that we are trading away some robustness, since it often corresponds to a lightly damped closed loop feature.
+
+If you look at the $`-3 dB`$ line on the complementary sensitivity plot, you can also see that our closed loop bandwidth shifted compared to our calculation in the previous section. This was intentional because the structural resonance modes are now being (light to moderately) damped, we were able to push the bandwidth forward with the intent i described in the previous section. That, in turn, is why relaxing the earlier $`2.5\times`$ constraint (which we already noted was conservative) was a deliberate choice to reduce sensitivity to disturbances around the anti resonance frequencies.
+
+Looking at the higher frequency part of our complementary sensitivity $`T(j\omega)`$ plot, we can see that sensor noise (or other measurement artifacts) around the first resonant mode is not attenuated very well as $`|T(j\omega)|`$ sits only slightly above the $`-3 dB`$ line there (so we are getting less than about 3 dB of noise rejection in that neighborhood). Past that region, the high frequency roll off becomes more regular, and the noise attenuation is more consistent.
+
+*Note :- You might also notice a “nice” dip (extra attenuation) near an anti resonance in $`T(j\omega)`$. That dip is not automatically a win for tracking, it usually means the plant has a transmission zero there, so reference to output motion is intrinsically small at that frequency (i.e. tracking is poor in that band). Physically, that can happen because the actuator effort is going into bendign of the solar arrays rather than rigid body rotation at the measured output, so the output looks quiet (observability nullspace) even though the structure can be getting excited and internal loads and motion can increase!*
+
+By looking at the sensitivity $`S(j\omega)`$ and complementary sensitivity $`T(j\omega)`$, we can answer the big picture questions:
+
+- How well does our feedback loop reject disturbances and plant uncertainty across frequency?
+- How well does our loop track the reference, and how much measurement noise gets through?
+
+That already tells us a lot about the closed loop behavior. But for a safety critical system like a satellite, I also want more concrete  questions answered:
+
+- If a disturbance torque hits the spacecraft, how much pointing error do we actually see at the output? (For input torque disturbances, the relevant path is typically $`G(j\omega)S(j\omega)`$.)
+- if the gyro rate measurement has noise (or drift,ripple), how much pointing error does that create?
+
+
+I’m asking these because the requirement in Section 1 is stated in time domain terms where we need pointing stability < 5 arcsec within 5 seconds. By quantifying how disturbances and sensor noise map into pointing error and commanded torque, we can directly check whether the design is consistent with that requirement and see what the real margins are !.
+
+
+To understand how input disturbance torques map into pointing error, we look at the closed-loop transfer function $`G(j\omega)S(j\omega)`$, shown below:
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <image src="image-7.png" width=500>
+</div>
+
+From the plot, the first thing that jumps out is that below about $`0.1\,\text{Hz}`$ the curve is fairly flat at roughly $`-25\,\text{dB}`$. Converting that to linear units:
+
+$`10^{-25/20} \approx 0.056^\circ/N\cdotp m \approx 202 arcsec/N·m`$.
+
+At the first resonance (around $`0.4Hz`$), the magnitude is closer to $`-40dB`$, which corresponds to:
+
+$`10^{-40/20} \approx 0.01^\circ/N·m \approx 36arcsec/N\cdotp m`$.
+
+Beyond that, the response continues to roll off with frequency. The picture is pretty clear here! the worst case pointing sensitivity to input torque disturbances occurs at low frequencies (roughly $` \le 0.1\,\text{Hz}`$), while higher frequency torque disturbances does not influence our pointing as much.
+
+*Note: If this seems a bit inconsistent with what we saw in $`S(j\omega)`$, it’s because this plot is a answering slightly different question. The transfer $`G(j\omega)S(j\omega)`$ describes how an input disturbance torque (added at the plant input) shows up as pointing error. In contrast, the sensitivity function $`S(j\omega)`$ by itself corresponds to disturbances injected at the output. So there iss no real contradiction! we are just looking at different disturbance locations in the loop.*
+
+Next we check much does our gyro rate measurement noise affect our pointing error, and for that we look at the transfer function $`\frac{G(j\omega)K_d}{1+L(j\omega)}`$. Notice how our derivative gain directly influencing the effect of measurement noise on pointing error? we will see just how much the influence is in the bode plot below:
 
 
 
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <image src="image-8.png" width=500>
+</div>
 
+Well, right off the bat we see a huge gain at low frequencies (below 0.1 Hz) of about $`40\ \mathrm{dB}`$ (i.e roughly a $`100\times`$ linear gain, since $`20\log_{10}(100)=40`$). 
+
+So intuitively, a rate bias like error of:
+
+- $`10^{-6}\ \mathrm{rad/s} \approx 0.36\ \mathrm{arcsec}`$
+- $`10^{-5}\ \mathrm{rad/s} \approx 3.6\ \mathrm{arcsec}`$
+- $`2\times10^{-5}\ \mathrm{rad/s} \approx 7.2\ \mathrm{arcsec}\ \rightarrow`$ requirement violation
+
+So, slow gyro drift,bias (i.e low frequency rate noise) will get converted into real pointing error pretty efficiently, sadly.
+
+*Note :- We can reduce the effects of low frequency gyro measurement artifacts by reducing the derivative gain (or second order low passing the derivative term). However, by doing so we reduce damping of resonant modes and increase the closed loop settling time. So it’s a real design trade off, at least in my opinion.*
+
+## FeedForward Control Design
+
+In the previous sections, we established the limitations of our feedback controller. With those constraints in mind, this section focuses on designing a feedforward strategy through trajectory shaping. The primary goal is to avoid exciting resonant modes while making it easier for the feedback loop to track the commanded instanteneous trajectory.
+
+We achieve this by deliberately shaping the reference trajectory so that its spectral content is small at, and especially beyond, the first resonant mode. Referring back to the complementary sensitivity function from the previous section, we observed that the feedback controller provides strong tracking performance up to about 0.2 Hz. Therefore, we design the reference trajectory to contain minimal spectral content above the feedback bandwidth.

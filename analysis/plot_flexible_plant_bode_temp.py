@@ -120,7 +120,8 @@ def main() -> None:
     omega_n = 2.0 * np.pi * args.bandwidth_hz
     K = 4.0 * omega_n**2 * I_axis
     P = 2.0 * args.zeta * I_axis * omega_n
-    print(f"PD gains: K={K:.3f} N*m, P={P:.3f} N*m*s")
+    K_d = P
+    print(f"PD gains: K={K:.3f} N*m, K_d={K_d:.3f} N*m*s")
     if args.controller == "filtered_pd":
         cutoff_hz = args.filter_cutoff_hz
         if cutoff_hz is None:
@@ -271,6 +272,64 @@ def main() -> None:
     ax_t.grid(True, which="both", alpha=0.3)
     ax_t.set_ylim(y_min, max(5.0, float(np.nanmax(T_mag_db)) + 1.0))
 
+    plt.tight_layout()
+
+    # Disturbance torque to pointing error: G*S
+    sigma_to_deg = 4.0 * 180.0 / np.pi
+    gs_resp = H * S
+    gs_mag_db = 20.0 * np.log10(np.maximum(np.abs(gs_resp * sigma_to_deg), 1e-20))
+    fig3, ax_d = plt.subplots(1, 1, figsize=(8, 4.5))
+    ax_d.semilogx(freqs_hz, gs_mag_db, "m")
+    ax_d.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.6)
+    for f_mode in resonance_freqs:
+        ax_d.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
+    ax_d.set_title("Disturbance Torque to Pointing Error |G*S|")
+    ax_d.set_xlabel("Frequency (Hz)")
+    ax_d.set_ylabel("Magnitude (dB, deg/N·m)")
+    ax_d.grid(True, which="both", alpha=0.3)
+    plt.tight_layout()
+
+    # Rate gyro noise to pointing error (standard PD): G * P / (1 + L)
+    rate_to_point = H * (K_d) / (1.0 + L)
+    rate_mag_db = 20.0 * np.log10(np.maximum(np.abs(rate_to_point * sigma_to_deg), 1e-20))
+    fig4, ax_r = plt.subplots(1, 1, figsize=(8, 4.5))
+    ax_r.semilogx(freqs_hz, rate_mag_db, "c")
+    ax_r.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.6)
+    for f_mode in resonance_freqs:
+        ax_r.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
+    ax_r.set_title("Rate Noise to Pointing Error |G*K_d/(1+L)|")
+    ax_r.set_xlabel("Frequency (Hz)")
+    ax_r.set_ylabel("Magnitude (dB, deg/(rad/s))")
+    ax_r.grid(True, which="both", alpha=0.3)
+    plt.tight_layout()
+
+    # Sensor noise to commanded torque: C / (1 + L)
+    _, C_resp = signal.freqresp(controller, w=w)
+    noise_to_tau = C_resp / (1.0 + L)
+    noise_tau_db = 20.0 * np.log10(np.maximum(np.abs(noise_to_tau), 1e-20))
+    fig5, ax_n = plt.subplots(1, 1, figsize=(8, 4.5))
+    ax_n.semilogx(freqs_hz, noise_tau_db, "k")
+    ax_n.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.6)
+    for f_mode in resonance_freqs:
+        ax_n.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
+    ax_n.set_title("Noise to Commanded Torque |C/(1+L)|")
+    ax_n.set_xlabel("Frequency (Hz)")
+    ax_n.set_ylabel("Magnitude (dB)")
+    ax_n.grid(True, which="both", alpha=0.3)
+    plt.tight_layout()
+
+    # Reference command to control effort: C / (1 + L)
+    ref_to_tau = C_resp / (1.0 + L)
+    ref_tau_db = 20.0 * np.log10(np.maximum(np.abs(ref_to_tau), 1e-20))
+    fig6, ax_u = plt.subplots(1, 1, figsize=(8, 4.5))
+    ax_u.semilogx(freqs_hz, ref_tau_db, color="#1f77b4")
+    ax_u.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.6)
+    for f_mode in resonance_freqs:
+        ax_u.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
+    ax_u.set_title("Reference to Control Effort |C/(1+L)|")
+    ax_u.set_xlabel("Frequency (Hz)")
+    ax_u.set_ylabel("Magnitude (dB)")
+    ax_u.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
 
     plt.show()
