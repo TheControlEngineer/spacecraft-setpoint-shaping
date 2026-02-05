@@ -105,16 +105,23 @@ def main() -> None:
                         help="Notch width (relative damping)")
     parser.add_argument("--resonance-prominence-db", type=float, default=3.0,
                         help="Prominence (dB) threshold for auto resonance markers")
-    parser.add_argument("--use-effective-inertia", action="store_true", help="Use effective inertia (with modal masses)")
+    parser.add_argument(
+        "--use-hub-inertia",
+        action="store_true",
+        help="Use hub inertia only (default uses effective inertia with modal masses)",
+    )
     args = parser.parse_args()
 
-    plant, inertia = build_flexible_plant(args.axis, args.use_effective_inertia)
+    use_effective_inertia = not args.use_hub_inertia
+    plant, inertia = build_flexible_plant(args.axis, use_effective_inertia)
 
     # PD gains (same formulas as run_vizard_demo.py)
     I_axis = float(inertia[args.axis, args.axis])
     omega_n = 2.0 * np.pi * args.bandwidth_hz
     K = 4.0 * omega_n**2 * I_axis
     P = 2.0 * args.zeta * I_axis * omega_n
+    K_d = P
+    print(f"PD gains: K={K:.3f} N*m, K_d={K_d:.3f} N*m*s")
     if args.controller == "filtered_pd":
         cutoff_hz = args.filter_cutoff_hz
         if cutoff_hz is None:
@@ -192,49 +199,139 @@ def main() -> None:
 
     plt.tight_layout()
 
-    # Open-loop plot
+    # Sensitivity and complementary sensitivity
     _, L = signal.freqresp(open_loop, w=w)
-    L_mag_db = 20.0 * np.log10(np.maximum(np.abs(L), 1e-20))
-    L_phase_deg = np.rad2deg(np.angle(L))
-    _, C_resp = signal.freqresp(controller, w=w)
+    S = 1.0 / (1.0 + L)
+    T = L / (1.0 + L)
+    S_mag_db = 20.0 * np.log10(np.maximum(np.abs(S), 1e-20))
+    T_mag_db = 20.0 * np.log10(np.maximum(np.abs(T), 1e-20))
 
-    fig2, (ax_mag2, ax_phase2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
-    ax_mag2.semilogx(freqs_hz, L_mag_db, "b")
-    ax_mag2.set_ylabel("Magnitude (dB)")
-    ax_mag2.set_title("Open-Loop L(s) Bode")
+    fig2, (ax_s, ax_t) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+    ax_s.semilogx(freqs_hz, S_mag_db, "b")
+    ax_s.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.6)
+    ax_s.axhline(-3.0, color="#666666", linestyle=":", linewidth=1.0, alpha=0.8)
     for f_mode in resonance_freqs:
-        ax_mag2.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
-    ax_mag2.grid(True, which="both", alpha=0.3)
+        ax_s.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
+    y_min = -25.0
+    s_green = S_mag_db <= -3.0
+    s_orange = (S_mag_db > -3.0) & (S_mag_db <= 0.0)
+    s_red = S_mag_db > 0.0
+    ax_s.fill_between(freqs_hz, y_min, S_mag_db, where=s_green, interpolate=True,
+                      color="#2ca02c", alpha=0.25)
+    ax_s.fill_between(freqs_hz, y_min, S_mag_db, where=s_orange, interpolate=True,
+                      color="#ff7f0e", alpha=0.25)
+    ax_s.fill_between(freqs_hz, y_min, S_mag_db, where=s_red, interpolate=True,
+                      color="#d62728", alpha=0.25)
+    ax_s.set_ylabel("|S(jw)| (dB)")
+    ax_s.set_title("Sensitivity and Complementary Sensitivity")
+    ax_s.grid(True, which="both", alpha=0.3)
+    ax_s.set_ylim(y_min, max(5.0, float(np.nanmax(S_mag_db)) + 1.0))
 
-    ax_phase2.semilogx(freqs_hz, L_phase_deg, "g")
-    ax_phase2.set_ylabel("Phase (deg)")
-    ax_phase2.set_xlabel("Frequency (Hz)")
+    # Point to dips near resonance frequencies
+    arrow_tail = (0.50, 0.12)
     for f_mode in resonance_freqs:
-        ax_phase2.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
-    ax_phase2.grid(True, which="both", alpha=0.3)
+        if f_mode <= freqs_hz[0] or f_mode >= freqs_hz[-1]:
+            continue
+        idx0 = int(np.argmin(np.abs(freqs_hz - f_mode)))
+        i0 = max(0, idx0 - 3)
+        i1 = min(len(freqs_hz) - 1, idx0 + 3)
+        i_min = i0 + int(np.argmin(S_mag_db[i0 : i1 + 1]))
+        x_min = freqs_hz[i_min]
+        y_min_pt = S_mag_db[i_min]
+        ax_s.annotate(
+            "",
+            xy=(x_min, y_min_pt),
+            xytext=arrow_tail,
+            textcoords="axes fraction",
+            arrowprops=dict(arrowstyle="->", color="#111111", lw=1.2),
+        )
+    ax_s.text(
+        arrow_tail[0],
+        arrow_tail[1],
+        "Damping of resonant modes",
+        transform=ax_s.transAxes,
+        fontsize=9,
+        va="top",
+        ha="left",
+        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#333333", alpha=0.9),
+    )
 
-    # Print open-loop magnitude/phase and controller damping tendency at detected resonances
-    if len(resonance_freqs) > 0:
-        for f_mode in resonance_freqs:
-            idx = int(np.argmin(np.abs(freqs_hz - f_mode)))
-            c_val = C_resp[idx]
-            c_mag_db = 20.0 * np.log10(np.maximum(np.abs(c_val), 1e-20))
-            c_phase_deg = np.rad2deg(np.angle(c_val))
-            c_real = np.real(c_val)
-            c_imag = np.imag(c_val)
-            omega = 2.0 * np.pi * freqs_hz[idx]
-            c_eff = c_imag / omega if omega > 0 else 0.0
-            damping_flag = "DAMPING" if c_imag > 0 else "EXCITING"
-            print(
-                f"Open-loop at {freqs_hz[idx]:.3f} Hz: "
-                f"|L|={L_mag_db[idx]:.1f} dB, phase={L_phase_deg[idx]:.1f} deg"
-            )
-            print(
-                f"  Controller C(jw): |C|={c_mag_db:.1f} dB, phase={c_phase_deg:.1f} deg, "
-                f"Re={c_real:.3e}, Im={c_imag:.3e} => c_eff=Im/ω={c_eff:.3e} ({damping_flag})"
-            )
+    ax_t.semilogx(freqs_hz, T_mag_db, "g")
+    ax_t.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.6)
+    ax_t.axhline(-3.0, color="#666666", linestyle=":", linewidth=1.0, alpha=0.8)
+    for f_mode in resonance_freqs:
+        ax_t.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
+    t_green = T_mag_db >= -3.0
+    t_purple = T_mag_db < -3.0
+    ax_t.fill_between(freqs_hz, y_min, T_mag_db, where=t_green, interpolate=True,
+                      color="#2ca02c", alpha=0.25)
+    ax_t.fill_between(freqs_hz, y_min, T_mag_db, where=t_purple, interpolate=True,
+                      color="#9467bd", alpha=0.25)
+    ax_t.set_ylabel("|T(jw)| (dB)")
+    ax_t.set_xlabel("Frequency (Hz)")
+    ax_t.grid(True, which="both", alpha=0.3)
+    ax_t.set_ylim(y_min, max(5.0, float(np.nanmax(T_mag_db)) + 1.0))
 
     plt.tight_layout()
+
+    # Disturbance torque to pointing error: G*S
+    sigma_to_deg = 4.0 * 180.0 / np.pi
+    gs_resp = H * S
+    gs_mag_db = 20.0 * np.log10(np.maximum(np.abs(gs_resp * sigma_to_deg), 1e-20))
+    fig3, ax_d = plt.subplots(1, 1, figsize=(8, 4.5))
+    ax_d.semilogx(freqs_hz, gs_mag_db, "m")
+    ax_d.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.6)
+    for f_mode in resonance_freqs:
+        ax_d.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
+    ax_d.set_title("Disturbance Torque to Pointing Error |G*S|")
+    ax_d.set_xlabel("Frequency (Hz)")
+    ax_d.set_ylabel("Magnitude (dB, deg/N·m)")
+    ax_d.grid(True, which="both", alpha=0.3)
+    plt.tight_layout()
+
+    # Rate gyro noise to pointing error (standard PD): G * P / (1 + L)
+    rate_to_point = H * (K_d) / (1.0 + L)
+    rate_mag_db = 20.0 * np.log10(np.maximum(np.abs(rate_to_point * sigma_to_deg), 1e-20))
+    fig4, ax_r = plt.subplots(1, 1, figsize=(8, 4.5))
+    ax_r.semilogx(freqs_hz, rate_mag_db, "c")
+    ax_r.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.6)
+    for f_mode in resonance_freqs:
+        ax_r.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
+    ax_r.set_title("Rate Noise to Pointing Error |G*K_d/(1+L)|")
+    ax_r.set_xlabel("Frequency (Hz)")
+    ax_r.set_ylabel("Magnitude (dB, deg/(rad/s))")
+    ax_r.grid(True, which="both", alpha=0.3)
+    plt.tight_layout()
+
+    # Sensor noise to commanded torque: C / (1 + L)
+    _, C_resp = signal.freqresp(controller, w=w)
+    noise_to_tau = C_resp / (1.0 + L)
+    noise_tau_db = 20.0 * np.log10(np.maximum(np.abs(noise_to_tau), 1e-20))
+    fig5, ax_n = plt.subplots(1, 1, figsize=(8, 4.5))
+    ax_n.semilogx(freqs_hz, noise_tau_db, "k")
+    ax_n.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.6)
+    for f_mode in resonance_freqs:
+        ax_n.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
+    ax_n.set_title("Noise to Commanded Torque |C/(1+L)|")
+    ax_n.set_xlabel("Frequency (Hz)")
+    ax_n.set_ylabel("Magnitude (dB)")
+    ax_n.grid(True, which="both", alpha=0.3)
+    plt.tight_layout()
+
+    # Reference command to control effort: C / (1 + L)
+    ref_to_tau = C_resp / (1.0 + L)
+    ref_tau_db = 20.0 * np.log10(np.maximum(np.abs(ref_to_tau), 1e-20))
+    fig6, ax_u = plt.subplots(1, 1, figsize=(8, 4.5))
+    ax_u.semilogx(freqs_hz, ref_tau_db, color="#1f77b4")
+    ax_u.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.6)
+    for f_mode in resonance_freqs:
+        ax_u.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
+    ax_u.set_title("Reference to Control Effort |C/(1+L)|")
+    ax_u.set_xlabel("Frequency (Hz)")
+    ax_u.set_ylabel("Magnitude (dB)")
+    ax_u.grid(True, which="both", alpha=0.3)
+    plt.tight_layout()
+
     plt.show()
 
 
