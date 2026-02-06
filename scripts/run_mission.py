@@ -23,7 +23,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.ticker import LogLocator
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from scipy import signal
 from scipy.fft import fft, fftfreq
 
@@ -66,7 +65,8 @@ class MissionConfig:
 
 
 METHODS = ["unshaped", "fourth"]
-CONTROLLERS = ["standard_pd", "filtered_pd"]
+# Mission comparison is intentionally constrained to standard PD only.
+CONTROLLERS = ["standard_pd"]
 UNIFIED_SAMPLE_DT = 0.01  # 100 Hz to match Basilisk simulation
 
 METHOD_LABELS = {
@@ -81,20 +81,16 @@ METHOD_COLORS = {
 
 CONTROLLER_LABELS = {
     "standard_pd": "Standard PD",
-    "filtered_pd": "Filtered PD",
 }
 
 CONTROLLER_COLORS = {
     "standard_pd": "#ff7f0e",  # orange
-    "filtered_pd": "#9467bd",  # purple
 }
 
 # Comparison colors for method + controller combinations (solid lines).
 COMBO_COLORS = {
     ("unshaped", "standard_pd"): "#d62728",  # red
-    ("unshaped", "filtered_pd"): "#ff7f0e",  # orange
     ("fourth", "standard_pd"): "#1f77b4",  # blue
-    ("fourth", "filtered_pd"): "#9467bd",  # violet
 }
 
 
@@ -962,12 +958,20 @@ def _collect_feedforward_data(
             mode1_acc = aligned[3] if len(aligned) > 3 else np.array([])
             mode2_acc = aligned[4] if len(aligned) > 4 else np.array([])
 
-            displacement = _combine_modal_displacement(mode1, mode2)
-            displacement = displacement[: len(time)] if len(time) > 0 else displacement
-            acc_signal = None
+            # Raw modal-state signals (no filtering/detrending) for plotting/debug.
+            displacement_raw = _combine_modal_displacement(mode1, mode2)
+            displacement_raw = displacement_raw[: len(time)] if len(time) > 0 else displacement_raw
+            acceleration_raw = np.array([])
             if mode1_acc is not None and len(mode1_acc) > 0:
-                acc_signal = _combine_modal_displacement(mode1_acc, mode2_acc)
-            displacement, acceleration = _extract_vibration_signals(time, displacement, config, acc_signal)
+                acceleration_raw = _combine_modal_displacement(mode1_acc, mode2_acc)
+                acceleration_raw = acceleration_raw[: len(time)] if len(time) > 0 else acceleration_raw
+            if len(acceleration_raw) == 0 and len(displacement_raw) > 0:
+                acceleration_raw = _compute_acceleration_from_displacement(time, displacement_raw)
+
+            # Legacy filtered signals retained for existing metrics/CSVs.
+            displacement, acceleration = _extract_vibration_signals(
+                time, displacement_raw, config, acceleration_raw
+            )
             maneuver_end = _infer_maneuver_end(
                 time, npz_data.get("control_mode"), torque_axis, config.slew_duration_s
             )
@@ -1003,14 +1007,18 @@ def _collect_feedforward_data(
                 "time": time,
                 "displacement": displacement,
                 "acceleration": acceleration,
+                "displacement_modal_raw": displacement_raw,
+                "acceleration_modal_raw": acceleration_raw,
                 "maneuver_end": maneuver_end,
             }
         else:
             td = _compute_torque_profile(config, method)
             vd = _simulate_modal_response(td["time"], td["torque"], config)
             maneuver_end = _infer_maneuver_end(td["time"], None, td["torque"], config.slew_duration_s)
+            displacement_raw = np.array(vd["displacement"], dtype=float)
+            acceleration_raw = np.array(vd["acceleration"], dtype=float)
             displacement, acceleration = _extract_vibration_signals(
-                vd["time"], vd["displacement"], config
+                vd["time"], displacement_raw, config, acceleration_raw
             )
             torque_data[method] = {
                 "time": td["time"],
@@ -1024,6 +1032,8 @@ def _collect_feedforward_data(
                 "time": vd["time"],
                 "displacement": displacement,
                 "acceleration": acceleration,
+                "displacement_modal_raw": displacement_raw,
+                "acceleration_modal_raw": acceleration_raw,
                 "maneuver_end": maneuver_end,
             }
 
@@ -1091,12 +1101,20 @@ def _collect_feedback_data(
             mode1_acc = aligned[4] if len(aligned) > 4 else np.array([])
             mode2_acc = aligned[5] if len(aligned) > 5 else np.array([])
 
-            displacement = _combine_modal_displacement(mode1, mode2)
-            displacement = displacement[: len(time)] if len(time) > 0 else displacement
-            acc_signal = None
+            # Raw modal-state signals (no filtering/detrending) for plotting/debug.
+            displacement_raw = _combine_modal_displacement(mode1, mode2)
+            displacement_raw = displacement_raw[: len(time)] if len(time) > 0 else displacement_raw
+            acceleration_raw = np.array([])
             if mode1_acc is not None and len(mode1_acc) > 0:
-                acc_signal = _combine_modal_displacement(mode1_acc, mode2_acc)
-            displacement, acceleration = _extract_vibration_signals(time, displacement, config, acc_signal)
+                acceleration_raw = _combine_modal_displacement(mode1_acc, mode2_acc)
+                acceleration_raw = acceleration_raw[: len(time)] if len(time) > 0 else acceleration_raw
+            if len(acceleration_raw) == 0 and len(displacement_raw) > 0:
+                acceleration_raw = _compute_acceleration_from_displacement(time, displacement_raw)
+
+            # Legacy filtered signals retained for existing metrics/CSVs.
+            displacement, acceleration = _extract_vibration_signals(
+                time, displacement_raw, config, acceleration_raw
+            )
             psd_freq, psd_vals = _compute_psd(time, torque_axis) if len(time) > 0 else (np.array([]), np.array([]))
 
             key = f"{method}_{controller}"
@@ -1104,12 +1122,14 @@ def _collect_feedback_data(
                 "time": time,
                 "displacement": displacement,
                 "acceleration": acceleration,
-        "torque": torque_axis,
-        "torque_total": torque_total,
-        "rw_torque": npz_data.get("rw_torque"),
-        "psd_freq": psd_freq,
-        "psd": psd_vals,
-        "method": npz_data.get("method", method),
+                "displacement_modal_raw": displacement_raw,
+                "acceleration_modal_raw": acceleration_raw,
+                "torque": torque_axis,
+                "torque_total": torque_total,
+                "rw_torque": npz_data.get("rw_torque"),
+                "psd_freq": psd_freq,
+                "psd": psd_vals,
+                "method": npz_data.get("method", method),
                 "controller": controller,
                 "run_mode": npz_data.get("run_mode", "combined"),
             }
@@ -1384,14 +1404,10 @@ def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
     - Flexible-loop margins for stability assessment
     - Modal excitation transfer: q(s) = G_q(s) * C(s) / (1 + L(s))
 
-    Design approach:
-    1. Standard PD: Pure PD control with bandwidth at first_mode/4.
-    2. Filtered PD: Increase damping gain and use a lower derivative cutoff
-       to reduce torque noise while preserving damping.
+    This mission analysis uses standard PD only.
     """
     from basilisk_sim.feedback_control import (
         MRPFeedbackController,
-        FilteredDerivativeController,
     )
 
     axis = 2  # Z-axis
@@ -1428,33 +1444,11 @@ def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
         Ki=-1.0
     )
 
-    # =========================================================================
-    # FILTERED PD CONTROLLER
-    # Use config.control_filter_cutoff_hz for consistency with simulation
-    bandwidth_filt = first_mode / 2.5  # Same as standard
-    omega_bw_filt = 2 * np.pi * bandwidth_filt
-    k_filt = sigma_scale * I * omega_bw_filt**2
-    p_filt_scale = 1.5
-    p_filt = 2 * 0.9 * I * omega_bw_filt * p_filt_scale
-    if config.control_filter_cutoff_hz is not None:
-        filter_cutoff = config.control_filter_cutoff_hz
-    else:
-        filter_cutoff = 8.0
-    controller_filt = FilteredDerivativeController(
-        inertia=config.inertia,
-        K=k_filt,
-        P=p_filt,
-        filter_freq_hz=filter_cutoff
-    )
-
-
     # Build rigid plant for MRP attitude output (torque -> sigma)
     plant_rigid = signal.TransferFunction([1.0], [sigma_scale * I, 0.0, 0.0])
 
     # Controller in sigma-domain: K + 4*P*s
     controller_std_tf = signal.TransferFunction([4.0 * p_std, k_std], [1.0])
-    controller_filt_tf = controller_filt.get_transfer_function(axis)
-
     def _open_loop_tf(plant: signal.TransferFunction, controller: signal.TransferFunction) -> signal.TransferFunction:
         plant_num = np.atleast_1d(np.squeeze(plant.num))
         plant_den = np.atleast_1d(np.squeeze(plant.den))
@@ -1479,46 +1473,30 @@ def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
     # Evaluate frequency responses
     _, plant_rigid_resp = signal.freqresp(plant_rigid, omega)
     _, plant_flex_body = signal.freqresp(flex_ss["body"], omega)
-    _, plant_flex_camera = signal.freqresp(flex_ss["camera"], omega)
 
     _, c_std_resp = signal.freqresp(controller_std_tf, omega)
-    _, c_filt_resp = signal.freqresp(controller_filt_tf, omega)
-
-    # Rate-feedback path (omega noise -> torque). For filtered PD, include LPF.
+    # Rate-feedback path (omega noise -> torque).
     c_rate_std_resp = p_std * np.ones_like(omega, dtype=complex)
-    c_rate_filt_tf = signal.TransferFunction([p_filt], [controller_filt.tau, 1.0])
-    _, c_rate_filt_resp = signal.freqresp(c_rate_filt_tf, omega)
-
 
     # Open-loop rigid-body (torque -> sigma) and sensitivity
     l_std_rigid = plant_rigid_resp * c_std_resp
-    l_filt_rigid = plant_rigid_resp * c_filt_resp
 
     s_std = 1 / (1 + l_std_rigid)
-    s_filt = 1 / (1 + l_filt_rigid)
-
     t_std = l_std_rigid / (1 + l_std_rigid)
-    t_filt = l_filt_rigid / (1 + l_filt_rigid)
 
     # Open-loop using flexible sigma output
     l_std_flex = plant_flex_body * c_std_resp
-    l_filt_flex = plant_flex_body * c_filt_resp
 
     s_std_flex = 1 / (1 + l_std_flex)
-    s_filt_flex = 1 / (1 + l_filt_flex)
-
     t_std_flex = l_std_flex / (1 + l_std_flex)
-    t_filt_flex = l_filt_flex / (1 + l_filt_flex)
 
-    disturbance_camera = {
-        "standard_pd": plant_flex_camera / (1 + l_std_flex),
-        "filtered_pd": plant_flex_camera / (1 + l_filt_flex),
+    disturbance_body = {
+        "standard_pd": plant_flex_body / (1 + l_std_flex),
     }
 
     # Stability margins
     margins = {
         "standard_pd": _compute_stability_margins(l_std_flex, freqs),
-        "filtered_pd": _compute_stability_margins(l_filt_flex, freqs),
     }
 
     # Modal excitation transfer: q(s) = G_q(s) * C(s) / (1 + L(s))
@@ -1526,9 +1504,8 @@ def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
     modal_excitation_db: Dict[str, List[float]] = {name: [] for name in CONTROLLERS}
     controllers_tf = {
         "standard_pd": controller_std_tf,
-        "filtered_pd": controller_filt_tf,
     }
-    loops = {"standard_pd": l_std_flex, "filtered_pd": l_filt_flex}
+    loops = {"standard_pd": l_std_flex}
 
     pos_ss = flex_ss["positions"]
     a_mat = pos_ss.A
@@ -1551,26 +1528,23 @@ def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
     return {
         "freqs": freqs,
         "omega": omega,
-        "L": {"standard_pd": l_std_rigid, "filtered_pd": l_filt_rigid},
-        "S": {"standard_pd": s_std, "filtered_pd": s_filt},
-        "T": {"standard_pd": t_std, "filtered_pd": t_filt},
-        "L_flex": {"standard_pd": l_std_flex, "filtered_pd": l_filt_flex},
-        "S_flex": {"standard_pd": s_std_flex, "filtered_pd": s_filt_flex},
-        "T_flex": {"standard_pd": t_std_flex, "filtered_pd": t_filt_flex},
+        "L": {"standard_pd": l_std_rigid},
+        "S": {"standard_pd": s_std},
+        "T": {"standard_pd": t_std},
+        "L_flex": {"standard_pd": l_std_flex},
+        "S_flex": {"standard_pd": s_std_flex},
+        "T_flex": {"standard_pd": t_std_flex},
         "plant_rigid": plant_rigid_resp,
         "plant_flex_body": plant_flex_body,
-        "plant_flex_camera": plant_flex_camera,
         "controller_resp": {
             "standard_pd": c_std_resp,
-            "filtered_pd": c_filt_resp,
         },
         "rate_path_resp": {
             "standard_pd": c_rate_std_resp,
-            "filtered_pd": c_rate_filt_resp,
         },
-        "disturbance_camera": disturbance_camera,
+        "disturbance_body": disturbance_body,
         "margins": margins,
-        "gains": {"K": k_std, "P": p_std, "filter_cutoff": filter_cutoff},
+        "gains": {"K": k_std, "P": p_std},
         "modal_response": modal_response,
         "modal_excitation_db": modal_excitation_db,
     }
@@ -1648,11 +1622,15 @@ def _find_npz(
 
     script_dir = os.path.dirname(__file__)
     parent_dir = os.path.abspath(os.path.join(script_dir, ".."))
+    output_cache_dir = os.path.abspath(os.path.join(parent_dir, "output", "cache"))
+    output_dir = os.path.abspath(os.path.join(parent_dir, "output"))
     search_dirs = [
         data_dir,
         os.getcwd(),
         script_dir,
         parent_dir,
+        output_cache_dir,
+        output_dir,
         os.path.abspath(os.path.join(str(data_dir), "..")) if data_dir else None,
     ]
     seen_dirs = set()
@@ -1686,6 +1664,8 @@ def _maybe_generate_npz(
             cmd.extend(["--controller", controller])
         if mode != "combined":
             cmd.extend(["--mode", mode])
+        if data_dir:
+            cmd.extend(["--output-dir", data_dir])
         subprocess.run(
             cmd,
             check=True,
@@ -2103,14 +2083,7 @@ def _plot_vibration_comparison(
     config: MissionConfig,
     out_dir: str,
 ) -> Optional[str]:
-    """Plot vibration comparison - FIXED to compare same quantities on same plots.
-
-    This function now properly plots:
-    - Top subplot: Displacement comparison (FF methods + FB controllers)
-    - Bottom subplot: Acceleration comparison (FF methods + FB controllers)
-
-    Both feedforward and feedback results are shown together for fair comparison.
-    """
+    """Plot vibration comparison from raw modal states (no filtering/detrending)."""
     if not feedforward_vibration and not feedback_vibration:
         return None
 
@@ -2125,6 +2098,7 @@ def _plot_vibration_comparison(
     ax_disp, ax_acc = axes
 
     maneuver_end = None
+    cutoff_hz = _get_vibration_highpass_hz(config)
 
     plot_feedback_only = bool(feedback_vibration)
 
@@ -2145,8 +2119,23 @@ def _plot_vibration_comparison(
             if maneuver_end is None:
                 maneuver_end = data.get("maneuver_end", 30.0)
 
-            disp_mm = _detrend_mean(np.array(disp, dtype=float)) * 1000.0
-            acc_mm = _detrend_mean(np.array(acc, dtype=float)) * 1000.0
+            disp_raw = data.get("displacement_modal_raw")
+            acc_raw = data.get("acceleration_modal_raw")
+            if disp_raw is not None and len(disp_raw) > 0:
+                disp = np.array(disp_raw, dtype=float)
+            if acc_raw is not None and len(acc_raw) > 0:
+                acc = np.array(acc_raw, dtype=float)
+            elif len(disp) > 0:
+                acc = _compute_acceleration_from_displacement(np.array(time, dtype=float), np.array(disp, dtype=float))
+
+            disp_arr = np.array(disp, dtype=float)
+            acc_arr = np.array(acc, dtype=float)
+            if len(time) > 2 and len(disp_arr) > 2:
+                disp_arr = _highpass_filter(disp_arr, np.array(time, dtype=float), cutoff_hz)
+            if len(time) > 2 and len(acc_arr) > 2:
+                acc_arr = _highpass_filter(acc_arr, np.array(time, dtype=float), cutoff_hz)
+            disp_mm = disp_arr * 1000.0
+            acc_mm = acc_arr * 1000.0
 
             label = f"FF: {METHOD_LABELS.get(method, method)}"
             plot_entries.append({
@@ -2175,8 +2164,23 @@ def _plot_vibration_comparison(
             if run_mode and run_mode != "combined":
                 continue
 
-            disp_mm = _detrend_mean(np.array(disp, dtype=float)) * 1000.0
-            acc_mm = _detrend_mean(np.array(acc, dtype=float)) * 1000.0
+            disp_raw = data.get("displacement_modal_raw")
+            acc_raw = data.get("acceleration_modal_raw")
+            if disp_raw is not None and len(disp_raw) > 0:
+                disp = np.array(disp_raw, dtype=float)
+            if acc_raw is not None and len(acc_raw) > 0:
+                acc = np.array(acc_raw, dtype=float)
+            elif len(disp) > 0:
+                acc = _compute_acceleration_from_displacement(np.array(time, dtype=float), np.array(disp, dtype=float))
+
+            disp_arr = np.array(disp, dtype=float)
+            acc_arr = np.array(acc, dtype=float)
+            if len(time) > 2 and len(disp_arr) > 2:
+                disp_arr = _highpass_filter(disp_arr, np.array(time, dtype=float), cutoff_hz)
+            if len(time) > 2 and len(acc_arr) > 2:
+                acc_arr = _highpass_filter(acc_arr, np.array(time, dtype=float), cutoff_hz)
+            disp_mm = disp_arr * 1000.0
+            acc_mm = acc_arr * 1000.0
 
             label = _combo_label(method, controller)
             plot_entries.append({
@@ -2217,22 +2221,18 @@ def _plot_vibration_comparison(
                         label=f"Maneuver end ({maneuver_end:.0f}s)")
         ax_acc.axvline(maneuver_end, color="gray", linestyle=":", linewidth=1.5, alpha=0.7)
 
-    cutoff_hz = _get_vibration_highpass_hz(config)
     # Displacement subplot
     title_prefix = "Modal Vibration Displacement (Combined FF + FB)"
     if not plot_feedback_only:
         title_prefix = "Modal Vibration Displacement (Feedforward Only)"
-    ax_disp.set_title(
-        f"{title_prefix} - High-pass {cutoff_hz:.2f} Hz, detrended",
-        fontweight="bold",
-    )
+    ax_disp.set_title(title_prefix, fontweight="bold")
     ax_disp.set_ylabel("Displacement (mm)")
     ax_disp.grid(True, alpha=0.3)
     ax_disp.legend(loc="upper right", fontsize=8, ncol=2)
     ax_disp.axhline(0, color="black", linewidth=0.5, alpha=0.3)
 
     # Acceleration subplot
-    ax_acc.set_title("Modal Acceleration Response (High-pass filtered, detrended)", fontweight="bold")
+    ax_acc.set_title("Modal Acceleration Response", fontweight="bold")
     ax_acc.set_xlabel("Time (s)")
     ax_acc.set_ylabel(r"Acceleration (mm/s$^2$)")
     ax_acc.grid(True, alpha=0.3)
@@ -2468,7 +2468,7 @@ def _plot_pointing_error(
     out_dir: str,
     config: Optional[MissionConfig] = None,
 ) -> Optional[str]:
-    """Plot pointing error time series."""
+    """Plot mission pointing error with full and post-slew subplots."""
     if not pointing_errors:
         return None
 
@@ -2479,64 +2479,174 @@ def _plot_pointing_error(
         "legend.fontsize": 9,
     })
 
-    fig, ax = plt.subplots(1, 1, figsize=(10, 5.5))
+    fig, (ax_full, ax_post) = plt.subplots(2, 1, figsize=(10, 8), sharey=False)
 
     plot_entries = []
-    for method in METHODS:
+    maneuver_end_candidates: List[float] = []
+    post_slew_rms_arcsec: Dict[str, float] = {}
+    time_start = float("inf")
+    time_end = 0.0
+    min_positive_time = float("inf")
+    fallback_maneuver_end = float(config.slew_duration_s) if config is not None else 30.0
+
+    target_controller = "standard_pd"
+    target_methods = [m for m in ("unshaped", "fourth") if m in METHODS]
+
+    for method in target_methods:
         method_data = pointing_errors.get(method, {})
-        for controller in CONTROLLERS:
-            data = method_data.get(controller)
-            if not data:
-                continue
-            run_mode = str(data.get("run_mode", "")).lower()
-            if run_mode and run_mode != "combined":
-                continue
-            time = data.get("time", np.array([]))
-            if len(time) == 0:
-                continue
+        data = method_data.get(target_controller)
+        if not data:
+            continue
 
-            errors = _extract_pointing_error(data, config=config)
-            if len(errors) == 0:
-                continue
-            time, aligned = _align_series(time, errors)
-            errors = aligned[0]
-            if len(time) == 0:
-                continue
-            min_positive = np.min(time[time > 0]) if np.any(time > 0) else 1e-6
-            time_plot = np.where(time > 0, time, min_positive)
+        run_mode = str(data.get("run_mode", "")).lower()
+        if run_mode and run_mode != "combined":
+            continue
 
-            label = _combo_label(method, controller)
-            errors_plot = np.maximum(np.abs(errors), 1e-12)
-            plot_entries.append({
-                "time": time_plot,
-                "errors": errors_plot,
-                "label": label,
-                "linestyle": "-",
-                "color": _combo_color(method, controller),
-            })
+        time = np.array(data.get("time", np.array([])), dtype=float)
+        if len(time) == 0:
+            continue
+
+        errors_deg = _extract_pointing_error(data, config=config)
+        if len(errors_deg) == 0:
+            continue
+
+        time, aligned = _align_series(time, errors_deg)
+        errors_deg = aligned[0]
+        if len(time) == 0:
+            continue
+
+        maneuver_end = _infer_maneuver_end(
+            time,
+            data.get("control_mode"),
+            data.get("torque"),
+            fallback_maneuver_end,
+        )
+        maneuver_end_candidates.append(float(maneuver_end))
+        idx_end = int(np.searchsorted(time, maneuver_end))
+        if 0 <= idx_end < len(errors_deg) - 1:
+            residual = errors_deg[idx_end:]
+        else:
+            residual = errors_deg[int(0.9 * len(errors_deg)):] if len(errors_deg) > 10 else errors_deg
+        rms_arcsec = float(np.sqrt(np.mean(np.square(residual))) * 3600.0) if len(residual) else 0.0
+        post_slew_rms_arcsec[method] = rms_arcsec
+
+        errors_arcsec = np.abs(errors_deg) * 3600.0
+        positive_time = time[time > 0]
+        time_floor = float(np.min(positive_time)) if len(positive_time) else 1e-6
+        time_plot = np.where(time > 0, time, time_floor)
+        label = f"{_combo_label(method, target_controller)} (post-slew RMS={rms_arcsec:.2f} arcsec)"
+        plot_entries.append({
+            "time": time_plot,
+            "errors_arcsec": errors_arcsec,
+            "label": label,
+            "color": _combo_color(method, target_controller),
+        })
+        time_start = min(time_start, float(np.min(time_plot)))
+        time_end = max(time_end, float(time[-1]))
+        min_positive_time = min(min_positive_time, time_floor)
 
     if not plot_entries:
         plt.close(fig)
         return None
 
+    if not np.isfinite(time_start):
+        time_start = 1e-6
+    if not np.isfinite(min_positive_time):
+        min_positive_time = 1e-6
+    maneuver_end = (
+        float(np.median(maneuver_end_candidates))
+        if maneuver_end_candidates
+        else min(fallback_maneuver_end, time_end if time_end > 0 else fallback_maneuver_end)
+    )
+    maneuver_end = max(time_start, min(maneuver_end, time_end if time_end > time_start else maneuver_end))
+    post_start = max(maneuver_end, min_positive_time)
+
+    if time_end > time_start:
+        ax_full.axvspan(time_start, maneuver_end, color="#d9ecff", alpha=0.30, zorder=0, label="During slew")
+        ax_full.axvspan(maneuver_end, time_end, color="#e8f5df", alpha=0.30, zorder=0, label="Post slew")
+
     for entry in plot_entries:
-        color = entry.get("color", "#555555")
-        ax.semilogx(
+        ax_full.semilogx(
             entry["time"],
-            entry["errors"],
-            color=color,
+            entry["errors_arcsec"],
+            color=entry["color"],
             label=entry["label"],
-            linewidth=1.5,
-            linestyle=entry["linestyle"],
+            linewidth=1.8,
+            linestyle="-",
+        )
+        mask_post = entry["time"] >= post_start
+        if np.any(mask_post):
+            ax_post.semilogx(
+                entry["time"][mask_post],
+                entry["errors_arcsec"][mask_post],
+                color=entry["color"],
+                label=entry["label"],
+                linewidth=1.8,
+                linestyle="-",
+            )
+
+    ax_full.axvline(maneuver_end, color="gray", linestyle=":", linewidth=1.5, alpha=0.9)
+    ax_full.text(
+        maneuver_end,
+        0.98,
+        f" Maneuver end ({maneuver_end:.1f}s)",
+        transform=ax_full.get_xaxis_transform(),
+        ha="left",
+        va="top",
+        fontsize=9,
+        color="dimgray",
+    )
+
+    unshaped_rms = post_slew_rms_arcsec.get("unshaped")
+    fourth_rms = post_slew_rms_arcsec.get("fourth")
+    if unshaped_rms is not None and fourth_rms is not None and unshaped_rms > 0:
+        improvement_pct = 100.0 * (1.0 - fourth_rms / unshaped_rms)
+        ax_post.text(
+            0.02,
+            0.04,
+            f"Post-slew RMS improvement (Fourth vs Unshaped): {improvement_pct:.1f}%",
+            transform=ax_post.transAxes,
+            fontsize=9,
+            color="black",
+            bbox=dict(facecolor="white", alpha=0.85, edgecolor="gray"),
         )
 
-    ax.set_title("Pointing Error", fontweight="bold")
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Pointing Error (deg)")
-    ax.grid(True, alpha=0.3, which="both")
-    ax.legend(loc="upper right")
+    ax_full.set_title("Full Mission Pointing Error", fontweight="bold")
+    ax_full.set_xlabel("Time (s)")
+    ax_full.set_ylabel("Absolute Pointing Error (arcsec)")
+    ax_full.grid(True, alpha=0.3, which="both")
+    if time_end > time_start:
+        ax_full.set_xlim([time_start, time_end])
+    y_max = max(float(np.max(entry["errors_arcsec"])) for entry in plot_entries if len(entry["errors_arcsec"]) > 0)
+    ax_full.set_ylim([0.0, max(y_max * 1.05, 1e-3)])
 
-    plt.tight_layout()
+    ax_post.set_title("Post-Slew Pointing Error", fontweight="bold")
+    ax_post.set_xlabel("Time (s)")
+    ax_post.set_ylabel("Absolute Pointing Error (arcsec)")
+    ax_post.grid(True, alpha=0.3, which="both")
+    if time_end > post_start:
+        ax_post.set_xlim([post_start, time_end])
+    else:
+        ax_post.set_xlim([time_start, time_end if time_end > time_start else time_start * 10.0])
+    post_max = 0.0
+    for entry in plot_entries:
+        mask = entry["time"] >= post_start
+        if np.any(mask):
+            post_max = max(post_max, float(np.max(entry["errors_arcsec"][mask])))
+    ax_post.set_ylim([0.0, max(post_max * 1.10, 1e-3)])
+
+    handles, labels = ax_full.get_legend_handles_labels()
+    unique_handles = []
+    unique_labels = []
+    for handle, label in zip(handles, labels):
+        if label not in unique_labels:
+            unique_handles.append(handle)
+            unique_labels.append(label)
+    ax_full.legend(unique_handles, unique_labels, loc="upper right")
+    ax_post.legend(loc="upper right")
+
+    fig.suptitle("Pointing Error Comparison: Unshaped vs Fourth-Order (Standard PD)", fontweight="bold", y=0.98)
+    fig.subplots_adjust(left=0.09, right=0.98, top=0.93, bottom=0.08, hspace=0.28)
     _ensure_dir(out_dir)
     plot_path = os.path.abspath(os.path.join(out_dir, "mission_pointing_error.png"))
     plt.savefig(plot_path, dpi=200, bbox_inches="tight", facecolor="white")
@@ -3526,10 +3636,8 @@ def _plot_disturbance_transfer(
 ) -> Optional[str]:
     """Plot disturbance torque to pointing error transfer."""
     freqs = control_data.get("freqs")
-    plant = control_data.get("plant_flex_camera")
-    if plant is None:
-        plant = control_data.get("plant_flex_body")
-    disturbance = control_data.get("disturbance_camera")
+    plant = control_data.get("plant_flex_body")
+    disturbance = control_data.get("disturbance_body")
     if freqs is None or plant is None or disturbance is None:
         return None
 
@@ -3544,9 +3652,9 @@ def _plot_disturbance_transfer(
 
     sigma_to_deg = 4.0 * 180.0 / np.pi
     open_mag_db = 20 * np.log10(np.abs(plant * sigma_to_deg) + 1e-12)
-    ax.semilogx(freqs, open_mag_db, color="black", linewidth=1.8, label="Open-loop (camera plant)")
+    ax.semilogx(freqs, open_mag_db, color="black", linewidth=1.8, label="Open-loop (body plant)")
 
-    line_styles = {"standard_pd": "-", "filtered_pd": "--"}
+    line_styles = {"standard_pd": "-"}
     for name in CONTROLLERS:
         if name not in disturbance:
             continue
@@ -3636,9 +3744,7 @@ def _plot_noise_to_pointing(
 ) -> Optional[str]:
     """Plot rate-gyro noise to pointing error transfer: P * C_omega / (1 + P*C)."""
     freqs = control_data.get("freqs")
-    plant = control_data.get("plant_flex_camera")
-    if plant is None:
-        plant = control_data.get("plant_flex_body")
+    plant = control_data.get("plant_flex_body")
     loop = control_data.get("L_flex") or control_data.get("L")
     rate_resp = control_data.get("rate_path_resp")
     if freqs is None or plant is None or loop is None or rate_resp is None:
@@ -3653,7 +3759,7 @@ def _plot_noise_to_pointing(
 
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     sigma_to_deg = 4.0 * 180.0 / np.pi
-    line_styles = {"standard_pd": "-", "filtered_pd": "--"}
+    line_styles = {"standard_pd": "-"}
 
     for name in CONTROLLERS:
         l_resp = loop.get(name) if isinstance(loop, dict) else None
@@ -3744,11 +3850,11 @@ def _plot_loop_components(
 
     plot_paths: List[str] = []
 
-    # PD baseline (filtered PD)
+    # Loop-components plot for the configured comparison controller.
     pd_plot = _plot_one(
-        "filtered_pd",
-        "Loop Components: Filtered PD",
-        "mission_loop_components_pd.png",
+        "standard_pd",
+        "Loop Components: Standard PD",
+        "mission_loop_components_standard_pd.png",
     )
     if pd_plot:
         plot_paths.append(pd_plot)
@@ -3974,11 +4080,13 @@ def run_mission_simulation(
     script_dir = os.path.dirname(__file__)
     out_dir = out_dir or os.path.join(script_dir, "..", "output")
     data_dir = data_dir or os.path.join(script_dir, "..", "data", "trajectories")
+    plots_dir = os.path.join(out_dir, "plots")
+    metrics_dir = os.path.join(out_dir, "metrics")
 
     # Run analyses
     ff_metrics = run_feedforward_comparison(
         config,
-        out_dir,
+        metrics_dir,
         make_plots=False,
         export_csv=export_csv,
         data_dir=data_dir,
@@ -3992,7 +4100,7 @@ def run_mission_simulation(
 
     pointing_metrics = run_pointing_summary(
         config,
-        out_dir,
+        metrics_dir,
         data_dir=data_dir,
         make_plots=False,
         export_csv=export_csv,
@@ -4019,37 +4127,37 @@ def run_mission_simulation(
 
     # Export remaining CSVs
     if export_csv:
-        _export_vibration_csv(feedforward_vibration, feedback_vibration, out_dir)
-        _export_pointing_error_csv(pointing_data, out_dir, config=config)
-        _export_psd_csv(feedforward_torque, feedback_vibration, out_dir, mission_psd_data)
-        _export_sensitivity_csv(ctrl_data, out_dir)
-        _export_nyquist_csv(ctrl_data, out_dir)
-        _export_mission_summary_csv(ff_metrics, ctrl_metrics, pointing_metrics, out_dir)
-        _export_torque_psd_rms(feedforward_torque, feedback_vibration, out_dir)
-        _export_torque_command_metrics(feedforward_torque, feedback_vibration, config, out_dir)
+        _export_vibration_csv(feedforward_vibration, feedback_vibration, metrics_dir)
+        _export_pointing_error_csv(pointing_data, metrics_dir, config=config)
+        _export_psd_csv(feedforward_torque, feedback_vibration, metrics_dir, mission_psd_data)
+        _export_sensitivity_csv(ctrl_data, metrics_dir)
+        _export_nyquist_csv(ctrl_data, metrics_dir)
+        _export_mission_summary_csv(ff_metrics, ctrl_metrics, pointing_metrics, metrics_dir)
+        _export_torque_psd_rms(feedforward_torque, feedback_vibration, metrics_dir)
+        _export_torque_command_metrics(feedforward_torque, feedback_vibration, config, metrics_dir)
 
     # Generate plots
     plot_paths: List[str] = []
     if make_plots:
         vibration_plot = _plot_vibration_comparison(
-            feedforward_vibration, feedback_vibration, config, out_dir
+            feedforward_vibration, feedback_vibration, config, plots_dir
         )
-        sensitivity_plot = _plot_sensitivity_functions(ctrl_data, config, out_dir)
-        modal_plot = _plot_modal_excitation(ctrl_data, config, out_dir)
-        pointing_plot = _plot_pointing_error(pointing_data, out_dir, config=config)
-        psd_plot = _plot_psd_comparison(mission_psd_data, config, out_dir)
-        nyquist_plot = _plot_nyquist(ctrl_data, out_dir)
-        disturbance_plot = _plot_disturbance_transfer(ctrl_data, config, out_dir)
-        noise_torque_plot = _plot_noise_to_torque(ctrl_data, out_dir)
-        noise_pointing_plot = _plot_noise_to_pointing(ctrl_data, config, out_dir)
-        tracking_plot = _plot_tracking_response(pointing_data, config, out_dir)
-        tracking_tf_plot = _plot_tracking_transfer(ctrl_data, out_dir)
-        disturbance_to_torque_plot = _plot_disturbance_to_torque(ctrl_data, out_dir)
-        loop_component_plots = _plot_loop_components(ctrl_data, config, out_dir)
-        torque_cmd_plot = _plot_torque_command_time(feedback_vibration, out_dir)
-        torque_cmd_psd_plot = _plot_torque_command_psd(feedback_vibration, out_dir)
-        torque_psd_split_plot = _plot_torque_psd_split(feedforward_torque, feedback_vibration, out_dir)
-        torque_psd_coherence_plot = _plot_torque_psd_coherence(feedforward_torque, feedback_vibration, out_dir)
+        sensitivity_plot = _plot_sensitivity_functions(ctrl_data, config, plots_dir)
+        modal_plot = _plot_modal_excitation(ctrl_data, config, plots_dir)
+        pointing_plot = _plot_pointing_error(pointing_data, plots_dir, config=config)
+        psd_plot = _plot_psd_comparison(mission_psd_data, config, plots_dir)
+        nyquist_plot = _plot_nyquist(ctrl_data, plots_dir)
+        disturbance_plot = _plot_disturbance_transfer(ctrl_data, config, plots_dir)
+        noise_torque_plot = _plot_noise_to_torque(ctrl_data, plots_dir)
+        noise_pointing_plot = _plot_noise_to_pointing(ctrl_data, config, plots_dir)
+        tracking_plot = _plot_tracking_response(pointing_data, config, plots_dir)
+        tracking_tf_plot = _plot_tracking_transfer(ctrl_data, plots_dir)
+        disturbance_to_torque_plot = _plot_disturbance_to_torque(ctrl_data, plots_dir)
+        loop_component_plots = _plot_loop_components(ctrl_data, config, plots_dir)
+        torque_cmd_plot = _plot_torque_command_time(feedback_vibration, plots_dir)
+        torque_cmd_psd_plot = _plot_torque_command_psd(feedback_vibration, plots_dir)
+        torque_psd_split_plot = _plot_torque_psd_split(feedforward_torque, feedback_vibration, plots_dir)
+        torque_psd_coherence_plot = _plot_torque_psd_coherence(feedforward_torque, feedback_vibration, plots_dir)
 
         for plot in [
             vibration_plot,
@@ -4079,14 +4187,14 @@ def run_mission_simulation(
                     plot_paths.append(plot)
                     print(f"Saved plot: {plot}")
 
-        mirror_dir = out_dir  # Output already goes to the right place
+        mirror_dir = plots_dir  # Output already goes to the right place
         for plot in plot_paths:
             _mirror_output(plot, mirror_dir)
 
     if make_plots:
-        print(f"Plots are saved in: {os.path.abspath(out_dir)}")
+        print(f"Plots are saved in: {os.path.abspath(plots_dir)}")
     if export_csv:
-        print(f"CSV exports are saved in: {os.path.abspath(out_dir)}")
+        print(f"CSV exports are saved in: {os.path.abspath(metrics_dir)}")
 
     return {
         "feedforward": ff_metrics,

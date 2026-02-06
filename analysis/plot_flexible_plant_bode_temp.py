@@ -367,6 +367,144 @@ def main() -> None:
             )
     plt.tight_layout()
 
+    # Fourth-order shaping for rest-to-rest 180 deg in 30 s (load same trajectory as run_mission.py)
+    mode_freqs = [0.4, 1.3]
+    theta_final = np.radians(180.0)
+    target_duration = 30.0
+
+    root_dir = SCRIPT_DIR.parent
+    traj_candidates = [
+        root_dir / "data" / "trajectories" / "spacecraft_trajectory_4th_180deg_30s.npz",
+        root_dir / "spacecraft_trajectory_4th_180deg_30s.npz",
+        root_dir.parent / "spacecraft_trajectory_4th_180deg_30s.npz",
+    ]
+    traj_path = next((p for p in traj_candidates if p.is_file()), None)
+    if traj_path is None:
+        raise FileNotFoundError(
+            "Fourth-order trajectory file not found. Expected spacecraft_trajectory_4th_180deg_30s.npz"
+        )
+    traj = np.load(traj_path, allow_pickle=True)
+    t_traj = np.array(traj.get("time", []), dtype=float)
+    theta = np.array(traj.get("theta", []), dtype=float)
+    omega = np.array(traj.get("omega", []), dtype=float)
+    alpha = np.array(traj.get("alpha", []), dtype=float)
+
+    min_len = min(len(t_traj), len(theta), len(omega), len(alpha))
+    if min_len == 0:
+        raise ValueError(f"Fourth-order trajectory file has no usable data: {traj_path}")
+    t_traj = t_traj[:min_len]
+    theta = theta[:min_len]
+    omega = omega[:min_len]
+    alpha = alpha[:min_len]
+
+    dt_shape = float(np.median(np.diff(t_traj))) if len(t_traj) > 1 else 0.01
+    jerk = np.array(traj.get("jerk", []), dtype=float)
+    snap = np.array(traj.get("snap", []), dtype=float)
+    if len(jerk) != min_len:
+        jerk = np.gradient(alpha, dt_shape)
+    else:
+        jerk = jerk[:min_len]
+    if len(snap) != min_len:
+        snap = np.gradient(jerk, dt_shape)
+    else:
+        snap = snap[:min_len]
+
+    # Shaped trajectory kinematics for report (position->snap), arranged in columns
+    fig_kin, axes_kin = plt.subplots(2, 3, figsize=(13, 7))
+    flat_axes = axes_kin.flatten()
+    series = [
+        (np.degrees(theta), "Position (deg)", "Shaped Position", "#1f77b4"),
+        (np.degrees(omega), "Velocity (deg/s)", "Shaped Velocity", "#ff7f0e"),
+        (np.degrees(alpha), "Acceleration (deg/s^2)", "Shaped Acceleration", "#2ca02c"),
+        (np.degrees(jerk), "Jerk (deg/s^3)", "Shaped Jerk", "#d62728"),
+        (np.degrees(snap), "Snap (deg/s^4)", "Shaped Snap", "#9467bd"),
+    ]
+    for ax_k, (y_k, ylab, ttl, color) in zip(flat_axes, series):
+        ax_k.plot(t_traj, y_k, linewidth=1.4, color=color)
+        ax_k.set_xlabel("Time (s)")
+        ax_k.set_ylabel(ylab)
+        ax_k.set_title(ttl)
+        ax_k.grid(True, alpha=0.3)
+    flat_axes[-1].axis("off")
+    plt.tight_layout()
+
+    # Unshaped bang-bang accel for the same duration, sampled on t_traj
+    a_bb = 4.0 * theta_final / (target_duration ** 2)
+    alpha_bb = np.zeros_like(t_traj)
+    alpha_bb[(t_traj > 0.0) & (t_traj < target_duration / 2.0)] = a_bb
+    alpha_bb[(t_traj >= target_duration / 2.0) & (t_traj < target_duration)] = -a_bb
+
+    fig_shape, axes_shape = plt.subplots(2, 2, figsize=(11, 7))
+    ax_a = axes_shape[0, 0]
+    ax_psd = axes_shape[0, 1]
+    ax_fr = axes_shape[1, 0]
+    axes_shape[1, 1].axis("off")
+
+    ax_a.plot(t_traj, alpha_bb, color="#1f77b4", label="Unshaped bang-bang")
+    ax_a.plot(t_traj, alpha, color="#ff7f0e", label="Fourth-order shaped")
+    ax_a.set_title("Acceleration Profile (180 deg, 30 s)")
+    ax_a.set_xlabel("Time (s)")
+    ax_a.set_ylabel("Acceleration (rad/s^2)")
+    ax_a.grid(True, alpha=0.3)
+    ax_a.legend(loc="best")
+
+    # PSD comparison (acceleration) using maneuver segment only
+    mask = t_traj <= target_duration
+    alpha_bb_psd = alpha_bb[mask]
+    alpha_shaped_psd = alpha[mask]
+    t_psd = t_traj[mask]
+    fs_shape = 1.0 / dt_shape if dt_shape > 0 else 100.0
+
+    # Use periodogram on the full maneuver segment to preserve spectral nulls
+    alpha_bb_psd = alpha_bb_psd - np.mean(alpha_bb_psd)
+    alpha_shaped_psd = alpha_shaped_psd - np.mean(alpha_shaped_psd)
+    nfft = int(2 ** np.ceil(np.log2(alpha_bb_psd.size * 4)))
+    f_psd, p_bb = signal.periodogram(alpha_bb_psd, fs=fs_shape, window="boxcar", nfft=nfft, scaling="spectrum")
+    _, p_sh = signal.periodogram(alpha_shaped_psd, fs=fs_shape, window="boxcar", nfft=nfft, scaling="spectrum")
+    p_bb_db = 10.0 * np.log10(np.maximum(p_bb, 1e-24))
+    p_sh_db = 10.0 * np.log10(np.maximum(p_sh, 1e-24))
+    ax_psd.plot(f_psd, p_bb_db, color="#1f77b4", label="Bang-bang spectrum (dB)")
+    ax_psd.plot(f_psd, p_sh_db, color="#ff7f0e", label="Shaped spectrum (dB)")
+
+    # Report attenuation at target mode frequencies using direct tone projection
+    attenuation_labels = []
+    for f_mode in mode_freqs:
+        exp_vec = np.exp(-1j * 2.0 * np.pi * f_mode * t_psd)
+        mag_bb = 2.0 * np.abs(np.dot(alpha_bb_psd, exp_vec)) / alpha_bb_psd.size
+        mag_sh = 2.0 * np.abs(np.dot(alpha_shaped_psd, exp_vec)) / alpha_shaped_psd.size
+        att_db = 20.0 * np.log10((mag_sh + 1e-12) / (mag_bb + 1e-12))
+        attenuation_labels.append((f_mode, att_db))
+        print(f"  Mode {f_mode:.3f} Hz: shaped/bang-bang = {att_db:.1f} dB")
+    for f_mode in mode_freqs:
+        ax_psd.axvline(f_mode, color="r", linestyle="--", alpha=0.6)
+    ax_psd.set_xlim([0.0, 5.0])
+    ax_psd.set_title("Acceleration Spectrum Comparison")
+    ax_psd.set_xlabel("Frequency (Hz)")
+    ax_psd.set_ylabel("Power (dB)")
+    ax_psd.grid(True, alpha=0.3, which="both")
+    ax_psd.legend(loc="best")
+
+    f1, f2 = sorted(mode_freqs)
+    T_jerk = 1.0 / f1
+    T_snap = 1.0 / f2
+    n_jerk = max(1, int(round(T_jerk / dt_shape)))
+    n_snap = max(1, int(round(T_snap / dt_shape)))
+    T_jerk_actual = n_jerk * dt_shape
+    T_snap_actual = n_snap * dt_shape
+    f_resp = np.linspace(0.01, 5.0, 800)
+    s_mag = np.abs(np.sinc(f_resp * T_jerk_actual) * np.sinc(f_resp * T_snap_actual))
+    s_mag_db = 20.0 * np.log10(np.maximum(s_mag, 1e-12))
+    ax_fr.plot(f_resp, s_mag_db, color="#2ca02c")
+    for f_mode in mode_freqs:
+        ax_fr.axvline(f_mode, color="r", linestyle="--", alpha=0.7)
+    ax_fr.set_title("Fourth-Order Shaper Frequency Response")
+    ax_fr.set_xlabel("Frequency (Hz)")
+    ax_fr.set_ylabel("Magnitude (dB)")
+    ax_fr.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+
+
     # Multi-tone signal, moving-average (rect window), and PSD before/after
     fs = 200.0
     duration_sig = 10.0
