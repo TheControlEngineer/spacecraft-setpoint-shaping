@@ -336,6 +336,130 @@ def _compute_psd(time: np.ndarray, signal_data: np.ndarray) -> Tuple[np.ndarray,
     return freq, psd
 
 
+def _compute_psd_high_resolution(
+    time: np.ndarray,
+    signal_data: np.ndarray,
+    zero_pad_factor: int = 8,
+    max_nfft: int = 1 << 19,
+    window: object = "hann",
+    detrend: object = "constant",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute a high-resolution PSD for visual diagnostics."""
+    n = len(signal_data)
+    if n < 16:
+        return np.array([]), np.array([])
+    dt = np.median(np.diff(time))
+    if not np.isfinite(dt) or dt <= 0:
+        return np.array([]), np.array([])
+    fs = 1.0 / dt
+
+    n_target = max(n, 8) * max(1, int(zero_pad_factor))
+    nfft = 2 ** int(np.ceil(np.log2(n_target)))
+    nfft = int(min(max_nfft, max(256, nfft)))
+
+    freq, psd = signal.periodogram(
+        signal_data,
+        fs=fs,
+        window=window,
+        detrend=detrend,
+        scaling="density",
+        nfft=nfft,
+    )
+    return freq, psd
+
+
+def _detect_mode_lines_from_flexible_plant(
+    control_data: Dict[str, object],
+    config: MissionConfig,
+    fmax_hz: float = 10.0,
+) -> Tuple[List[float], List[float]]:
+    """Detect resonance and antiresonance frequencies from flexible plant magnitude."""
+    freqs = np.array(control_data.get("freqs", []), dtype=float)
+    plant = np.array(control_data.get("plant_flex_body", []), dtype=complex)
+    if len(freqs) == 0 or len(plant) == 0 or not config.modal_freqs_hz:
+        return [], []
+
+    mask = (
+        np.isfinite(freqs)
+        & np.isfinite(np.real(plant))
+        & np.isfinite(np.imag(plant))
+        & (freqs > 0)
+        & (freqs <= fmax_hz)
+    )
+    if not np.any(mask):
+        return [], []
+
+    f = freqs[mask]
+    mag_db = 20.0 * np.log10(np.abs(plant[mask]) + 1e-12)
+
+    peak_idx, _ = signal.find_peaks(mag_db, prominence=0.25)
+    dip_idx, _ = signal.find_peaks(-mag_db, prominence=0.25)
+    if len(peak_idx) == 0 and len(dip_idx) == 0:
+        return [], []
+
+    resonances: List[float] = []
+    antiresonances: List[float] = []
+
+    for f_mode in sorted(float(v) for v in config.modal_freqs_hz):
+        if f_mode <= 0:
+            continue
+        left = max(1e-3, 0.6 * f_mode)
+        right = min(float(f[-1]), 2.2 * f_mode)
+
+        local_peaks = [idx for idx in peak_idx if left <= f[idx] <= right]
+        f_res: Optional[float] = None
+        if local_peaks:
+            # Pick dominant local resonance by peak magnitude.
+            best_peak = max(local_peaks, key=lambda idx: float(mag_db[idx]))
+            f_res = float(f[best_peak])
+            resonances.append(f_res)
+
+        dip_right = f_res if f_res is not None else min(float(f[-1]), 1.2 * f_mode)
+        local_dips = [idx for idx in dip_idx if left <= f[idx] <= dip_right]
+        if local_dips:
+            # Pick deepest local antiresonance.
+            best_dip = min(local_dips, key=lambda idx: float(mag_db[idx]))
+            antiresonances.append(float(f[best_dip]))
+
+    def _dedupe(values: List[float], rel_tol: float = 0.03) -> List[float]:
+        out: List[float] = []
+        for val in sorted(values):
+            if not out:
+                out.append(val)
+                continue
+            if abs(val - out[-1]) / max(out[-1], 1e-6) > rel_tol:
+                out.append(val)
+        return out
+
+    return _dedupe(resonances), _dedupe(antiresonances)
+
+
+def _draw_mode_lines_on_axis(
+    ax: plt.Axes,
+    resonances_hz: List[float],
+    antiresonances_hz: List[float],
+) -> None:
+    """Draw resonance and antiresonance vertical markers."""
+    for i, f_res in enumerate(resonances_hz):
+        ax.axvline(
+            f_res,
+            color="#d62728",
+            linestyle="--",
+            linewidth=1.4,
+            alpha=0.9,
+            label="Resonance" if i == 0 else None,
+        )
+    for i, f_ar in enumerate(antiresonances_hz):
+        ax.axvline(
+            f_ar,
+            color="#9467bd",
+            linestyle=":",
+            linewidth=1.5,
+            alpha=0.9,
+            label="Antiresonance" if i == 0 else None,
+        )
+
+
 def _compute_band_rms(freq: np.ndarray, psd: np.ndarray, fmin: float, fmax: float) -> float:
     """Compute band-limited RMS from a PSD."""
     if len(freq) == 0 or len(psd) == 0:
@@ -1072,7 +1196,10 @@ def _collect_feedback_data(
 
             time = np.array(npz_data.get("time", []), dtype=float)
             torque_vec = npz_data.get("fb_torque")
+            ff_vec = npz_data.get("ff_torque")
             total_vec = npz_data.get("total_torque")
+            if ff_vec is not None and len(ff_vec) == 0:
+                ff_vec = None
             if total_vec is not None and len(total_vec) == 0:
                 total_vec = None
             if torque_vec is None or len(torque_vec) == 0:
@@ -1084,10 +1211,12 @@ def _collect_feedback_data(
             if mode2_acc is not None and len(mode2_acc) == 0:
                 mode2_acc = None
             torque_axis = _project_axis_torque(torque_vec, axis) if torque_vec is not None else np.array([])
+            torque_ff = _project_axis_torque(ff_vec, axis) if ff_vec is not None else np.array([])
             torque_total = _project_axis_torque(total_vec, axis) if total_vec is not None else np.array([])
             time, aligned = _align_series(
                 time,
                 torque_axis if len(torque_axis) > 0 else None,
+                torque_ff if len(torque_ff) > 0 else None,
                 torque_total if len(torque_total) > 0 else None,
                 npz_data.get("mode1"),
                 npz_data.get("mode2"),
@@ -1095,11 +1224,12 @@ def _collect_feedback_data(
                 mode2_acc,
             )
             torque_axis = aligned[0] if aligned[0] is not None else np.array([])
-            torque_total = aligned[1] if aligned[1] is not None else np.array([])
-            mode1 = aligned[2]
-            mode2 = aligned[3]
-            mode1_acc = aligned[4] if len(aligned) > 4 else np.array([])
-            mode2_acc = aligned[5] if len(aligned) > 5 else np.array([])
+            torque_ff = aligned[1] if aligned[1] is not None else np.array([])
+            torque_total = aligned[2] if aligned[2] is not None else np.array([])
+            mode1 = aligned[3]
+            mode2 = aligned[4]
+            mode1_acc = aligned[5] if len(aligned) > 5 else np.array([])
+            mode2_acc = aligned[6] if len(aligned) > 6 else np.array([])
 
             # Raw modal-state signals (no filtering/detrending) for plotting/debug.
             displacement_raw = _combine_modal_displacement(mode1, mode2)
@@ -1124,7 +1254,12 @@ def _collect_feedback_data(
                 "acceleration": acceleration,
                 "displacement_modal_raw": displacement_raw,
                 "acceleration_modal_raw": acceleration_raw,
+                "mode1": np.array(mode1, dtype=float) if mode1 is not None else np.array([]),
+                "mode2": np.array(mode2, dtype=float) if mode2 is not None else np.array([]),
+                "mode1_acc": np.array(mode1_acc, dtype=float) if mode1_acc is not None else np.array([]),
+                "mode2_acc": np.array(mode2_acc, dtype=float) if mode2_acc is not None else np.array([]),
                 "torque": torque_axis,
+                "torque_ff": torque_ff,
                 "torque_total": torque_total,
                 "rw_torque": npz_data.get("rw_torque"),
                 "psd_freq": psd_freq,
@@ -2094,8 +2229,7 @@ def _plot_vibration_comparison(
         "legend.fontsize": 9,
     })
 
-    fig, axes = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
-    ax_disp, ax_acc = axes
+    fig, (ax_disp, ax_acc) = plt.subplots(1, 2, figsize=(16, 5.8), sharex=True)
 
     maneuver_end = None
     cutoff_hz = _get_vibration_highpass_hz(config)
@@ -2136,6 +2270,8 @@ def _plot_vibration_comparison(
                 acc_arr = _highpass_filter(acc_arr, np.array(time, dtype=float), cutoff_hz)
             disp_mm = disp_arr * 1000.0
             acc_mm = acc_arr * 1000.0
+            disp_rms_mm = float(np.sqrt(np.mean(disp_mm**2))) if len(disp_mm) > 0 else 0.0
+            acc_rms_mms2 = float(np.sqrt(np.mean(acc_mm**2))) if len(acc_mm) > 0 else 0.0
 
             label = f"FF: {METHOD_LABELS.get(method, method)}"
             plot_entries.append({
@@ -2143,6 +2279,8 @@ def _plot_vibration_comparison(
                 "disp": disp_mm,
                 "acc": acc_mm,
                 "label": label,
+                "disp_rms_mm": disp_rms_mm,
+                "acc_rms_mms2": acc_rms_mms2,
                 "linestyle": "-",
                 "color": METHOD_COLORS.get(method, "#555555"),
             })
@@ -2181,6 +2319,8 @@ def _plot_vibration_comparison(
                 acc_arr = _highpass_filter(acc_arr, np.array(time, dtype=float), cutoff_hz)
             disp_mm = disp_arr * 1000.0
             acc_mm = acc_arr * 1000.0
+            disp_rms_mm = float(np.sqrt(np.mean(disp_mm**2))) if len(disp_mm) > 0 else 0.0
+            acc_rms_mms2 = float(np.sqrt(np.mean(acc_mm**2))) if len(acc_mm) > 0 else 0.0
 
             label = _combo_label(method, controller)
             plot_entries.append({
@@ -2188,6 +2328,8 @@ def _plot_vibration_comparison(
                 "disp": disp_mm,
                 "acc": acc_mm,
                 "label": label,
+                "disp_rms_mm": disp_rms_mm,
+                "acc_rms_mms2": acc_rms_mms2,
                 "linestyle": "-",
                 "color": _combo_color(method, controller),
             })
@@ -2202,7 +2344,7 @@ def _plot_vibration_comparison(
             entry["time"],
             entry["disp"],
             color=color,
-            label=entry["label"],
+            label=f'{entry["label"]} (RMS={entry["disp_rms_mm"]:.3f} mm)',
             linewidth=1.5,
             linestyle=entry["linestyle"],
         )
@@ -2210,7 +2352,7 @@ def _plot_vibration_comparison(
             entry["time"],
             entry["acc"],
             color=color,
-            label=entry["label"],
+            label=f'{entry["label"]} (RMS={entry["acc_rms_mms2"]:.3f} mm/s^2)',
             linewidth=1.5,
             linestyle=entry["linestyle"],
         )
@@ -2222,10 +2364,7 @@ def _plot_vibration_comparison(
         ax_acc.axvline(maneuver_end, color="gray", linestyle=":", linewidth=1.5, alpha=0.7)
 
     # Displacement subplot
-    title_prefix = "Modal Vibration Displacement (Combined FF + FB)"
-    if not plot_feedback_only:
-        title_prefix = "Modal Vibration Displacement (Feedforward Only)"
-    ax_disp.set_title(title_prefix, fontweight="bold")
+    ax_disp.set_title("Modal Displacement Response", fontweight="bold")
     ax_disp.set_ylabel("Displacement (mm)")
     ax_disp.grid(True, alpha=0.3)
     ax_disp.legend(loc="upper right", fontsize=8, ncol=2)
@@ -2233,16 +2372,135 @@ def _plot_vibration_comparison(
 
     # Acceleration subplot
     ax_acc.set_title("Modal Acceleration Response", fontweight="bold")
-    ax_acc.set_xlabel("Time (s)")
     ax_acc.set_ylabel(r"Acceleration (mm/s$^2$)")
     ax_acc.grid(True, alpha=0.3)
     ax_acc.legend(loc="upper right", fontsize=8, ncol=2)
     ax_acc.axhline(0, color="black", linewidth=0.5, alpha=0.3)
 
+    ax_disp.set_xlabel("Time (s)")
+    ax_acc.set_xlabel("Time (s)")
+
     plt.tight_layout()
     _ensure_dir(out_dir)
     plot_path = os.path.abspath(os.path.join(out_dir, "mission_vibration.png"))
     plt.savefig(plot_path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return plot_path
+
+
+def _plot_modal_acceleration_psd(
+    feedback_vibration: Dict[str, Dict[str, object]],
+    config: MissionConfig,
+    out_dir: str,
+) -> Optional[str]:
+    """Plot high-resolution PSD of combined modal acceleration."""
+    if not feedback_vibration:
+        return None
+
+    plt.rcParams.update({
+        "font.size": 12,
+        "axes.labelsize": 13,
+        "axes.titlesize": 14,
+        "legend.fontsize": 10,
+        "xtick.labelsize": 11,
+        "ytick.labelsize": 11,
+    })
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+    plotted = False
+    psd_min_db = None
+    psd_max_db = None
+
+    for method in METHODS:
+        for controller in CONTROLLERS:
+            key = f"{method}_{controller}"
+            data = feedback_vibration.get(key)
+            if not data:
+                continue
+            run_mode = str(data.get("run_mode", "")).lower()
+            if run_mode and run_mode != "combined":
+                continue
+
+            time = np.array(data.get("time", np.array([])), dtype=float)
+            mode1_acc = np.array(data.get("mode1_acc", np.array([])), dtype=float)
+            mode2_acc = np.array(data.get("mode2_acc", np.array([])), dtype=float)
+            combined_acc = _combine_modal_displacement(mode1_acc, mode2_acc)
+            if len(combined_acc) == 0:
+                combined_acc = np.array(data.get("acceleration_modal_raw", np.array([])), dtype=float)
+            time, aligned = _align_series(time, combined_acc)
+            combined_acc = aligned[0]
+            if len(time) == 0 or len(combined_acc) == 0:
+                continue
+
+            maneuver_end = data.get("maneuver_end", config.slew_duration_s)
+            try:
+                maneuver_end = float(maneuver_end)
+            except (TypeError, ValueError):
+                maneuver_end = float(config.slew_duration_s)
+
+            # Add a short guard after slew end to avoid edge transients dominating leakage.
+            post_guard_s = 0.5
+            post_mask = time >= (maneuver_end + post_guard_s)
+            if np.count_nonzero(post_mask) >= 32:
+                time_use = np.array(time[post_mask], dtype=float)
+                acc_use = np.array(combined_acc[post_mask], dtype=float)
+            else:
+                # Fallback when post-slew window is too short for PSD estimation.
+                time_use = time
+                acc_use = combined_acc
+
+            freq, psd = _compute_psd_high_resolution(
+                time_use,
+                acc_use,
+                zero_pad_factor=16,
+                window=("tukey", 0.12),
+                detrend="linear",
+            )
+            mask = (freq > 0) & (freq <= 10.0) & np.isfinite(psd) & (psd > 0)
+            if not np.any(mask):
+                continue
+            freq_f = freq[mask]
+            psd_db = 10.0 * np.log10(psd[mask])
+            psd_min_db = float(np.min(psd_db)) if psd_min_db is None else min(psd_min_db, float(np.min(psd_db)))
+            psd_max_db = float(np.max(psd_db)) if psd_max_db is None else max(psd_max_db, float(np.max(psd_db)))
+
+            ax.semilogx(
+                freq_f,
+                psd_db,
+                color=_combo_color(method, controller),
+                linewidth=1.8,
+                linestyle="-",
+                label=_combo_label(method, controller),
+            )
+            plotted = True
+
+    if not plotted:
+        plt.close(fig)
+        return None
+
+    for f_mode in config.modal_freqs_hz:
+        ax.axvline(f_mode, color="gray", linestyle=":", linewidth=1.0, alpha=0.7)
+
+    ax.set_title("Combined Modal Acceleration PSD (Post-Slew)", fontweight="bold")
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel(r"PSD (dB re (m/s$^2$)$^2$/Hz)")
+    ax.set_xlim(2e-2, 10.0)
+    ax.xaxis.set_major_locator(LogLocator(base=10, numticks=12))
+    ax.xaxis.set_minor_locator(LogLocator(base=10, subs=np.arange(2, 10) * 0.1, numticks=120))
+    if psd_min_db is not None and psd_max_db is not None:
+        span = max(psd_max_db - psd_min_db, 20.0)
+        pad = max(4.0, 0.12 * span)
+        ax.set_ylim(
+            5.0 * np.floor((psd_min_db - pad) / 5.0),
+            5.0 * np.ceil((psd_max_db + pad) / 5.0),
+        )
+    ax.grid(True, alpha=0.3, which="both")
+    ax.legend(loc="best")
+
+    plt.tight_layout()
+    _ensure_dir(out_dir)
+    plot_path = os.path.abspath(os.path.join(out_dir, "modal_acceleration_psd.png"))
+    plt.savefig(plot_path, dpi=500, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return plot_path
 
@@ -2479,7 +2737,7 @@ def _plot_pointing_error(
         "legend.fontsize": 9,
     })
 
-    fig, (ax_full, ax_post) = plt.subplots(2, 1, figsize=(10, 8), sharey=False)
+    fig, (ax_full, ax_post) = plt.subplots(1, 2, figsize=(16, 6), sharey=False)
 
     plot_entries = []
     maneuver_end_candidates: List[float] = []
@@ -2597,20 +2855,6 @@ def _plot_pointing_error(
         color="dimgray",
     )
 
-    unshaped_rms = post_slew_rms_arcsec.get("unshaped")
-    fourth_rms = post_slew_rms_arcsec.get("fourth")
-    if unshaped_rms is not None and fourth_rms is not None and unshaped_rms > 0:
-        improvement_pct = 100.0 * (1.0 - fourth_rms / unshaped_rms)
-        ax_post.text(
-            0.02,
-            0.04,
-            f"Post-slew RMS improvement (Fourth vs Unshaped): {improvement_pct:.1f}%",
-            transform=ax_post.transAxes,
-            fontsize=9,
-            color="black",
-            bbox=dict(facecolor="white", alpha=0.85, edgecolor="gray"),
-        )
-
     ax_full.set_title("Full Mission Pointing Error", fontweight="bold")
     ax_full.set_xlabel("Time (s)")
     ax_full.set_ylabel("Absolute Pointing Error (arcsec)")
@@ -2642,11 +2886,11 @@ def _plot_pointing_error(
         if label not in unique_labels:
             unique_handles.append(handle)
             unique_labels.append(label)
-    ax_full.legend(unique_handles, unique_labels, loc="upper right")
+    ax_full.legend(unique_handles, unique_labels, loc="lower left")
     ax_post.legend(loc="upper right")
 
     fig.suptitle("Pointing Error Comparison: Unshaped vs Fourth-Order (Standard PD)", fontweight="bold", y=0.98)
-    fig.subplots_adjust(left=0.09, right=0.98, top=0.93, bottom=0.08, hspace=0.28)
+    fig.subplots_adjust(left=0.06, right=0.99, top=0.90, bottom=0.14, wspace=0.22)
     _ensure_dir(out_dir)
     plot_path = os.path.abspath(os.path.join(out_dir, "mission_pointing_error.png"))
     plt.savefig(plot_path, dpi=200, bbox_inches="tight", facecolor="white")
@@ -2833,9 +3077,11 @@ def _plot_torque_command_time(
 
 def _plot_torque_command_psd(
     feedback_vibration: Dict[str, Dict[str, object]],
+    control_data: Dict[str, object],
+    config: MissionConfig,
     out_dir: str,
 ) -> Optional[str]:
-    """Plot commanded torque PSD for combined FF+FB runs (semilogx)."""
+    """Plot commanded torque PSD for combined FF+FB runs with high-frequency detail."""
     if not feedback_vibration:
         return None
 
@@ -2852,6 +3098,7 @@ def _plot_torque_command_psd(
     plot_entries = []
     psd_min_db = None
     psd_max_db = None
+    resonances_hz, antiresonances_hz = _detect_mode_lines_from_flexible_plant(control_data, config, fmax_hz=10.0)
 
     for method in METHODS:
         for controller in CONTROLLERS:
@@ -2873,7 +3120,7 @@ def _plot_torque_command_psd(
             torque = aligned[0]
             if len(time) == 0:
                 continue
-            psd_freq, psd_vals = _compute_psd(time, torque)
+            psd_freq, psd_vals = _compute_psd_high_resolution(time, torque)
             if len(psd_freq) == 0:
                 continue
 
@@ -2902,19 +3149,27 @@ def _plot_torque_command_psd(
 
     for entry in plot_entries:
         color = entry.get("color", "#555555")
-        ax.plot(
+        ax.semilogx(
             entry["freq"],
             entry["psd_db"],
             color=color,
             linestyle=entry["linestyle"],
-            linewidth=2.0,
-            alpha=0.9,
+            linewidth=1.8,
+            alpha=0.95,
             label=entry["label"],
         )
 
     ax.set_title("Torque Command PSD (Combined Feedforward + Feedback)", fontweight="bold", fontsize=16, pad=15)
     ax.set_xlabel("Frequency (Hz)", fontsize=14, fontweight="bold")
     ax.set_ylabel(r"PSD (dB re N$^2$m$^2$/Hz)", fontsize=14, fontweight="bold")
+    ax.set_xlim(2e-2, 10.0)
+    if psd_min_db is not None and psd_max_db is not None:
+        span = max(psd_max_db - psd_min_db, 20.0)
+        pad = max(4.0, 0.12 * span)
+        ax.set_ylim(5.0 * np.floor((psd_min_db - pad) / 5.0), 5.0 * np.ceil((psd_max_db + pad) / 5.0))
+    ax.xaxis.set_major_locator(LogLocator(base=10, numticks=12))
+    ax.xaxis.set_minor_locator(LogLocator(base=10, subs=np.arange(2, 10) * 0.1, numticks=120))
+    _draw_mode_lines_on_axis(ax, resonances_hz, antiresonances_hz)
     ax.grid(True, alpha=0.6, which="major", linestyle="-", linewidth=0.8, color="gray")
     ax.grid(True, alpha=0.3, which="minor", linestyle="-", linewidth=0.4, color="lightgray")
 
@@ -2924,7 +3179,7 @@ def _plot_torque_command_psd(
     plt.tight_layout()
     _ensure_dir(out_dir)
     plot_path = os.path.abspath(os.path.join(out_dir, "mission_torque_command_psd.png"))
-    plt.savefig(plot_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.savefig(plot_path, dpi=600, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return plot_path
 
@@ -2934,7 +3189,7 @@ def _plot_tracking_response(
     config: MissionConfig,
     out_dir: str,
 ) -> Optional[str]:
-    """Plot reference tracking: angle and error vs time."""
+    """Plot absolute tracking error vs time for mission methods."""
     if not pointing_data:
         return None
 
@@ -2945,14 +3200,13 @@ def _plot_tracking_response(
         "legend.fontsize": 9,
     })
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 9), sharex="col")
+    fig, ax = plt.subplots(1, 1, figsize=(11, 5.5))
     axis = _normalize_axis(config.rotation_axis)
+    plotted = False
 
-    for col, method in enumerate(METHODS):
+    for method in METHODS:
         method_data = pointing_data.get(method, {})
         if not method_data:
-            axes[0, col].axis("off")
-            axes[1, col].axis("off")
             continue
 
         max_time = None
@@ -2965,28 +3219,20 @@ def _plot_tracking_response(
                 continue
             max_time = float(time[-1]) if max_time is None else max(max_time, float(time[-1]))
 
+        if max_time is None:
+            continue
+
         settling_time = max(0.0, (max_time or config.slew_duration_s) - config.slew_duration_s)
         ref_data = _compute_torque_profile(config, method, settling_time=settling_time)
         ref_time = np.array(ref_data.get("time", []), dtype=float)
         ref_theta = np.array(ref_data.get("theta", []), dtype=float)
         if len(ref_time) == 0 or len(ref_theta) == 0:
-            axes[0, col].axis("off")
-            axes[1, col].axis("off")
             continue
         ref_time, aligned = _align_series(ref_time, ref_theta)
         ref_theta = aligned[0]
         if len(ref_time) == 0:
-            axes[0, col].axis("off")
-            axes[1, col].axis("off")
             continue
         ref_unwrapped = np.unwrap(ref_theta)
-        ref_deg = np.degrees(ref_unwrapped)
-
-        ax_angle = axes[0, col]
-        ax_err = axes[1, col]
-        ax_angle.plot(ref_time, ref_deg, color="black", linestyle="--", linewidth=1.6, label="Reference")
-
-        maneuver_end = ref_data.get("maneuver_end")
 
         for controller in CONTROLLERS:
             data = method_data.get(controller)
@@ -3007,30 +3253,168 @@ def _plot_tracking_response(
             actual_unwrapped = np.unwrap(theta_actual)
             ref_interp = np.interp(time, ref_time, ref_unwrapped, left=ref_unwrapped[0], right=ref_unwrapped[-1])
             err_rad = _wrap_angle_rad(ref_interp - actual_unwrapped)
-            err = np.degrees(err_rad)
+            err_abs_deg = np.abs(np.degrees(err_rad))
 
             color = _combo_color(method, controller)
-            ax_angle.plot(time, np.degrees(actual_unwrapped), color=color, linewidth=1.4,
-                          label=_combo_label(method, controller))
-            ax_err.plot(time, err, color=color, linewidth=1.4, label=_combo_label(method, controller))
+            ax.plot(time, err_abs_deg, color=color, linewidth=1.7, label=_combo_label(method, controller))
+            plotted = True
 
-        if maneuver_end is not None:
-            ax_angle.axvline(maneuver_end, color="gray", linestyle=":", alpha=0.6)
-            ax_err.axvline(maneuver_end, color="gray", linestyle=":", alpha=0.6)
+    if not plotted:
+        plt.close(fig)
+        return None
 
-        ax_angle.set_title(f"{METHOD_LABELS.get(method, method)} Tracking", fontweight="bold")
-        ax_angle.set_ylabel("Angle (deg)")
-        ax_angle.grid(True, alpha=0.3)
-        ax_angle.legend(loc="upper right", fontsize=8)
+    maneuver_end = float(config.slew_duration_s)
+    ax.axvline(maneuver_end, color="gray", linestyle=":", alpha=0.7, linewidth=1.4)
+    ax.set_title("Feedback Tracking Error vs Time", fontweight="bold")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Absolute Tracking Error (deg)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper right")
 
-        ax_err.set_ylabel("Tracking Error (deg)")
-        ax_err.set_xlabel("Time (s)")
-        ax_err.grid(True, alpha=0.3)
+    # Remove legacy tracking-response image to avoid confusion.
+    legacy_path = os.path.abspath(os.path.join(out_dir, "mission_tracking_response.png"))
+    if os.path.exists(legacy_path):
+        try:
+            os.remove(legacy_path)
+        except OSError:
+            pass
 
     plt.tight_layout()
     _ensure_dir(out_dir)
-    plot_path = os.path.abspath(os.path.join(out_dir, "mission_tracking_response.png"))
+    plot_path = os.path.abspath(os.path.join(out_dir, "mission_tracking_error.png"))
     plt.savefig(plot_path, dpi=250, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return plot_path
+
+
+def _plot_tracking_error_psd(
+    pointing_data: Dict[str, Dict[str, object]],
+    control_data: Dict[str, object],
+    config: MissionConfig,
+    out_dir: str,
+) -> Optional[str]:
+    """Plot high-resolution PSD of feedback tracking error."""
+    if not pointing_data:
+        return None
+
+    plt.rcParams.update({
+        "font.size": 12,
+        "axes.labelsize": 14,
+        "axes.titlesize": 15,
+        "legend.fontsize": 10,
+        "xtick.labelsize": 11,
+        "ytick.labelsize": 11,
+    })
+
+    fig, ax = plt.subplots(1, 1, figsize=(16, 10))
+    axis = _normalize_axis(config.rotation_axis)
+    resonances_hz, antiresonances_hz = _detect_mode_lines_from_flexible_plant(control_data, config, fmax_hz=10.0)
+
+    plotted = False
+    psd_min_db = None
+    psd_max_db = None
+
+    for method in METHODS:
+        method_data = pointing_data.get(method, {})
+        if not method_data:
+            continue
+
+        max_time = None
+        for controller in CONTROLLERS:
+            data = method_data.get(controller)
+            if not data:
+                continue
+            time = np.array(data.get("time", []), dtype=float)
+            if len(time) == 0:
+                continue
+            max_time = float(time[-1]) if max_time is None else max(max_time, float(time[-1]))
+
+        if max_time is None:
+            continue
+
+        settling_time = max(0.0, (max_time or config.slew_duration_s) - config.slew_duration_s)
+        ref_data = _compute_torque_profile(config, method, settling_time=settling_time)
+        ref_time = np.array(ref_data.get("time", []), dtype=float)
+        ref_theta = np.array(ref_data.get("theta", []), dtype=float)
+        if len(ref_time) == 0 or len(ref_theta) == 0:
+            continue
+        ref_time, aligned = _align_series(ref_time, ref_theta)
+        ref_theta = aligned[0]
+        if len(ref_time) == 0:
+            continue
+        ref_unwrapped = np.unwrap(ref_theta)
+
+        for controller in CONTROLLERS:
+            data = method_data.get(controller)
+            if not data:
+                continue
+            run_mode = str(data.get("run_mode", "")).lower()
+            if run_mode and run_mode != "combined":
+                continue
+
+            time = np.array(data.get("time", []), dtype=float)
+            sigma = np.array(data.get("sigma", []), dtype=float)
+            if len(time) == 0 or len(sigma) == 0:
+                continue
+
+            theta_actual = _sigma_to_angle(sigma, axis)
+            time, aligned = _align_series(time, theta_actual)
+            theta_actual = aligned[0]
+            if len(time) == 0:
+                continue
+
+            actual_unwrapped = np.unwrap(theta_actual)
+            ref_interp = np.interp(time, ref_time, ref_unwrapped, left=ref_unwrapped[0], right=ref_unwrapped[-1])
+            err_rad = _wrap_angle_rad(ref_interp - actual_unwrapped)
+            err_deg = np.degrees(err_rad)
+            err_deg = signal.detrend(err_deg, type="linear")
+
+            psd_freq, psd_vals = _compute_psd_high_resolution(time, err_deg)
+            if len(psd_freq) == 0:
+                continue
+
+            mask = (psd_freq > 0) & (psd_freq <= 10.0) & np.isfinite(psd_vals) & (psd_vals > 0)
+            if not np.any(mask):
+                continue
+
+            freq = psd_freq[mask]
+            psd_db = 10.0 * np.log10(psd_vals[mask])
+            psd_min_db = float(np.min(psd_db)) if psd_min_db is None else min(psd_min_db, float(np.min(psd_db)))
+            psd_max_db = float(np.max(psd_db)) if psd_max_db is None else max(psd_max_db, float(np.max(psd_db)))
+
+            ax.semilogx(
+                freq,
+                psd_db,
+                color=_combo_color(method, controller),
+                linewidth=1.8,
+                alpha=0.95,
+                label=_combo_label(method, controller),
+            )
+            plotted = True
+
+    if not plotted:
+        plt.close(fig)
+        return None
+
+    _draw_mode_lines_on_axis(ax, resonances_hz, antiresonances_hz)
+    ax.set_title("Feedback Tracking Error PSD (High Resolution)", fontweight="bold")
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel(r"PSD (dB re deg$^2$/Hz)")
+    ax.set_xlim(2e-2, 10.0)
+    if psd_min_db is not None and psd_max_db is not None:
+        span = max(psd_max_db - psd_min_db, 20.0)
+        pad = max(4.0, 0.12 * span)
+        ax.set_ylim(5.0 * np.floor((psd_min_db - pad) / 5.0), 5.0 * np.ceil((psd_max_db + pad) / 5.0))
+    ax.xaxis.set_major_locator(LogLocator(base=10, numticks=12))
+    ax.xaxis.set_minor_locator(LogLocator(base=10, subs=np.arange(2, 10) * 0.1, numticks=120))
+    ax.grid(True, alpha=0.6, which="major", linestyle="-", linewidth=0.8, color="gray")
+    ax.grid(True, alpha=0.3, which="minor", linestyle="-", linewidth=0.4, color="lightgray")
+    ax.legend(loc="best", framealpha=0.95, fancybox=True, shadow=True)
+
+    plt.tight_layout()
+    _ensure_dir(out_dir)
+    plot_path = os.path.abspath(os.path.join(out_dir, "mission_tracking_error_psd.png"))
+    plt.savefig(plot_path, dpi=600, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return plot_path
 
@@ -3123,6 +3507,8 @@ def _plot_disturbance_to_torque(
 def _plot_torque_psd_split(
     feedforward_torque: Dict[str, Dict[str, np.ndarray]],
     feedback_vibration: Dict[str, Dict[str, object]],
+    control_data: Dict[str, object],
+    config: MissionConfig,
     out_dir: str,
 ) -> Optional[str]:
     """Plot feedforward vs feedback torque PSDs in separate subplots."""
@@ -3138,49 +3524,108 @@ def _plot_torque_psd_split(
         "ytick.labelsize": 11,
     })
 
-    fig, (ax_ff, ax_fb) = plt.subplots(2, 1, figsize=(16, 12), sharex=True)
+    fig, (ax_ff, ax_fb) = plt.subplots(1, 2, figsize=(18, 6), sharex=True)
+    resonances_hz, antiresonances_hz = _detect_mode_lines_from_flexible_plant(control_data, config, fmax_hz=10.0)
+
+    def _build_psd_entry(
+        time: np.ndarray,
+        torque: np.ndarray,
+        label: str,
+        linestyle: str,
+        color: str,
+    ) -> Optional[Dict[str, object]]:
+        if len(time) == 0 or len(torque) == 0:
+            return None
+        time, aligned = _align_series(time, torque)
+        torque = aligned[0]
+        if len(time) == 0:
+            return None
+        freq, psd = _compute_psd_high_resolution(time, torque)
+        if len(freq) == 0:
+            return None
+        mask = (freq > 0) & (freq <= 10.0) & np.isfinite(psd) & (psd > 0)
+        if not np.any(mask):
+            return None
+        freq = freq[mask]
+        psd_db = 10.0 * np.log10(psd[mask])
+        return {
+            "freq": freq,
+            "psd_db": psd_db,
+            "label": label,
+            "linestyle": linestyle,
+            "color": color,
+        }
 
     def _plot_psd_lines(ax, entries):
         for entry in entries:
             color = entry.get("color", "#555555")
-            ax.plot(
+            ax.semilogx(
                 entry["freq"],
                 entry["psd_db"],
                 color=color,
                 linestyle=entry["linestyle"],
                 linewidth=2.0,
-                alpha=0.9,
+                alpha=0.95,
                 label=entry["label"],
             )
 
+    def _set_psd_limits(ax, entries):
+        if not entries:
+            return
+        vals = np.concatenate([entry["psd_db"] for entry in entries if len(entry["psd_db"]) > 0])
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            return
+        lo = float(np.percentile(vals, 1))
+        hi = float(np.percentile(vals, 99))
+        if hi <= lo:
+            lo = float(np.min(vals))
+            hi = float(np.max(vals))
+        span = max(hi - lo, 10.0)
+        pad = max(3.0, 0.12 * span)
+        y_min = 5.0 * np.floor((lo - pad) / 5.0)
+        y_max = 5.0 * np.ceil((hi + pad) / 5.0)
+        ax.set_ylim(y_min, y_max)
+
     ff_entries = []
     for method in METHODS:
+        # Prefer FF torque from combined runs so FF/FB PSD comparison uses the same mission run.
+        combined_entry = None
+        for controller in CONTROLLERS:
+            key = f"{method}_{controller}"
+            data = feedback_vibration.get(key)
+            if not data:
+                continue
+            run_mode = str(data.get("run_mode", "")).lower()
+            if run_mode and run_mode != "combined":
+                continue
+            combined_entry = _build_psd_entry(
+                np.array(data.get("time", np.array([])), dtype=float),
+                np.array(data.get("torque_ff", np.array([])), dtype=float),
+                f"FF: {METHOD_LABELS.get(method, method)}",
+                "-",
+                METHOD_COLORS.get(method, "#555555"),
+            )
+            if combined_entry is not None:
+                break
+
+        if combined_entry is not None:
+            ff_entries.append(combined_entry)
+            continue
+
+        # Fallback for older data where combined FF torque is unavailable.
         data = feedforward_torque.get(method)
         if not data:
             continue
-        time = data.get("time", np.array([]))
-        torque = data.get("torque", np.array([]))
-        if len(time) == 0 or len(torque) == 0:
-            continue
-        time, aligned = _align_series(time, torque)
-        torque = aligned[0]
-        if len(time) == 0:
-            continue
-        freq, psd = _compute_psd(time, torque)
-        if len(freq) == 0:
-            continue
-        mask = (freq > 0) & (freq <= 10.0) & np.isfinite(psd) & (psd > 0)
-        if not np.any(mask):
-            continue
-        freq = freq[mask]
-        psd_db = 10.0 * np.log10(psd[mask])
-        ff_entries.append({
-            "freq": freq,
-            "psd_db": psd_db,
-            "label": f"FF: {METHOD_LABELS.get(method, method)}",
-            "linestyle": "-",
-            "color": METHOD_COLORS.get(method, "#555555"),
-        })
+        fallback_entry = _build_psd_entry(
+            np.array(data.get("time", np.array([])), dtype=float),
+            np.array(data.get("torque", np.array([])), dtype=float),
+            f"FF: {METHOD_LABELS.get(method, method)}",
+            "-",
+            METHOD_COLORS.get(method, "#555555"),
+        )
+        if fallback_entry is not None:
+            ff_entries.append(fallback_entry)
 
     fb_entries = []
     for method in METHODS:
@@ -3192,29 +3637,15 @@ def _plot_torque_psd_split(
             run_mode = str(data.get("run_mode", "")).lower()
             if run_mode and run_mode != "combined":
                 continue
-            time = data.get("time", np.array([]))
-            torque = data.get("torque", np.array([]))
-            if len(time) == 0 or len(torque) == 0:
-                continue
-            time, aligned = _align_series(time, torque)
-            torque = aligned[0]
-            if len(time) == 0:
-                continue
-            freq, psd = _compute_psd(time, torque)
-            if len(freq) == 0:
-                continue
-            mask = (freq > 0) & (freq <= 10.0) & np.isfinite(psd) & (psd > 0)
-            if not np.any(mask):
-                continue
-            freq = freq[mask]
-            psd_db = 10.0 * np.log10(psd[mask])
-            fb_entries.append({
-                "freq": freq,
-                "psd_db": psd_db,
-                "label": _combo_label(method, controller),
-                "linestyle": "-",
-                "color": _combo_color(method, controller),
-            })
+            fb_entry = _build_psd_entry(
+                np.array(data.get("time", np.array([])), dtype=float),
+                np.array(data.get("torque", np.array([])), dtype=float),
+                _combo_label(method, controller),
+                "-",
+                _combo_color(method, controller),
+            )
+            if fb_entry is not None:
+                fb_entries.append(fb_entry)
 
     if not ff_entries and not fb_entries:
         plt.close(fig)
@@ -3222,25 +3653,36 @@ def _plot_torque_psd_split(
 
     if ff_entries:
         _plot_psd_lines(ax_ff, ff_entries)
+        _draw_mode_lines_on_axis(ax_ff, resonances_hz, antiresonances_hz)
         ax_ff.set_title("Feedforward Torque Command PSD", fontweight="bold")
+        ax_ff.set_xlabel("Frequency (Hz)")
         ax_ff.set_ylabel(r"PSD (dB re N$^2$m$^2$/Hz)")
+        _set_psd_limits(ax_ff, ff_entries)
         ax_ff.grid(True, alpha=0.6, which="major", linestyle="-", linewidth=0.8, color="gray")
         ax_ff.grid(True, alpha=0.3, which="minor", linestyle="-", linewidth=0.4, color="lightgray")
-        ax_ff.legend(loc="upper right", framealpha=0.95, fontsize=10, fancybox=True, shadow=True)
+        ax_ff.legend(loc="best", framealpha=0.95, fontsize=10, fancybox=True, shadow=True)
 
     if fb_entries:
         _plot_psd_lines(ax_fb, fb_entries)
+        _draw_mode_lines_on_axis(ax_fb, resonances_hz, antiresonances_hz)
         ax_fb.set_title("Feedback Torque Command PSD", fontweight="bold")
         ax_fb.set_xlabel("Frequency (Hz)")
         ax_fb.set_ylabel(r"PSD (dB re N$^2$m$^2$/Hz)")
+        _set_psd_limits(ax_fb, fb_entries)
         ax_fb.grid(True, alpha=0.6, which="major", linestyle="-", linewidth=0.8, color="gray")
         ax_fb.grid(True, alpha=0.3, which="minor", linestyle="-", linewidth=0.4, color="lightgray")
-        ax_fb.legend(loc="upper right", framealpha=0.95, fontsize=10, fancybox=True, shadow=True, ncol=1)
+        ax_fb.legend(loc="best", framealpha=0.95, fontsize=10, fancybox=True, shadow=True, ncol=1)
+
+    # Keep low-frequency content readable while retaining mission band up to 10 Hz.
+    for ax in (ax_ff, ax_fb):
+        ax.set_xlim(2e-2, 10.0)
+        ax.xaxis.set_major_locator(LogLocator(base=10, numticks=12))
+        ax.xaxis.set_minor_locator(LogLocator(base=10, subs=np.arange(2, 10) * 0.1, numticks=120))
 
     plt.tight_layout()
     _ensure_dir(out_dir)
     plot_path = os.path.abspath(os.path.join(out_dir, "mission_torque_psd_split.png"))
-    plt.savefig(plot_path, dpi=400, bbox_inches="tight", facecolor="white")
+    plt.savefig(plot_path, dpi=500, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return plot_path
 
@@ -4142,6 +4584,7 @@ def run_mission_simulation(
         vibration_plot = _plot_vibration_comparison(
             feedforward_vibration, feedback_vibration, config, plots_dir
         )
+        modal_acc_psd_plot = _plot_modal_acceleration_psd(feedback_vibration, config, plots_dir)
         sensitivity_plot = _plot_sensitivity_functions(ctrl_data, config, plots_dir)
         modal_plot = _plot_modal_excitation(ctrl_data, config, plots_dir)
         pointing_plot = _plot_pointing_error(pointing_data, plots_dir, config=config)
@@ -4151,16 +4594,18 @@ def run_mission_simulation(
         noise_torque_plot = _plot_noise_to_torque(ctrl_data, plots_dir)
         noise_pointing_plot = _plot_noise_to_pointing(ctrl_data, config, plots_dir)
         tracking_plot = _plot_tracking_response(pointing_data, config, plots_dir)
+        tracking_psd_plot = _plot_tracking_error_psd(pointing_data, ctrl_data, config, plots_dir)
         tracking_tf_plot = _plot_tracking_transfer(ctrl_data, plots_dir)
         disturbance_to_torque_plot = _plot_disturbance_to_torque(ctrl_data, plots_dir)
         loop_component_plots = _plot_loop_components(ctrl_data, config, plots_dir)
         torque_cmd_plot = _plot_torque_command_time(feedback_vibration, plots_dir)
-        torque_cmd_psd_plot = _plot_torque_command_psd(feedback_vibration, plots_dir)
-        torque_psd_split_plot = _plot_torque_psd_split(feedforward_torque, feedback_vibration, plots_dir)
+        torque_cmd_psd_plot = _plot_torque_command_psd(feedback_vibration, ctrl_data, config, plots_dir)
+        torque_psd_split_plot = _plot_torque_psd_split(feedforward_torque, feedback_vibration, ctrl_data, config, plots_dir)
         torque_psd_coherence_plot = _plot_torque_psd_coherence(feedforward_torque, feedback_vibration, plots_dir)
 
         for plot in [
             vibration_plot,
+            modal_acc_psd_plot,
             sensitivity_plot,
             modal_plot,
             pointing_plot,
@@ -4170,6 +4615,7 @@ def run_mission_simulation(
             noise_torque_plot,
             noise_pointing_plot,
             tracking_plot,
+            tracking_psd_plot,
             tracking_tf_plot,
             disturbance_to_torque_plot,
             torque_cmd_plot,
