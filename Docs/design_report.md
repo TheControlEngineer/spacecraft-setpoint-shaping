@@ -222,7 +222,7 @@ which brings us to our first real design decision 🤓.
 
 ### 3.2 Actuator Alignment 
 
-To figure out the best way to orient our reaction wheels, we first need to understand how the wheel geometry affects both the spacecraft’s control authority and the numerical behaviour of our allocation. And honestly, what better way to build that intuition than running a parameter sweep, right 😀?
+To figure out the best way to orient our reaction wheels, we first need to understand how the wheel geometry affects both the spacecraft’s control authority and the numerical behaviour of our allocation. And honestly, what better way to build that intuition than running a parameter sweep, right?
 
 Before we run the sweep, I’m going to explicitly align one wheel with the body Z axis. The main reason is simple; our big repositioning manoeuvre is about Z (yaw), so having one wheel dedicated to the Z axis gives us clean, direct authority on the exact axis we care about most. That leaves the orientation of the other two wheels as the real design choice.
 
@@ -1034,6 +1034,143 @@ So, slow gyro drift,bias (i.e low frequency rate noise) will get converted into 
 
 ## FeedForward Control Design
 
-In the previous sections, we established the limitations of our feedback controller. With those constraints in mind, this section focuses on designing a feedforward strategy through trajectory shaping. The primary goal is to avoid exciting resonant modes while making it easier for the feedback loop to track the commanded instanteneous trajectory.
+In the previous sections, we established the limitations of our feedback controller. With those constraints in mind, this section focuses on designing a feedforward strategy through trajectory shaping. The primary goal is to avoid exciting resonant modes (and anti resonance) while making it easier for the feedback loop to track the commanded instanteneous trajectory.
 
-We achieve this by deliberately shaping the reference trajectory so that its spectral content is small at, and especially beyond, the first resonant mode. Referring back to the complementary sensitivity function from the previous section, we observed that the feedback controller provides strong tracking performance up to about 0.2 Hz. Therefore, we design the reference trajectory to contain minimal spectral content above the feedback bandwidth.
+We achieve this by deliberately shaping the reference trajectory so that its spectral content is small at, and especially beyond, the first anti resonant mode. Referring back to the complementary sensitivity function from the previous section, we observed that the feedback controller provides strong tracking performance up to about 0.2 Hz. Therefore, we try to design the reference trajectory to contain minimal spectral content above the feedback bandwidth (also adhereing to our unrealistic slew requirement!).
+
+*Note :- For this project, the anti resonance does not significantly hurt our pointing stability, because energy at that frequency primarily goes into shaking the arrays while producing very limited hub (bus) oscillations. So our comet imaging should not be affected by it. However, we will still avoid exciting it, since in real life excessive array motion could lead to structural damage, and I will take that into account when shaping our reference trajectory.*
+
+Before we start with trajectory shaping, I want to briefly cover a bit of theory to help motivate my approach. Now that being said,lets consider a rectangular time domain [window function](https://en.wikipedia.org/wiki/Window_function) with a window length of 1 second. When we represent this window in the frequency domain, it becomes a [sinc function](https://en.wikipedia.org/wiki/Sinc_function), as shown below:
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <image src="image-10.png" width=500>
+</div>
+
+Now, if you look at the region highlighted by the two arrows, you can see spectral nulls or in other words, frequencies where the spectral magnitude (and therefore the power) is vanishingly close to zero. To make this observation more rigorous, lets derive this behavior mathematically:
+
+Consider a unit amplitude rectangular window of duration $`T`$, centered at $`t=0`$:
+
+```math
+\begin{aligned}
+w(t) &=
+\begin{cases}
+1, & |t|\le \tfrac{T}{2} \\
+0, & \text{otherwise}
+\end{cases}
+\end{aligned}
+```
+using the continuous time Fourier transform [(CTFT)](https://en.wikipedia.org/wiki/Fourier_transform) definition:
+
+```math
+\begin{aligned}
+W(\omega) &= \int_{-\infty}^{\infty} w(t)\,e^{-j\omega t}\,dt
+\end{aligned}
+```
+
+since $`w(t)`$ is only nonzero on $`\left[-\tfrac{T}{2},\,\tfrac{T}{2}\right]`$, we have:
+
+```math
+\begin{aligned}
+W(\omega) &= \int_{-T/2}^{T/2} e^{-j\omega t}\,dt
+\end{aligned}
+```
+
+evaluating the above integral, we get:
+
+```math
+\begin{aligned}
+W(\omega)
+&= \left[\frac{e^{-j\omega t}}{-j\omega}\right]_{-T/2}^{T/2} \\
+&= \frac{1}{-j\omega}\Big(e^{-j\omega T/2}-e^{+j\omega T/2}\Big)
+\end{aligned}
+```
+
+now we use the identity $`e^{-ja}-e^{ja}=-2j\sin(a)`$ to yeild:
+
+```math
+\begin{aligned}
+W(\omega)
+&= \frac{1}{-j\omega}\Big(-2j\sin(\omega T/2)\Big) \\
+&= \frac{2\sin(\omega T/2)}{\omega}
+\end{aligned}
+```
+
+now we rewrite it in a standard sinc form:
+
+```math
+\begin{aligned}
+W(\omega)
+&= T\,\frac{\sin(\omega T/2)}{\omega T/2}
+\end{aligned}
+```
+
+we define, $`\mathrm{sinc}(x)=\dfrac{\sin(x)}{x}`$. Then:
+
+```math
+\begin{aligned}
+W(\omega) &= T\,\mathrm{sinc}\!\left(\frac{\omega T}{2}\right)
+\end{aligned}
+```
+
+with this, we can write the magnitude spectrumas :
+
+```math
+\begin{aligned}
+|W(\omega)| &= T\left|\mathrm{sinc}\!\left(\frac{\omega T}{2}\right)\right|
+\end{aligned}
+```
+
+looking at this magnitude spectrum, we can see that our spectral nulls lie where the numerator are zero! so we equate it to zero, and yeild:
+
+```math
+\begin{aligned}
+\sin(\omega T/2) &= 0
+\end{aligned}
+```
+and this happens when:
+
+```math
+\begin{aligned}
+\frac{\omega T}{2} &= k\pi,\quad k=\pm 1,\pm 2,\pm 3,\ldots
+\end{aligned}
+```
+
+so our null locations in rad/s are:
+
+```math
+\begin{aligned}
+\omega_k &= \frac{2\pi k}{T}
+\end{aligned}
+```
+
+converting it to Hz using $`\omega = 2\pi f`$:
+
+```math
+\begin{aligned}
+2\pi f_k &= \frac{2\pi k}{T} \\
+f_k &= \frac{k}{T}
+\end{aligned}
+```
+
+so for our plot where the window length $`T=1`$, we have:
+
+```math
+\begin{aligned}
+f_k &= k\ \text{Hz},\quad k=\pm 1,\pm 2,\pm 3,\ldots
+\end{aligned}
+```
+
+So the first few spectral nulls occur at 1 Hz, 2 Hz, 3 Hz,... and so on.
+
+Notice what happened here? the spectral nulls occured at frequency $`\frac{1}{T}`$ (where $`T`$ is our window length), and its [Harmonics](https://en.wikipedia.org/wiki/Harmonic)!
+
+To illustrate where I’m going with this, let’s consider a superimposed sinusoidal signal composed of the frequencies $`1 \mathrm{Hz},2.5\ \mathrm{Hz}, 5 \mathrm{Hz}, and 10\mathrm{Hz}`$. We then convolve this signal with our rectangular window (the one plotted above), and observe the output shown below:
+
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <image src="image-11.png" width=500>
+</div>
+
+From these figures, we can quickly see that after convolution the PSD shows vanishingly small power at frequencies other than $`2.5\ \mathrm{Hz}`$. This is exactly what we expect for a rectangular window of length $`1\ \mathrm{s}`$, the spectral nulls occur at integer multiples of $`1\ \mathrm{Hz}`$. If we also want to null $`2.5\ \mathrm{Hz}`$, we can simply increase the window length to $`2\ \mathrm{s}`$, which places nulls every $`0.5\ \mathrm{Hz}`$.
+
+This observation forms the basis of our setpoint shaping approach. We avoid exciting the solar-array resonance by convolving the reference signal with carefully designed window functions that place spectral nulls at frequencies that are critical to us. Pretty cool fourier transform trick, right?
