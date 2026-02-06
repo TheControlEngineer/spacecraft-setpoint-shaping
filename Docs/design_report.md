@@ -1032,7 +1032,7 @@ So, slow gyro drift,bias (i.e low frequency rate noise) will get converted into 
 
 *Note :- We can reduce the effects of low frequency gyro measurement artifacts by reducing the derivative gain (or second order low passing the derivative term). However, by doing so we reduce damping of resonant modes and increase the closed loop settling time. So it’s a real design trade off, at least in my opinion.*
 
-## FeedForward Control Design
+## 7 FeedForward Control Design
 
 In the previous sections, we established the limitations of our feedback controller. With those constraints in mind, this section focuses on designing a feedforward strategy through trajectory shaping. The primary goal is to avoid exciting resonant modes (and anti resonance) while making it easier for the feedback loop to track the commanded instanteneous trajectory.
 
@@ -1173,4 +1173,195 @@ To illustrate where I’m going with this, let’s consider a superimposed sinus
 
 From these figures, we can quickly see that after convolution the PSD shows vanishingly small power at frequencies other than $`2.5\ \mathrm{Hz}`$. This is exactly what we expect for a rectangular window of length $`1\ \mathrm{s}`$, the spectral nulls occur at integer multiples of $`1\ \mathrm{Hz}`$. If we also want to null $`2.5\ \mathrm{Hz}`$, we can simply increase the window length to $`2\ \mathrm{s}`$, which places nulls every $`0.5\ \mathrm{Hz}`$.
 
-This observation forms the basis of our setpoint shaping approach. We avoid exciting the solar-array resonance by convolving the reference signal with carefully designed window functions that place spectral nulls at frequencies that are critical to us. Pretty cool fourier transform trick, right?
+This observation forms the basis of our setpoint shaping approach. We avoid exciting our solar array resonance (and anti resonance) by convolving the reference signal with  window functions that place spectral nulls at frequencies that are critical to us. Pretty cool fourier transform trick, right?
+
+Our torque feedforward can be computed as:
+
+```math
+\begin{aligned}
+\tau_{ff} = I_{eff,zz} \alpha(t)
+\end{aligned}
+```
+where $`\tau_{ff}`$ is the feedforward torque, $`I_{eff,zz}`$ is the effective inertial along the Z axis, and $`\alpha(t)`$ is our acceleration profile which we will be shaping!
+
+We begin by convolving the base acceleration pulse:
+
+```math
+\begin{aligned}
+\alpha_0(t) = A \cdot \text{rect}\left(\frac{t - T_b/2}{T_b}\right)
+\end{aligned}
+```
+
+with a rectangular window of duration $`T_1 = 1/f_1 = 2.5 s`$ this would place the spectral nulls at our first resonant mode($`0.4 Hz`$) and its harmonics.
+
+
+
+ So our convolved acceleration profile can be written as:
+
+ ```math
+\begin{aligned}
+\alpha_1(t) = \alpha_0(t) * w_{T_1}(t)
+\end{aligned}
+```
+
+where the window is:
+
+```math
+\begin{aligned}
+w_{T_1}(t) = \frac{1}{T_1} \cdot \text{rect}\left(\frac{t - T_1/2}{T_1}\right)
+\end{aligned}
+```
+
+*Note :- convolution with a rectangular window is equivalent to a moving average. The sharp step edges of the base pulse get smoothed out into linear ramps (we are limiting the jerk!). The result is a trapezoidal acceleration profile*.
+
+So the first convolution gave us a [jerk](https://en.wikipedia.org/wiki/Jerk_(physics)) limited profile, thus smoothing out the discontinous initial acceleration base pulse. Subsequently, we will proceed with the second convolution to [snap](https://en.wikipedia.org/wiki/Fourth,_fifth,_and_sixth_derivatives_of_position) limit our acceleration profile (and we place the spectral nulls at the second resonant mode). The convolution with a second rectangular window of duration $`T_2 = 1/f_2 = 0.769s`$ yeilds:
+
+
+```math
+\begin{aligned}
+\alpha_2(t) = \alpha_1(t) * w_{T_2}(t)
+\end{aligned}
+```
+
+For a rest to rest manoeuvre (starting and ending at zero velocity), we need to decelerate after accelerating. Hence the full profile is created by mirroring and negating:
+
+```math
+\begin{aligned}
+\alpha(t) = \begin{cases}
+\alpha_2(t) & 0 \le t < T_{half} \\
+0 & t = T_{half} \\
+-\alpha_2(T_{total} - t) & T_{half} < t \le T_{total}
+\end{cases}
+\end{aligned}
+```
+
+
+Once we have $`\alpha(t)`$, we integrate to get velocity and position:
+
+```math
+\begin{aligned}
+\omega(t) = \int_0^t \alpha(\tau) \, d\tau
+\end{aligned}
+```
+
+```math
+\begin{aligned}
+\theta(t) = \int_0^t \omega(\tau) \, d\tau
+\end{aligned}
+```
+
+In discrete time:
+
+```math
+\begin{aligned}
+\omega[k] = \sum_{i=0}^{k} \alpha[i] \cdot \Delta t
+\end{aligned}
+```
+
+```math
+\begin{aligned}
+\theta[k] = \sum_{i=0}^{k} \omega[i] \cdot \Delta t
+\end{aligned}
+```
+
+*Note :- These two are our instantenous reference trajectory that our feedback tried to follow. In our codes, this theta is converted into MRP vector (as our feedback law uses MRP error)*
+
+
+
+The raw trajectory won't hit our target angle $`\theta_{final}`$ exactly. So, we compute a scale factor:
+
+```math
+\begin{aligned}
+\text{scale} = \frac{\theta_{final}}{\theta_{raw}(T_{total})}
+\end{aligned}
+```
+
+Then we scale all profiles:
+
+```math
+\begin{aligned}
+\theta(t) &\leftarrow \text{scale} \cdot \theta(t) \\
+\omega(t) &\leftarrow \text{scale} \cdot \omega(t) \\
+\alpha(t) &\leftarrow \text{scale} \cdot \alpha(t)
+\end{aligned}
+```
+
+ Scaling preserves the spectral zero locations! multiplying by a constant in time domain just multiplies the fourier transform by the same constant, it doesn't shift where the zeros are.
+
+
+Finally, the feedforward torque is simply Newton's second law for rotation:
+
+```math
+\begin{aligned}
+\tau_{FF}(t) = I_{eff,zz} \cdot \alpha(t)
+\end{aligned}
+```
+*Note :- fourth order setpoint shaping is not a cheat code! the convolution process spreads the acceleration profile over a longer time window, which means we face a fundamental tradeoff:*
+
+```math
+\begin{aligned}
+\theta = \int_0 ^T \int_0 ^ t \alpha(\tau) d\tau dt 
+\end{aligned}
+```
+
+*for a fixed rotation angle $`\theta`$, the double integral of acceleration is constrained. Thus,smoothing the profile (via convolution) reduces the peak acceleration but extends the duration. Hence the penality is:*
+
+- *If we constrain the move time, we pay with higher peak torque*
+- *If we constrain the peak torque, we pay with longer move time*
+
+*In our design, the shaping adds approximately 3.3 seconds of overhead per half manoeuvre. So sor a 30 second slew, that's about 11% of the budget spent on smoothness rather than slewing!*
+
+Now with that being said, we look at a comparion plot between a bang bang acceleration profile, and our fourth order shaped profile, used for the same $`180^\circ`$ slew manoeuvre:
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <image src="image-12.png" width=500>
+</div>
+
+From this plot, we can see that the fourth order shaped profile has much less spectral power above 0.4 Hz than the bang bang acceleration profile. In practice, this means the shaped reference trajectory contains much less energy in that range, so it is much less likely to excite the solar array’s flexible dynamics during the slew manoeuvre.
+
+*Note :- In real applications, achieving zero solar array vibration is essentially impossible. Unmodelled actuator dynamics, parameter uncertainty, and other disturbances can still inject energy into lightly damped resonant modes, so some level of residual vibration during (and after) the manoeuvre should be expected.*
+
+With the trajectory now shaped, we can visualise the reference position, velocity, acceleration, jerk, and snap as shown below:
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="image-13.png" width="500">
+</div>
+
+From these plots, we can see that the instantaneous reference signals tracked by the feedback controller are significantly smoother. However, discontinuities still appear in the snap profile, which implies an infinite crackle (the sixth derivative of position). See: [Fourth, fifth, and sixth derivatives of position](https://en.wikipedia.org/wiki/Fourth,_fifth,_and_sixth_derivatives_of_position).
+
+*Note: This snap discontinuity is of little practical consequence for our application. Attempting to limit crackle by applying an additional convolution would typically introduce a tradeoff either a longer manoeuvre time or a higher peak torque while providing negligible performance improvement in our specific scenario.*
+
+Well, now that we have shaped our trajectory and designed the feedforward, the total torque that is commanded by our controller will be:
+
+
+
+```math
+\begin{aligned}
+\tau_{total} = \tau_{fb} + \tau_{ff} 
+\end{aligned}
+```
+With this, we can represent our control system schematics as below:
+
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="image-14.png" >
+</div>
+
+## 8 Verification and Validation
+
+In the earlier sections, we mainly focused on building the plant model, linearizing it around our assumptions, designing the control system, and tuning the gains. Now we’re going to shift to verification and validation of our design. Basically, making sure the design performs the way we expect and that our assumptions still hold in simulation! We’ll break this section into three parts:
+
+- Mission run (verification against requirements): We will run the repositioning mission (a 180° slew in 30 s) and check whether all requirements are met. We will also monitor the feedback error to see if it grows large enough to invalidate the linearization and feedback control assumptions. From there, we will look at whether the feedforward and feedback torque commands contain significant energy near the resonant and anti resonant modes, and we will examine modal displacement and acceleration. Finally, we will compare all results against a baseline case: the same mission executed with bang bang feedforward.
+
+- Parameter sweep (sensitivity testing): Next, we will run a parameter sweep (one parameter at a tme) to identify the conditions under which the mission requirements start to break down. This includes sweeps over inertia variation, damping variation, resonant frequency variations, disturbance levels, and noise levels.
+
+- Monte Carlo (robustness assessment): Lastly, we will run a Monte Carlo simulation with random parameter variations (±30% around the design values) to estimate how often the requirements are violated under uncertainty.
+
+### 8.1 Mission Run
+
+In this subsection we focus on simulating the repositiong mission and the comparitive analsis. To get a better idea on how this simulation is built, we observe the simulation archetecture below:
+
+ <div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="image-15.png" >
+</div>
+
