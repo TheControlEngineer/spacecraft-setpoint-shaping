@@ -1357,11 +1357,97 @@ In the earlier sections, we mainly focused on building the plant model, lineariz
 
 - Monte Carlo (robustness assessment): Lastly, we will run a Monte Carlo simulation with random parameter variations (±30% around the design values) to estimate how often the requirements are violated under uncertainty.
 
+*Note :- for the verification and validation, we will be using the nonlinear basilisk model*
+
 ### 8.1 Mission Run
 
-In this subsection we focus on simulating the repositiong mission and the comparitive analsis. To get a better idea on how this simulation is built, we observe the simulation archetecture below:
+In this subsection, we simulate the repositioning mission and walk through a comparative analysis of the results. To make it easier to understand how the simulation is put together, here’s the simulation architecture we are using:
 
- <div style="display: flex; justify-content: center; gap: 10px;">
-  <img src="image-15.png" >
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="image-15.png" width="500">
 </div>
+
+Now that the simulation architecture is defined, we can evaluate its results with a bit more context.
+
+To kick off the analysis, let’s start with the modal displacement and modal acceleration responses, shown below:
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="mission_vibration.png" width="500">
+</div>
+
+If you look at the modal displacement and acceleration plots, you will notice the difference is pretty clear. The 4th order shaped feedforward + PD feedback brings the RMS displacement down from $`2.382\ \mathrm{mm}`$ to $`0.438\ \mathrm{mm}`$, which works out to an 81.61% reduction in displacement.
+
+The acceleration improvement is even more dramatic, where the RMS modal acceleration drops from $`27.209\ \mathrm{mm/s^2}`$ to $`1.566\ \mathrm{mm/s^2}`$, which is a 94.24% reduction.
+
+These two plots are great for getting the overall picture, but our main priority is the vibration after the slew is complete, i.e. the residual vibration, since that falls directly inside the mission’s imaging window. Thus, we need to figure out the frequency that contibutes the largest to these post slew ringdowns, or more precisely we need find out the lightly damped mode! and the best way to figure that out is to compute the power spectral density (PSD) and look at it in the plot below:
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="modal_acceleration_psd.png" width="500">
+</div>
+
+From this plot it is more or less obvious that the first mode carries more power in both cases. However, we still see a discrepancy in the ratio of power contents between the first and second mode, despite the PD control being identical!
+
+*Note :- post slew manoeuvre, feedback control dominates as the torque from the feedforward is zero*
+
+ To clarify, let $`P_1`$ be the first mode peak power and $`P_2`$ be the second mode peak power in the post slew modal acceleration PSD.
+
+From the computed post slew PSD peaks, we have:
+
+```math
+\begin{aligned}
+\text{Unshaped:}\quad &P_{1,u} \approx -33.07\ \mathrm{dB}, \quad P_{2,u} \approx -42.87\ \mathrm{dB} \\
+\text{Fourth order:}\quad &P_{1,4} \approx -57.95\ \mathrm{dB}, \quad P_{2,4} \approx -85.68\ \mathrm{dB}
+\end{aligned}
+```
+
+Now converting dB differences to linear power ratios:
+
+```math
+\begin{aligned}
+\frac{P_{1,u}}{P_{2,u}} &= 10^{\frac{P_{1,u,\mathrm{dB}} - P_{2,u,\mathrm{dB}}}{10}}
+= 10^{\frac{-33.07 - (-42.87)}{10}}
+= 10^{0.98}
+\approx 9.55
+\end{aligned}
+```
+
+```math
+\begin{aligned}
+\frac{P_{1,4}}{P_{2,4}} &= 10^{\frac{P_{1,4,\mathrm{dB}} - P_{2,4,\mathrm{dB}}}{10}}
+= 10^{\frac{-57.95 - (-85.68)}{10}}
+= 10^{2.773}
+\approx 593.67
+\end{aligned}
+```
+
+Equivalently, if we compare second mode power relative to first mode power:
+
+```math
+\begin{aligned}
+\left(\frac{P_2}{P_1}\right)_u \approx 0.1047,\qquad
+\left(\frac{P_2}{P_1}\right)_4 \approx 0.001684
+\end{aligned}
+```
+
+so the relative second mode content is reduced by:
+
+```math
+\begin{aligned}
+\frac{(P_2/P_1)_u}{(P_2/P_1)_4}
+\approx \frac{0.1047}{0.001684}
+\approx 62.16\times
+\end{aligned}
+```
+
+This is the key point, feedback alone can’t suppress the modes this much when they are essentially the same.  
+
+So why does the second mode show noticeably lower power than the first when we use the 4th order setpoint shaping? It’s because the feedforward command simply doesn’t inject as much energy into that mode in the first place.
+
+That’s very different from the bang bang (unshaped)profile, which tends to excite the flexible modes much more broadly, almost like it’s spreading energy across them more uniformly.
+
+So the standout feature of our control approach isn’t that the PD feedback is doing some magical level of active damping. The real win is that setpoint shaping reduces how much we excite the resonant modes to begin with, which makes the vibrations smaller from the start and easier to manage overall.
+
+And yes, if we are giving credit where it’s due, kudos to setpoint shaping. 🙂
+
+Now that we have established the imporvements in our residual vibrations, we see how (if) they translate to an improvement in pointing error, from the pointing error plot shown below:
 
