@@ -332,6 +332,98 @@ def main() -> None:
     ax_u.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
 
+    # Rectangular window in time and its frequency magnitude (sinc)
+    duration = 1.0
+    t_max = 5.0
+    dt = 0.001
+    t = np.arange(0.0, t_max + dt, dt)
+    rect = (t <= duration).astype(float)
+    freq = np.fft.rfftfreq(t.size, d=dt)
+    rect_fft = np.fft.rfft(rect)
+    rect_mag = np.abs(rect_fft)
+    rect_mag /= np.max(rect_mag) if np.max(rect_mag) > 0 else 1.0
+
+    fig7, (ax_wt, ax_wf) = plt.subplots(2, 1, figsize=(8, 5.5), sharex=False)
+    ax_wt.plot(t, rect, color="#1f77b4")
+    ax_wt.set_title("Rectangular Window (Time Domain)")
+    ax_wt.set_xlabel("Time (s)")
+    ax_wt.set_ylabel("Amplitude")
+    ax_wt.grid(True, alpha=0.3)
+
+    ax_wf.plot(freq, rect_mag, color="#ff7f0e")
+    ax_wf.set_title("Magnitude Spectrum (Sinc)")
+    ax_wf.set_xlabel("Frequency (Hz)")
+    ax_wf.set_ylabel("Normalized magnitude")
+    ax_wf.set_xlim([0.0, 20.0])
+    ax_wf.grid(True, alpha=0.3)
+    for f0 in (1.0, 2.0):
+        if f0 <= freq[-1]:
+            idx = int(np.argmin(np.abs(freq - f0)))
+            ax_wf.annotate(
+                "",
+                xy=(freq[idx], rect_mag[idx]),
+                xytext=(freq[idx], 0.35),
+                arrowprops=dict(arrowstyle="->", color="#111111", lw=1.2),
+            )
+    plt.tight_layout()
+
+    # Multi-tone signal, moving-average (rect window), and PSD before/after
+    fs = 200.0
+    duration_sig = 10.0
+    t_sig = np.arange(0.0, duration_sig, 1.0 / fs)
+    freqs_sig = [1.0, 2.5, 5.0, 10.0]
+    x = sum(np.sin(2.0 * np.pi * f * t_sig) for f in freqs_sig)
+
+    n_w = int(round(duration * fs))
+    rect_win = np.ones(n_w, dtype=float) / n_w
+    y_full = np.convolve(x, rect_win, mode="full")
+    delay = (n_w - 1) // 2
+    y = y_full[delay : delay + t_sig.size]
+
+    trim = n_w
+    x_ss = x[trim:-trim]
+    y_ss = y[trim:-trim]
+    t_ss = t_sig[trim:-trim]
+
+    f_psd = np.fft.rfftfreq(x_ss.size, d=1.0 / fs)
+    X = np.fft.rfft(x_ss)
+    Y = np.fft.rfft(y_ss)
+    psd_x = (np.abs(X) ** 2) / x_ss.size
+    psd_y = (np.abs(Y) ** 2) / y_ss.size
+
+    fig8, axes = plt.subplots(2, 2, figsize=(10, 6.5))
+    ax1, ax2, ax3, ax4 = axes.flatten()
+
+    ax1.plot(t_ss, x_ss, color="#1f77b4")
+    ax1.set_title("Multi-tone signal (time)")
+    ax1.set_xlabel("Time (s)")
+    ax1.set_ylabel("Amplitude")
+    ax1.set_xlim([t_ss[0], t_ss[0] + 5.0])
+    ax1.grid(True, alpha=0.3)
+
+    ax2.plot(t_ss, y_ss, color="#ff7f0e")
+    ax2.set_title("Convolved with rectangular window")
+    ax2.set_xlabel("Time (s)")
+    ax2.set_ylabel("Amplitude")
+    ax2.set_xlim([t_ss[0], t_ss[0] + 5.0])
+    ax2.grid(True, alpha=0.3)
+
+    ax3.semilogy(f_psd, psd_x, color="#1f77b4")
+    ax3.set_title("PSD before window")
+    ax3.set_xlabel("Frequency (Hz)")
+    ax3.set_ylabel("Power")
+    ax3.set_xlim([0.0, 20.0])
+    ax3.grid(True, alpha=0.3, which="both")
+
+    ax4.semilogy(f_psd, psd_y, color="#ff7f0e")
+    ax4.set_title("PSD after window convolution")
+    ax4.set_xlabel("Frequency (Hz)")
+    ax4.set_ylabel("Power")
+    ax4.set_xlim([0.0, 20.0])
+    ax4.grid(True, alpha=0.3, which="both")
+
+    plt.tight_layout()
+
     plt.show()
 
 
