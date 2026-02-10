@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-methods = ["unshaped", "fourth"]
+methods = ["s_curve", "fourth"]
 controllers = ["standard_pd", "filtered_pd"]
 run_modes = ["combined", "fb_only", "ff_only"]
 

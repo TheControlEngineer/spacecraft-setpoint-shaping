@@ -46,6 +46,10 @@ for path in (_src_dir, _scripts_dir):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+# Backward-compatible string aliases used throughout this script.
+analysis_dir = str(_analysis_dir)
+basilisk_dir = str(_basilisk_dir)
+
 # Import run_mission (formerly mission_simulation) for plan-compliant analysis
 import run_mission as ms
 
@@ -62,7 +66,7 @@ from basilisk_sim.spacecraft_properties import (
 # Configuration and Constants
 # ============================================================================
 
-METHODS = ["unshaped", "fourth"]
+METHODS = ["s_curve", "fourth"]
 CONTROLLERS = ["standard_pd", "filtered_pd"]
 UNIFIED_SAMPLE_DT = 0.01  # 100 Hz to match Basilisk simulation
 
@@ -309,12 +313,13 @@ def _run_vizard_demo_batch(
     timeout_s: Optional[float] = 600.0,
 ) -> None:
     """Run vizard_demo for all method/controller combos with config overrides."""
-    _ensure_dir(output_dir)
-    cfg_path = os.path.join(output_dir, "temp_config.json")
+    output_dir_abs = os.path.abspath(output_dir)
+    _ensure_dir(output_dir_abs)
+    cfg_path = os.path.join(output_dir_abs, "temp_config.json")
     with open(cfg_path, "w", encoding="utf-8") as f:
         json.dump(overrides, f)
 
-    script_path = os.path.join(basilisk_dir, "scripts", "run_vizard_demo.py")
+    script_path = os.path.abspath(os.path.join(basilisk_dir, "scripts", "run_vizard_demo.py"))
     for method in METHODS:
         for controller in CONTROLLERS:
             cmd = [
@@ -328,11 +333,11 @@ def _run_vizard_demo_batch(
                 "--config",
                 cfg_path,
                 "--output-dir",
-                output_dir,
+                output_dir_abs,
             ]
             subprocess.run(
                 cmd,
-                cwd=output_dir,
+                cwd=output_dir_abs,
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -572,17 +577,25 @@ class PlanCompliantRunner:
             if gains:
                 details["analysis_K"] = gains.get("K")
                 details["analysis_P"] = gains.get("P")
-                details["analysis_filter_cutoff"] = gains.get("filter_cutoff")
+                analysis_cutoff = gains.get("filter_cutoff")
+                details["analysis_filter_cutoff"] = analysis_cutoff
                 if abs(float(gains.get("K", k_std)) - k_std) > 1e-6:
                     issues.append("control_analysis K differs from design")
                 if abs(float(gains.get("P", p_std)) - p_std) > 1e-6:
                     issues.append("control_analysis P differs from design")
-                if abs(float(gains.get("filter_cutoff", filter_cutoff)) - filter_cutoff) > 1e-6:
-                    issues.append("control_analysis cutoff differs from config")
+                if analysis_cutoff is not None:
+                    if abs(float(analysis_cutoff) - filter_cutoff) > 1e-6:
+                        issues.append("control_analysis cutoff differs from config")
 
+            margins = ctrl_data.get("margins", {})
             for name in CONTROLLERS:
-                details[f"{name}_gain_margin_db"] = float(ctrl_data["margins"][name]["gain_margin_db"])
-                details[f"{name}_phase_margin_deg"] = float(ctrl_data["margins"][name]["phase_margin_deg"])
+                margin_data = margins.get(name)
+                if not margin_data:
+                    details[f"{name}_margin_available"] = False
+                    continue
+                details[f"{name}_margin_available"] = True
+                details[f"{name}_gain_margin_db"] = float(margin_data["gain_margin_db"])
+                details[f"{name}_phase_margin_deg"] = float(margin_data["phase_margin_deg"])
         except Exception as exc:
             issues.append(str(exc))
         passed = len(issues) == 0
@@ -660,7 +673,7 @@ class PlanCompliantRunner:
         details: Dict[str, Any] = {}
         issues: List[str] = []
         # Use mission_simulation PSD parameter chooser for consistency
-        sample_npz = os.path.join(self.data_dir, "vizard_demo_unshaped_standard_pd.npz")
+        sample_npz = os.path.join(self.data_dir, f"vizard_demo_{METHODS[0]}_{CONTROLLERS[0]}.npz")
         if not os.path.isfile(sample_npz):
             issues.append("missing sample NPZ for PSD check")
         else:
@@ -941,15 +954,18 @@ class PlanCompliantRunner:
                             val_db = float(10.0 * np.log10(psd[idx]))
                         metrics[f"{method}_{controller}_mode{mode_idx+1}_psd_db"] = val_db
 
+            baseline_methods = [m for m in METHODS if m != "fourth"]
             for controller in CONTROLLERS:
                 for mode_idx in range(len(self.config.modal_freqs_hz)):
-                    key_un = f"unshaped_{controller}_mode{mode_idx+1}_psd_db"
-                    key_ff = f"fourth_{controller}_mode{mode_idx+1}_psd_db"
-                    if key_un in metrics and key_ff in metrics:
-                        un_val = metrics[key_un]
-                        ff_val = metrics[key_ff]
-                        if np.isfinite(un_val) and np.isfinite(ff_val):
-                            metrics[f"{controller}_mode{mode_idx+1}_reduction_db"] = un_val - ff_val
+                    key_fourth = f"fourth_{controller}_mode{mode_idx+1}_psd_db"
+                    fourth_val = metrics.get(key_fourth, float("nan"))
+                    for baseline in baseline_methods:
+                        key_base = f"{baseline}_{controller}_mode{mode_idx+1}_psd_db"
+                        base_val = metrics.get(key_base, float("nan"))
+                        if np.isfinite(base_val) and np.isfinite(fourth_val):
+                            metrics[
+                                f"{baseline}_to_fourth_{controller}_mode{mode_idx+1}_reduction_db"
+                            ] = base_val - fourth_val
         passed = len(issues) == 0
         message = "PASS" if passed else "; ".join(issues)
         return ValidationResult("vibration_suppression", passed, message, metrics, [])
@@ -1073,6 +1089,20 @@ class PlanMonteCarloRunner:
         "rms_torque_nm",
         "torque_saturation_percent",
     ]
+    COMPARISON_METRICS = [
+        ("rms_pointing_error_deg", "RMS Pointing Error (deg)"),
+        ("peak_pointing_error_deg", "Peak Pointing Error (deg)"),
+        ("rms_vibration_mm", "RMS Vibration (mm)"),
+        ("peak_torque_nm", "Peak Torque (N*m)"),
+        ("rms_torque_nm", "RMS Torque (N*m)"),
+        ("rw_saturation_percent", "RW Saturation (%)"),
+    ]
+    COMBO_STYLES = {
+        "s_curve_standard_pd": ("S-curve + Standard PD", "#ff7f0e"),
+        "s_curve_filtered_pd": ("S-curve + Filtered PD", "#ffbb78"),
+        "fourth_standard_pd": ("Fourth-order + Standard PD", "#1f77b4"),
+        "fourth_filtered_pd": ("Fourth-order + Filtered PD", "#aec7e8"),
+    }
 
     def __init__(
         self,
@@ -1305,6 +1335,7 @@ class PlanMonteCarloRunner:
         summary = self._compute_summary(runs)
         self._save_results(summary, runs)
         self._plot_histograms(summary)
+        self._plot_comparison_boxes(runs)
         return summary
 
     def _compute_summary(self, runs: List[MonteCarloRun]) -> MonteCarloSummary:
@@ -1431,6 +1462,83 @@ class PlanMonteCarloRunner:
         plt.tight_layout()
         plot_path = os.path.join(self.out_dir, "monte_carlo_histograms.png")
         plt.savefig(plot_path, dpi=150)
+        plt.close()
+
+    def _plot_comparison_boxes(self, runs: List[MonteCarloRun]) -> None:
+        """Plot per-combination metric boxplots from Monte Carlo runs."""
+        if not runs:
+            return
+
+        combos = [f"{method}_{controller}" for method in METHODS for controller in CONTROLLERS]
+        fig, axes = plt.subplots(2, 3, figsize=(16, 9))
+        axes = np.atleast_1d(axes).flatten()
+
+        legend_handles: List[Any] = []
+        legend_labels: List[str] = []
+
+        for idx, (metric_key, metric_label) in enumerate(self.COMPARISON_METRICS):
+            ax = axes[idx]
+            data: List[np.ndarray] = []
+            labels: List[str] = []
+            colors: List[str] = []
+
+            for combo in combos:
+                col = f"{combo}_{metric_key}"
+                vals = np.array([run.metrics.get(col, np.nan) for run in runs], dtype=float)
+                vals = vals[np.isfinite(vals)]
+                if vals.size == 0:
+                    continue
+
+                style = self.COMBO_STYLES.get(combo, (combo.replace("_", " "), "#7f7f7f"))
+                combo_label, combo_color = style
+                data.append(vals)
+                labels.append(combo_label)
+                colors.append(combo_color)
+
+            if not data:
+                ax.set_title(f"{metric_label}\n(no data)")
+                ax.axis("off")
+                continue
+
+            bp = ax.boxplot(
+                data,
+                labels=[lbl.replace(" + ", "\n+ ") for lbl in labels],
+                patch_artist=True,
+                showfliers=True,
+            )
+            for patch, color in zip(bp["boxes"], colors):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.7)
+            for median in bp["medians"]:
+                median.set_color("black")
+
+            ax.set_title(metric_label, fontweight="bold")
+            ax.grid(True, alpha=0.3)
+
+            if not legend_handles:
+                for combo in combos:
+                    style = self.COMBO_STYLES.get(combo, (combo.replace("_", " "), "#7f7f7f"))
+                    combo_label, combo_color = style
+                    if combo_label not in labels:
+                        continue
+                    legend_handles.append(plt.Line2D([0], [0], color=combo_color, linewidth=6))
+                    legend_labels.append(combo_label)
+
+        for idx in range(len(self.COMPARISON_METRICS), len(axes)):
+            axes[idx].axis("off")
+
+        fig.suptitle(
+            "Monte Carlo Comparison Plots",
+            fontweight="bold",
+        )
+        if legend_handles:
+            fig.legend(legend_handles, legend_labels, loc="lower center", ncol=2, fontsize=9)
+            fig.tight_layout(rect=[0, 0.06, 1, 0.96])
+        else:
+            fig.tight_layout(rect=[0, 0.02, 1, 0.96])
+
+        plot_path = os.path.join(self.out_dir, "monte_carlo_comparisons_box.png")
+        plt.savefig(plot_path, dpi=160)
         plt.close()
 
 # ============================================================================
@@ -1630,10 +1738,9 @@ class VerificationSuite:
 
         # Check for NPZ files from simulation
         npz_patterns = [
-            "vizard_demo_fourth_standard_pd.npz",
-            "vizard_demo_fourth_filtered_pd.npz",
-            "vizard_demo_unshaped_standard_pd.npz",
-            "vizard_demo_unshaped_filtered_pd.npz",
+            f"vizard_demo_{method}_{controller}.npz"
+            for method in METHODS
+            for controller in CONTROLLERS
         ]
 
         for pattern in npz_patterns:
@@ -1951,7 +2058,11 @@ class ValidationSuite:
         issues = []
         plots = []
 
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        n_cases = len(METHODS) * len(CONTROLLERS)
+        ncols = 2
+        nrows = int(np.ceil(n_cases / ncols))
+        fig, axes = plt.subplots(nrows, ncols, figsize=(14, 4.0 * nrows + 2.0))
+        axes = np.atleast_1d(axes).flatten()
         fig.suptitle("Tracking Validation", fontsize=14, fontweight="bold")
 
         for method in METHODS:
@@ -2017,7 +2128,7 @@ class ValidationSuite:
 
                 # Plot
                 ax_idx = METHODS.index(method) * 2 + CONTROLLERS.index(controller)
-                ax = axes.flatten()[ax_idx]
+                ax = axes[ax_idx]
                 ax.plot(time, sigma_error, linewidth=1.5)
                 ax.axhline(y=0, color='k', linestyle='--', alpha=0.3)
                 ax.axvline(x=slew_duration, color='r', linestyle='--', alpha=0.5, label='Slew End')
@@ -2026,6 +2137,9 @@ class ValidationSuite:
                 ax.set_title(f"{method.capitalize()} + {controller.replace('_', ' ').title()}")
                 ax.grid(True, alpha=0.3)
                 ax.legend()
+
+        for ax in axes[n_cases:]:
+            ax.axis("off")
 
         plt.tight_layout()
         plot_path = os.path.join(self.out_dir, "validation_tracking.png")
@@ -2053,7 +2167,11 @@ class ValidationSuite:
         issues = []
         plots = []
 
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        n_cases = len(METHODS) * len(CONTROLLERS)
+        ncols = 2
+        nrows = int(np.ceil(n_cases / ncols))
+        fig, axes = plt.subplots(nrows, ncols, figsize=(14, 4.0 * nrows + 2.0))
+        axes = np.atleast_1d(axes).flatten()
         fig.suptitle("Vibration Suppression Validation", fontsize=14, fontweight="bold")
 
         for method in METHODS:
@@ -2087,10 +2205,9 @@ class ValidationSuite:
                 metrics[f"{key}_rms_vibration_mm"] = rms_vib
                 metrics[f"{key}_peak_vibration_mm"] = peak_vib
 
-                # Check that fourth-order reduces vibration vs unshaped
                 # Plot
                 ax_idx = METHODS.index(method) * 2 + CONTROLLERS.index(controller)
-                ax = axes.flatten()[ax_idx]
+                ax = axes[ax_idx]
                 ax.plot(time, total_vib, linewidth=1)
                 ax.axvline(x=slew_duration, color='r', linestyle='--', alpha=0.5, label='Slew End')
                 ax.set_xlabel("Time (s)")
@@ -2099,15 +2216,24 @@ class ValidationSuite:
                 ax.grid(True, alpha=0.3)
                 ax.legend()
 
-        # Compare unshaped vs fourth-order
+        for ax in axes[n_cases:]:
+            ax.axis("off")
+
+        # Compare baselines vs fourth-order
         for controller in CONTROLLERS:
-            unshaped_key = f"unshaped_{controller}_rms_vibration_mm"
             fourth_key = f"fourth_{controller}_rms_vibration_mm"
-            if unshaped_key in metrics and fourth_key in metrics:
-                reduction = (metrics[unshaped_key] - metrics[fourth_key]) / metrics[unshaped_key] * 100
-                metrics[f"{controller}_vibration_reduction_pct"] = reduction
-                if reduction < 50:
-                    issues.append(f"{controller}: Fourth-order only {reduction:.1f}% reduction (expected >50%)")
+            for baseline_method in [m for m in METHODS if m != "fourth"]:
+                baseline_key = f"{baseline_method}_{controller}_rms_vibration_mm"
+                baseline_val = metrics.get(baseline_key, float("nan"))
+                fourth_val = metrics.get(fourth_key, float("nan"))
+                if np.isfinite(baseline_val) and baseline_val > 0 and np.isfinite(fourth_val):
+                    reduction = (baseline_val - fourth_val) / baseline_val * 100
+                    metrics[f"{baseline_method}_to_fourth_{controller}_vibration_reduction_pct"] = reduction
+                    if reduction < 50:
+                        issues.append(
+                            f"{controller}: Fourth-order only {reduction:.1f}% reduction vs "
+                            f"{baseline_method} (expected >50%)"
+                        )
 
         plt.tight_layout()
         plot_path = os.path.join(self.out_dir, "validation_vibration.png")
@@ -2137,7 +2263,11 @@ class ValidationSuite:
 
         max_torque = self.config.rw_max_torque_nm
 
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        n_cases = len(METHODS) * len(CONTROLLERS)
+        ncols = 2
+        nrows = int(np.ceil(n_cases / ncols))
+        fig, axes = plt.subplots(nrows, ncols, figsize=(14, 4.0 * nrows + 2.0))
+        axes = np.atleast_1d(axes).flatten()
         fig.suptitle(f"Torque Command Validation (Limit: {max_torque} Nm)", fontsize=14, fontweight="bold")
 
         for method in METHODS:
@@ -2186,7 +2316,7 @@ class ValidationSuite:
 
                 # Plot
                 ax_idx = METHODS.index(method) * 2 + CONTROLLERS.index(controller)
-                ax = axes.flatten()[ax_idx]
+                ax = axes[ax_idx]
                 ax.plot(time, torque_mag, linewidth=1)
                 ax.axhline(y=max_torque, color='r', linestyle='--', alpha=0.5, label=f'Limit: {max_torque} Nm')
                 ax.set_xlabel("Time (s)")
@@ -2194,6 +2324,9 @@ class ValidationSuite:
                 ax.set_title(f"{method.capitalize()} + {controller.replace('_', ' ').title()}\nPeak: {peak_torque:.2f} Nm")
                 ax.grid(True, alpha=0.3)
                 ax.legend()
+
+        for ax in axes[n_cases:]:
+            ax.axis("off")
 
         plt.tight_layout()
         plot_path = os.path.join(self.out_dir, "validation_torque.png")
@@ -2718,23 +2851,22 @@ class MonteCarloRunner:
         target_angle = np.radians(config.slew_angle_deg)
         target_sigma = np.tan(target_angle / 4)  # Scalar for single-axis
 
-        # Simple feedforward profile (bang-bang)
-        t_half = config.slew_duration_s / 2
-        alpha_max = 4 * target_angle / config.slew_duration_s**2
+        # Simple feedforward profile (quintic S-curve, rest-to-rest)
+        T_slew = float(config.slew_duration_s)
 
         for i in range(1, n):
             ti = t[i]
 
             # Reference trajectory
-            if ti <= t_half:
-                theta_ref = 0.5 * alpha_max * ti**2
-                omega_ref = alpha_max * ti
-                alpha_ff = alpha_max
-            elif ti <= config.slew_duration_s:
-                t_dec = ti - t_half
-                theta_ref = 0.5 * alpha_max * t_half**2 + alpha_max * t_half * t_dec - 0.5 * alpha_max * t_dec**2
-                omega_ref = alpha_max * t_half - alpha_max * t_dec
-                alpha_ff = -alpha_max
+            if ti <= T_slew:
+                tau = ti / T_slew if T_slew > 0 else 1.0
+                tau2 = tau * tau
+                tau3 = tau2 * tau
+                tau4 = tau3 * tau
+                tau5 = tau4 * tau
+                theta_ref = target_angle * (10.0 * tau3 - 15.0 * tau4 + 6.0 * tau5)
+                omega_ref = (target_angle / T_slew) * (30.0 * tau2 - 60.0 * tau3 + 30.0 * tau4)
+                alpha_ff = (target_angle / (T_slew * T_slew)) * (60.0 * tau - 180.0 * tau2 + 120.0 * tau3)
             else:
                 theta_ref = target_angle
                 omega_ref = 0.0

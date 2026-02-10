@@ -124,6 +124,84 @@ def compute_smooth_trajectory(theta_final, duration, dt=DEFAULT_SAMPLE_DT, smoot
     return t, theta, omega, alpha
 
 
+def compute_trapezoidal_trajectory(theta_final, duration, dt=DEFAULT_SAMPLE_DT, accel_fraction=0.40):
+    """
+    Compute a symmetric trapezoidal-velocity trajectory.
+
+    Inputs:
+    - theta_final: target rotation angle [rad].
+    - duration: total maneuver duration [s].
+    - dt: sample time [s].
+    - accel_fraction: fraction of duration used for acceleration (and deceleration).
+      For fixed duration, values near 0.5 minimize peak acceleration.
+
+    Outputs:
+    - (t, theta, omega, alpha) arrays.
+    """
+    t = np.arange(0, duration + dt, dt)
+    n = len(t)
+
+    t_acc = float(np.clip(accel_fraction * duration, dt, 0.5 * duration))
+    t_const = max(duration - 2.0 * t_acc, 0.0)
+    denom = t_acc * (t_acc + t_const)
+    alpha_max = theta_final / denom if denom > 0 else 0.0
+
+    theta = np.zeros(n)
+    omega = np.zeros(n)
+    alpha = np.zeros(n)
+
+    omega_plateau = alpha_max * t_acc
+    theta_after_acc = 0.5 * alpha_max * t_acc**2
+    theta_after_const = theta_after_acc + omega_plateau * t_const
+
+    for i, ti in enumerate(t):
+        if ti <= t_acc:
+            alpha[i] = alpha_max
+            omega[i] = alpha_max * ti
+            theta[i] = 0.5 * alpha_max * ti**2
+        elif ti <= t_acc + t_const:
+            tau = ti - t_acc
+            alpha[i] = 0.0
+            omega[i] = omega_plateau
+            theta[i] = theta_after_acc + omega_plateau * tau
+        else:
+            tau = ti - (t_acc + t_const)
+            alpha[i] = -alpha_max
+            omega[i] = omega_plateau - alpha_max * tau
+            theta[i] = theta_after_const + omega_plateau * tau - 0.5 * alpha_max * tau**2
+
+    if abs(theta[-1]) > 1e-12:
+        scale = theta_final / theta[-1]
+        alpha *= scale
+        omega *= scale
+        theta *= scale
+
+    return t, theta, omega, alpha
+
+
+def compute_s_curve_trajectory(theta_final, duration, dt=DEFAULT_SAMPLE_DT):
+    """
+    Compute a minimum-jerk S-curve trajectory.
+
+    Inputs:
+    - theta_final: target rotation angle [rad].
+    - duration: total maneuver duration [s].
+    - dt: sample time [s].
+
+    Outputs:
+    - (t, theta, omega, alpha) arrays.
+    """
+    t = np.arange(0, duration + dt, dt)
+    if duration <= 0:
+        return t, np.zeros_like(t), np.zeros_like(t), np.zeros_like(t)
+
+    s = np.clip(t / duration, 0.0, 1.0)
+    theta = theta_final * (10 * s**3 - 15 * s**4 + 6 * s**5)
+    omega = (theta_final / duration) * (30 * s**2 - 60 * s**3 + 30 * s**4)
+    alpha = (theta_final / duration**2) * (60 * s - 180 * s**2 + 120 * s**3)
+    return t, theta, omega, alpha
+
+
 def compute_step_command_torque(theta_final, axis, inertia, duration, dt=DEFAULT_SAMPLE_DT, 
                                  trajectory_type='bang-bang'):
     """
@@ -135,15 +213,21 @@ def compute_step_command_torque(theta_final, axis, inertia, duration, dt=DEFAULT
     - inertia: inertia matrix (3x3).
     - duration: maneuver duration [s].
     - dt: sample time [s].
-    - trajectory_type: 'bang-bang' or 'smooth'.
+    - trajectory_type: 'bang-bang', 'trapezoidal', 'smooth', or 's_curve'.
 
     Outputs:
     - (t, torque, trajectory_dict) where torque is Nx3.
     """
-    if trajectory_type == 'bang-bang':
+    if trajectory_type in {'bang-bang', 'unshaped'}:
         t, theta, omega, alpha = compute_bang_bang_trajectory(theta_final, duration, dt)
-    else:
+    elif trajectory_type == 'trapezoidal':
+        t, theta, omega, alpha = compute_trapezoidal_trajectory(theta_final, duration, dt)
+    elif trajectory_type in {'s_curve', 's-curve'}:
+        t, theta, omega, alpha = compute_s_curve_trajectory(theta_final, duration, dt)
+    elif trajectory_type == 'smooth':
         t, theta, omega, alpha = compute_smooth_trajectory(theta_final, duration, dt)
+    else:
+        raise ValueError(f"Unknown trajectory_type: {trajectory_type}")
     
     # Body torque: tau = J * alpha * axis
     # For single-axis rotation about body axis
@@ -316,7 +400,7 @@ def create_feedforward_torque_profile(theta_final, rotation_axis, inertia,
     - maneuver_duration: base maneuver duration [s].
     - shaper_amplitudes/shaper_times: optional input shaper.
     - dt: sample time [s].
-    - trajectory_type: 'bang-bang' or 'smooth'.
+    - trajectory_type: 'bang-bang', 'trapezoidal', 'smooth', or 's_curve'.
     - max_torque: optional wheel torque limit [Nm].
 
     Outputs:
@@ -395,7 +479,7 @@ class FeedforwardController:
         - rotation_axis: unit rotation axis (3,).
         - duration: optional duration [s]; if None, auto-sized.
         - shaper_amplitudes/shaper_times: optional input shaper.
-        - trajectory_type: 'bang-bang' or 'smooth'.
+        - trajectory_type: 'bang-bang', 'trapezoidal', 'smooth', or 's_curve'.
         """
         # Compute minimum duration
         T_min = compute_minimum_duration(

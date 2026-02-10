@@ -2,10 +2,8 @@
 Run one-factor-at-a-time Monte Carlo sweeps and plot comparisons.
 
 Each figure varies ONE factor only (Monte Carlo sampling) and compares:
-  - Unshaped + Standard PD
-  - Unshaped + Filtered PD
+  - S-curve + Standard PD
   - Fourth-order + Standard PD
-  - Fourth-order + Filtered PD
 
 Outputs:
   - mc_sweep_inertia.png
@@ -18,6 +16,7 @@ Outputs:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import subprocess
@@ -44,17 +43,15 @@ from basilisk_sim.spacecraft_properties import HUB_INERTIA, compute_effective_in
 
 
 COMBOS = [
-    ("unshaped", "standard_pd", "Unshaped + Standard PD", "#d62728"),
-    ("unshaped", "filtered_pd", "Unshaped + Filtered PD", "#ff7f0e"),
+    ("s_curve", "standard_pd", "S-curve + Standard PD", "#ff7f0e"),
     ("fourth", "standard_pd", "Fourth-order + Standard PD", "#1f77b4"),
-    ("fourth", "filtered_pd", "Fourth-order + Filtered PD", "#9467bd"),
 ]
 
 METRICS = [
     ("rms_vibration_mm", "RMS Vibration (mm)"),
     ("rms_pointing_error_deg", "RMS Pointing Error (deg)"),
-    ("peak_torque_nm", "Peak Torque (N·m)"),
-    ("rms_torque_nm", "RMS Torque (N·m)"),
+    ("peak_torque_nm", "Peak Torque (N*m)"),
+    ("rms_torque_nm", "RMS Torque (N*m)"),
 ]
 
 FREQ_METRICS = [
@@ -115,12 +112,59 @@ def _sample_log_uniform(rng: np.random.Generator, vmin: float, vmax: float, n: i
     return np.exp(rng.uniform(np.log(vmin), np.log(vmax), size=n))
 
 
+def _sample_uniform_stratified(
+    rng: np.random.Generator,
+    vmin: float,
+    vmax: float,
+    n_samples: int,
+    n_bins: int,
+) -> np.ndarray:
+    """Sample uniformly while guaranteeing coverage across bins."""
+    n_samples = int(max(0, n_samples))
+    if n_samples == 0:
+        return np.array([])
+    n_bins = int(max(1, n_bins))
+    edges = np.linspace(float(vmin), float(vmax), n_bins + 1)
+    counts = np.full(n_bins, n_samples // n_bins, dtype=int)
+    counts[: n_samples % n_bins] += 1
+    parts = []
+    for i, count in enumerate(counts):
+        if count <= 0:
+            continue
+        parts.append(rng.uniform(edges[i], edges[i + 1], size=count))
+    values = np.concatenate(parts) if parts else np.array([])
+    rng.shuffle(values)
+    return values
+
+
+def _sample_log_uniform_stratified(
+    rng: np.random.Generator,
+    vmin: float,
+    vmax: float,
+    n_samples: int,
+    n_bins: int,
+) -> np.ndarray:
+    """Sample log-uniformly while guaranteeing log-space bin coverage."""
+    if vmin <= 0 or vmax <= 0:
+        raise ValueError("Log-uniform bounds must be positive")
+    log_vals = _sample_uniform_stratified(
+        rng,
+        np.log(float(vmin)),
+        np.log(float(vmax)),
+        n_samples,
+        n_bins,
+    )
+    return np.exp(log_vals)
+
+
 def _filter_cutoff(cfg: ms.MissionConfig) -> float:
     return float(cfg.control_filter_cutoff_hz) if cfg.control_filter_cutoff_hz is not None else 8.0
 
 
 def _run_vizard_demo_batch(overrides: Dict[str, object], output_dir: str) -> None:
-    cfg_path = os.path.join(output_dir, "sweep_config.json")
+    output_dir_abs = os.path.abspath(output_dir)
+    os.makedirs(output_dir_abs, exist_ok=True)
+    cfg_path = os.path.join(output_dir_abs, "sweep_config.json")
     with open(cfg_path, "w", encoding="utf-8") as f:
         json.dump(overrides, f)
 
@@ -139,9 +183,9 @@ def _run_vizard_demo_batch(overrides: Dict[str, object], output_dir: str) -> Non
             "--config",
             cfg_path,
             "--output-dir",
-            output_dir,
+            output_dir_abs,
         ]
-        subprocess.run(cmd, cwd=output_dir, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(cmd, cwd=output_dir_abs, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
 def _estimate_total_runtime(
@@ -248,7 +292,12 @@ def _collect_metrics(
         fb_data = feedback_data.get(fb_key)
         if fb_data:
             time = np.array(fb_data.get("time", []), dtype=float)
-            disp = np.array(fb_data.get("displacement", []), dtype=float)
+            # Use raw modal displacement when available to preserve sensitivity
+            # to parameter variations (filtering can flatten trends).
+            disp = np.array(
+                fb_data.get("displacement_modal_raw", fb_data.get("displacement", [])),
+                dtype=float,
+            )
             torque = fb_data.get("torque_total", fb_data.get("torque", np.array([])))
             torque = np.array(torque, dtype=float)
             time, aligned = ms._align_series(time, disp, torque)
@@ -392,6 +441,150 @@ def _write_raw_csv(
                 f.write(",".join(row) + "\n")
 
 
+def _read_raw_csv(
+    path: str,
+    metrics: List[Tuple[str, str]] | None = None,
+) -> Tuple[np.ndarray, Dict[str, Dict[str, List[float]]]]:
+    """Load one factor-sweep CSV and reconstruct values/results for plotting."""
+    metric_list = metrics or METRICS
+    metric_keys = [k for k, _ in metric_list]
+    combo_keys = [_combo_key(method, controller) for method, controller, _, _ in COMBOS]
+
+    values_by_idx: Dict[int, float] = {}
+    raw_by_combo: Dict[str, Dict[int, Dict[str, float]]] = {k: {} for k in combo_keys}
+
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            combo = row.get("combo", "")
+            if combo not in raw_by_combo:
+                continue
+            try:
+                sample_idx = int(row.get("sample_index", "-1"))
+                factor_val = float(row.get("factor_value", "nan"))
+            except (TypeError, ValueError):
+                continue
+            if sample_idx < 0 or not np.isfinite(factor_val):
+                continue
+
+            values_by_idx[sample_idx] = factor_val
+            metric_map: Dict[str, float] = raw_by_combo[combo].setdefault(sample_idx, {})
+            for metric_key in metric_keys:
+                raw = row.get(metric_key, "nan")
+                try:
+                    val = float(raw)
+                except (TypeError, ValueError):
+                    val = float("nan")
+                metric_map[metric_key] = val
+
+    sorted_indices = sorted(values_by_idx.keys())
+    values = np.array([values_by_idx[i] for i in sorted_indices], dtype=float)
+
+    results: Dict[str, Dict[str, List[float]]] = {}
+    for combo in combo_keys:
+        results[combo] = {}
+        for metric_key in metric_keys:
+            series: List[float] = []
+            combo_samples = raw_by_combo.get(combo, {})
+            for sample_idx in sorted_indices:
+                val = combo_samples.get(sample_idx, {}).get(metric_key, float("nan"))
+                series.append(float(val))
+            results[combo][metric_key] = series
+
+    return values, results
+
+
+def _replot_from_metrics_csvs(
+    metrics_dir: str,
+    plots_dir: str,
+    bins: int,
+    log_y: bool,
+) -> None:
+    """Regenerate all factor-sweep plots from existing CSV metrics."""
+    specs = [
+        (
+            "mc_sweep_inertia.csv",
+            "mc_sweep_inertia.png",
+            METRICS,
+            "Sweep: Inertia Error (+/-20%)",
+            "Inertia scale factor",
+            False,
+        ),
+        (
+            "mc_sweep_modal_frequency.csv",
+            "mc_sweep_modal_frequency.png",
+            METRICS,
+            "Sweep: Modal Frequency Error",
+            "Modal frequency scale factor",
+            False,
+        ),
+        (
+            "mc_sweep_modal_damping.csv",
+            "mc_sweep_modal_damping.png",
+            METRICS,
+            "Sweep: Modal Damping Variation",
+            "Modal damping scale factor",
+            False,
+        ),
+        (
+            "mc_sweep_disturbance_frequency.csv",
+            "mc_sweep_disturbance_frequency.png",
+            METRICS,
+            "Sweep: Disturbance Frequency (sinusoidal torque)",
+            "Disturbance frequency (Hz)",
+            True,
+        ),
+        (
+            "mc_sweep_disturbance_frequency.csv",
+            "mc_sweep_disturbance_frequency_targeted.png",
+            FREQ_METRICS,
+            "Sweep: Disturbance Frequency (frequency-targeted metrics)",
+            "Disturbance frequency (Hz)",
+            True,
+        ),
+        (
+            "mc_sweep_noise_level.csv",
+            "mc_sweep_noise_level.png",
+            METRICS,
+            "Sweep: Sensor Noise Frequency (sinusoidal)",
+            "Sensor noise frequency (Hz)",
+            True,
+        ),
+        (
+            "mc_sweep_noise_level.csv",
+            "mc_sweep_noise_level_targeted.png",
+            FREQ_METRICS,
+            "Sweep: Sensor Noise Frequency (frequency-targeted metrics)",
+            "Sensor noise frequency (Hz)",
+            True,
+        ),
+    ]
+
+    os.makedirs(plots_dir, exist_ok=True)
+    for csv_name, plot_name, metric_list, title, x_label, log_x in specs:
+        csv_path = os.path.join(metrics_dir, csv_name)
+        if not os.path.isfile(csv_path):
+            print(f"Missing CSV for replot: {csv_path}")
+            continue
+        values, results = _read_raw_csv(csv_path, metrics=metric_list)
+        if len(values) == 0:
+            print(f"No valid rows in CSV for replot: {csv_path}")
+            continue
+        out_path = os.path.join(plots_dir, plot_name)
+        _plot_sweep(
+            values=values,
+            results=results,
+            title=title,
+            x_label=x_label,
+            out_path=out_path,
+            log_x=log_x,
+            bins=bins,
+            metrics=metric_list,
+            log_y=log_y,
+        )
+        print(f"Replotted {out_path}")
+
+
 def _run_sweep(
     values: np.ndarray,
     config_builder,
@@ -429,10 +622,25 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="One-factor Monte Carlo sweep plots.")
     parser.add_argument("--out-dir", default=os.path.join(os.path.dirname(__file__), "..", "output"), help="Output directory for plots")
     parser.add_argument("--work-dir", default=None, help="Working directory for temporary NPZs")
+    parser.add_argument(
+        "--metrics-dir",
+        default=None,
+        help="Metrics CSV directory for --plot-only (default: <out-dir>/metrics)",
+    )
+    parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Skip simulation and regenerate plots from existing sweep CSV files",
+    )
+    parser.add_argument(
+        "--simulate-only",
+        action="store_true",
+        help="Run simulation sweeps without the final CSV replot pass",
+    )
     parser.add_argument("--noise-baseline", type=float, default=0.0, help="Baseline sensor noise (rad/s)")
-    parser.add_argument("--disturbance-bias", type=float, default=0.0, help="Baseline disturbance bias (N·m)")
+    parser.add_argument("--disturbance-bias", type=float, default=0.0, help="Baseline disturbance bias (N*m)")
     parser.add_argument("--disturbance-amplitude", type=float, default=1e-2,
-                        help="Disturbance sine amplitude for frequency sweep (N·m)")
+                        help="Disturbance sine amplitude for frequency sweep (N*m)")
     parser.add_argument("--disturbance-axis", type=float, nargs=3, default=[0.0, 0.0, 1.0],
                         help="Disturbance axis vector for sine disturbance")
     parser.add_argument("--samples", type=int, default=500, help="Monte Carlo samples per factor")
@@ -442,19 +650,23 @@ def main() -> int:
 
     parser.add_argument("--inertia-min", type=float, default=0.7)
     parser.add_argument("--inertia-max", type=float, default=1.3)
-    parser.add_argument("--inertia-points", type=int, default=9)
+    parser.add_argument("--inertia-points", type=int, default=9,
+                        help="Stratification bins for inertia sampling")
 
     parser.add_argument("--freq-min", type=float, default=0.7)
     parser.add_argument("--freq-max", type=float, default=1.3)
-    parser.add_argument("--freq-points", type=int, default=9)
+    parser.add_argument("--freq-points", type=int, default=9,
+                        help="Stratification bins for modal-frequency sampling")
 
     parser.add_argument("--damping-min", type=float, default=0.7)
     parser.add_argument("--damping-max", type=float, default=1.3)
-    parser.add_argument("--damping-points", type=int, default=9)
+    parser.add_argument("--damping-points", type=int, default=9,
+                        help="Stratification bins for modal-damping sampling")
 
     parser.add_argument("--dist-freq-min", type=float, default=0.1)
     parser.add_argument("--dist-freq-max", type=float, default=50.0)
-    parser.add_argument("--dist-freq-points", type=int, default=10)
+    parser.add_argument("--dist-freq-points", type=int, default=10,
+                        help="Log-stratification bins for disturbance-frequency sampling")
 
     parser.add_argument("--noise-min", type=float, default=0.1,
                         help="Noise frequency sweep min (Hz)")
@@ -462,9 +674,13 @@ def main() -> int:
                         help="Noise frequency sweep max (Hz)")
     parser.add_argument("--noise-amplitude", type=float, default=3e-3,
                         help="Sensor noise amplitude for sine sweep (rad/s)")
-    parser.add_argument("--noise-points", type=int, default=8)
+    parser.add_argument("--noise-points", type=int, default=8,
+                        help="Log-stratification bins for sensor-noise-frequency sampling")
 
     args = parser.parse_args()
+
+    if args.plot_only and args.simulate_only:
+        parser.error("--plot-only and --simulate-only cannot be used together")
 
     out_dir = os.path.abspath(args.out_dir)
     os.makedirs(out_dir, exist_ok=True)
@@ -480,6 +696,18 @@ def main() -> int:
 
     log_y = not args.linear_y
 
+    if args.plot_only:
+        metrics_src_dir = os.path.abspath(args.metrics_dir or metrics_dir)
+        _replot_from_metrics_csvs(
+            metrics_dir=metrics_src_dir,
+            plots_dir=plots_dir,
+            bins=args.bins,
+            log_y=log_y,
+        )
+        print("Saved plots to:", plots_dir)
+        print("Used metrics from:", metrics_src_dir)
+        return 0
+
     rng = np.random.default_rng(args.seed)
     base_cfg = ms.default_config()
 
@@ -489,7 +717,7 @@ def main() -> int:
     progress_count = 0
     _update_progress("Factor MC", 0, total_samples, start_time, last_update)
 
-    # Estimate runtime based on one sample (all 4 combos)
+    # Estimate runtime based on one sample (all configured combos).
     estimate_overrides = {
         "inertia_scale": 1.0,
         "modal_freqs_hz": base_cfg.modal_freqs_hz,
@@ -499,10 +727,19 @@ def main() -> int:
         "disturbance_torque_nm": args.disturbance_bias,
     }
     est_total = _estimate_total_runtime(estimate_overrides, work_dir, total_samples)
-    print(f"\nEstimated total runtime: {_format_eta(est_total)} (based on 1 sample x 4 combos)")
+    print(
+        f"\nEstimated total runtime: {_format_eta(est_total)} "
+        f"(based on 1 sample x {len(COMBOS)} combos)"
+    )
 
-    # 1) Inertia sweep (±20%)
-    inertia_vals = _sample_uniform(rng, args.inertia_min, args.inertia_max, args.samples)
+    # 1) Inertia sweep (+/-20%)
+    inertia_vals = _sample_uniform_stratified(
+        rng,
+        args.inertia_min,
+        args.inertia_max,
+        args.samples,
+        args.inertia_points,
+    )
     inertia_results, progress_count, last_update = _run_sweep(
         inertia_vals,
         lambda v: _build_config(base_cfg, inertia_scale=v),
@@ -525,7 +762,7 @@ def main() -> int:
     _plot_sweep(
         inertia_vals,
         inertia_results,
-        "Sweep: Inertia Error (±20%)",
+        "Sweep: Inertia Error (+/-20%)",
         "Inertia scale factor",
         os.path.join(plots_dir, "mc_sweep_inertia.png"),
         log_x=False,
@@ -542,7 +779,13 @@ def main() -> int:
     )
 
     # 2) Modal frequency error sweep
-    freq_vals = _sample_uniform(rng, args.freq_min, args.freq_max, args.samples)
+    freq_vals = _sample_uniform_stratified(
+        rng,
+        args.freq_min,
+        args.freq_max,
+        args.samples,
+        args.freq_points,
+    )
     freq_results, progress_count, last_update = _run_sweep(
         freq_vals,
         lambda v: _build_config(base_cfg, freq_scale=v),
@@ -582,7 +825,13 @@ def main() -> int:
     )
 
     # 3) Modal damping sweep
-    damping_vals = _sample_uniform(rng, args.damping_min, args.damping_max, args.samples)
+    damping_vals = _sample_uniform_stratified(
+        rng,
+        args.damping_min,
+        args.damping_max,
+        args.samples,
+        args.damping_points,
+    )
     damping_results, progress_count, last_update = _run_sweep(
         damping_vals,
         lambda v: _build_config(base_cfg, damping_scale=v),
@@ -622,7 +871,13 @@ def main() -> int:
     )
 
     # 4) Disturbance frequency sweep (sinusoid)
-    dist_freq_vals = _sample_log_uniform(rng, args.dist_freq_min, args.dist_freq_max, args.samples)
+    dist_freq_vals = _sample_log_uniform_stratified(
+        rng,
+        args.dist_freq_min,
+        args.dist_freq_max,
+        args.samples,
+        args.dist_freq_points,
+    )
     dist_results, progress_count, last_update = _run_sweep(
         dist_freq_vals,
         lambda v: _build_config(base_cfg),
@@ -678,7 +933,13 @@ def main() -> int:
     )
 
     # 5) Noise frequency sweep (sensor noise as sinusoid)
-    noise_vals = _sample_log_uniform(rng, args.noise_min, args.noise_max, args.samples)
+    noise_vals = _sample_log_uniform_stratified(
+        rng,
+        args.noise_min,
+        args.noise_max,
+        args.samples,
+        args.noise_points,
+    )
     noise_results, progress_count, last_update = _run_sweep(
         noise_vals,
         lambda v: _build_config(base_cfg),
@@ -731,6 +992,14 @@ def main() -> int:
         noise_results,
         metrics=METRICS + FREQ_METRICS,
     )
+
+    if not args.simulate_only:
+        _replot_from_metrics_csvs(
+            metrics_dir=metrics_dir,
+            plots_dir=plots_dir,
+            bins=args.bins,
+            log_y=log_y,
+        )
 
     print("Saved plots to:", plots_dir)
     print("Saved metrics to:", metrics_dir)

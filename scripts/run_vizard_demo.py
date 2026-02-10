@@ -48,6 +48,7 @@ from basilisk_sim.feedback_control import (
 
 CONTROLLERS = {"standard_pd", "filtered_pd", "notch", "trajectory_tracking"}
 RUN_MODES = {"combined", "fb_only", "ff_only"}
+SHAPING_METHODS = {"s_curve", "fourth"}
 
 
 def _skew(vec: np.ndarray) -> np.ndarray:
@@ -79,7 +80,7 @@ class CometPhotographyDemo:
         Initialize the demo.
 
         Args:
-            shaping_method: 'fourth' or 'unshaped'
+            shaping_method: 's_curve' or 'fourth'
             controller: 'standard_pd', 'filtered_pd', 'notch', or 'trajectory_tracking'
             run_mode: 'combined', 'fb_only', or 'ff_only'
             use_trajectory_tracking: If True, feedback tracks instantaneous FF trajectory
@@ -89,6 +90,8 @@ class CometPhotographyDemo:
             output_dir: Directory for output files (default: output/cache relative to script)
         """
         self.output_dir = output_dir
+        if shaping_method not in SHAPING_METHODS:
+            raise ValueError(f"Unknown shaping method '{shaping_method}'")
         if controller not in CONTROLLERS:
             raise ValueError(f"Unknown controller '{controller}'")
         if run_mode not in RUN_MODES:
@@ -425,11 +428,16 @@ class CometPhotographyDemo:
                 rotation_axis
             )
         else:
+            trajectory_type = {
+                "s_curve": "s_curve",
+            }.get(self.method)
+            if trajectory_type is None:
+                raise ValueError(f"Unsupported shaping method: {self.method}")
             self.ff_controller.design_maneuver(
                 theta_final=self.slew_angle,
                 rotation_axis=rotation_axis,
                 duration=self.slew_duration,
-                trajectory_type='bang-bang'
+                trajectory_type=trajectory_type
             )
 
         self.actual_duration = self.ff_controller.t_profile[-1]
@@ -1008,7 +1016,7 @@ if __name__ == "__main__":
     print("=" * 60)
 
     parser = argparse.ArgumentParser(description="Run the comet photography demo.")
-    parser.add_argument("method", nargs="?", default="fourth", choices=["unshaped", "fourth"])
+    parser.add_argument("method", nargs="?", default="fourth", choices=sorted(SHAPING_METHODS))
     parser.add_argument("--controller", default="standard_pd", choices=sorted(CONTROLLERS))
     parser.add_argument("--mode", default="combined", choices=sorted(RUN_MODES))
     parser.add_argument("--lever-arm", type=float, default=4.0,

@@ -18,10 +18,10 @@ import numpy as np
 
 
 COMBOS = [
-    ("unshaped_standard_pd", "Unshaped + Standard PD", "#d62728"),
-    ("unshaped_filtered_pd", "Unshaped + Filtered PD", "#ff7f0e"),
+    ("s_curve_standard_pd", "S-curve + Standard PD", "#ff7f0e"),
+    ("s_curve_filtered_pd", "S-curve + Filtered PD", "#ffbb78"),
     ("fourth_standard_pd", "Fourth-order + Standard PD", "#1f77b4"),
-    ("fourth_filtered_pd", "Fourth-order + Filtered PD", "#9467bd"),
+    ("fourth_filtered_pd", "Fourth-order + Filtered PD", "#aec7e8"),
 ]
 
 METRICS = [

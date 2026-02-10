@@ -457,6 +457,206 @@ def plot_window_formation(pulse_base, window_jerk, window_snap,
     plt.show()
 
 
+def design_trapezoidal_trajectory(
+    target_duration,
+    theta_final,
+    I_axis,
+    max_torque=None,
+    dt=0.01,
+    accel_fraction=0.40,
+    settling_time=0.0,
+):
+    """
+    Design a trapezoidal-velocity rest-to-rest trajectory.
+
+    Inputs:
+    - target_duration: maneuver duration in seconds (excluding optional settling).
+    - theta_final: target angle in radians.
+    - I_axis: principal inertia about the slew axis.
+    - max_torque: optional torque limit for warning checks (Nm).
+    - dt: sample time (defaults to 0.01 s to match Basilisk).
+    - accel_fraction: fraction of target_duration used for accel/decel ramps.
+      For fixed duration, peak acceleration scales as 1/[4*f*(1-f)] vs bang-bang.
+      Values near 0.5 minimize peak acceleration.
+    - settling_time: optional coast-at-rest duration appended after maneuver.
+
+    Outputs:
+    - (t, theta, omega, alpha, jerk, snap, trajectory_info).
+    """
+    if target_duration <= 0:
+        raise ValueError("target_duration must be > 0")
+    if dt <= 0:
+        raise ValueError("dt must be > 0")
+
+    t = np.arange(0.0, target_duration + dt, dt)
+    n = len(t)
+    theta = np.zeros(n)
+    omega = np.zeros(n)
+    alpha = np.zeros(n)
+
+    t_acc = float(np.clip(accel_fraction * target_duration, dt, 0.5 * target_duration))
+    t_const = max(target_duration - 2.0 * t_acc, 0.0)
+    denom = t_acc * (t_acc + t_const)
+    alpha_max = theta_final / denom if denom > 0 else 0.0
+    alpha_bb = 4.0 * theta_final / (target_duration**2)
+    peak_ratio_to_bang_bang = abs(alpha_max / alpha_bb) if abs(alpha_bb) > 0 else 1.0
+    if peak_ratio_to_bang_bang > 1.2:
+        print(
+            "  WARNING: Trapezoidal accel_fraction yields high peak accel "
+            f"({peak_ratio_to_bang_bang:.3f}x bang-bang). Consider accel_fraction closer to 0.5."
+        )
+
+    omega_plateau = alpha_max * t_acc
+    theta_after_acc = 0.5 * alpha_max * t_acc**2
+    theta_after_const = theta_after_acc + omega_plateau * t_const
+
+    for i, ti in enumerate(t):
+        if ti <= t_acc:
+            alpha[i] = alpha_max
+            omega[i] = alpha_max * ti
+            theta[i] = 0.5 * alpha_max * ti**2
+        elif ti <= t_acc + t_const:
+            tau = ti - t_acc
+            alpha[i] = 0.0
+            omega[i] = omega_plateau
+            theta[i] = theta_after_acc + omega_plateau * tau
+        else:
+            tau = ti - (t_acc + t_const)
+            alpha[i] = -alpha_max
+            omega[i] = omega_plateau - alpha_max * tau
+            theta[i] = theta_after_const + omega_plateau * tau - 0.5 * alpha_max * tau**2
+
+    # Compensate endpoint quantization from dt discretization.
+    if abs(theta[-1]) > 1e-12:
+        scale = theta_final / theta[-1]
+        alpha *= scale
+        omega *= scale
+        theta *= scale
+
+    if settling_time > 0:
+        n_settle = int(round(settling_time / dt))
+        if n_settle > 0:
+            t_extra = t[-1] + np.arange(1, n_settle + 1) * dt
+            t = np.concatenate([t, t_extra])
+            alpha = np.concatenate([alpha, np.zeros(n_settle)])
+            omega = np.concatenate([omega, np.zeros(n_settle)])
+            theta = np.concatenate([theta, np.full(n_settle, theta_final)])
+
+    if len(alpha) > 1:
+        jerk = np.gradient(alpha, dt)
+        snap = np.gradient(jerk, dt)
+    else:
+        jerk = np.zeros_like(alpha)
+        snap = np.zeros_like(alpha)
+
+    torque = I_axis * alpha
+    torque_peak = float(np.max(np.abs(torque))) if len(torque) else 0.0
+    if max_torque is not None and torque_peak > max_torque * 1.001:
+        print(f"  WARNING: Trapezoidal peak torque {torque_peak:.4f} Nm exceeds limit {max_torque:.4f} Nm")
+
+    trajectory_info = {
+        "method": "trapezoidal",
+        "duration": float(t[-1]) if len(t) else 0.0,
+        "maneuver_duration": float(target_duration),
+        "theta_target": float(theta_final),
+        "theta_achieved": float(theta[-1]) if len(theta) else 0.0,
+        "torque_peak": torque_peak,
+        "torque_limit": float(max_torque) if max_torque is not None else None,
+        "t_acc": t_acc,
+        "t_const": t_const,
+        "accel_fraction": float(accel_fraction),
+        "peak_accel_ratio_to_bang_bang": float(peak_ratio_to_bang_bang),
+    }
+
+    return t, theta, omega, alpha, jerk, snap, trajectory_info
+
+
+def design_s_curve_trajectory(
+    target_duration,
+    theta_final,
+    I_axis,
+    max_torque=None,
+    dt=0.01,
+    settling_time=0.0,
+):
+    """
+    Design a minimum-jerk S-curve rest-to-rest trajectory.
+
+    Inputs:
+    - target_duration: maneuver duration in seconds (excluding optional settling).
+    - theta_final: target angle in radians.
+    - I_axis: principal inertia about the slew axis.
+    - max_torque: optional torque limit for warning checks (Nm).
+    - dt: sample time (defaults to 0.01 s to match Basilisk).
+    - settling_time: optional coast-at-rest duration appended after maneuver.
+
+    Outputs:
+    - (t, theta, omega, alpha, jerk, snap, trajectory_info).
+
+    Notes:
+    - For fixed maneuver duration, minimum-jerk profiles reduce high-frequency
+      content but can require higher peak acceleration than bang-bang.
+    """
+    if target_duration <= 0:
+        raise ValueError("target_duration must be > 0")
+    if dt <= 0:
+        raise ValueError("dt must be > 0")
+
+    t = np.arange(0.0, target_duration + dt, dt)
+    n = len(t)
+    theta = np.zeros(n)
+    omega = np.zeros(n)
+    alpha = np.zeros(n)
+
+    jerk = np.zeros(n)
+    snap = np.zeros(n)
+
+    for i, ti in enumerate(t):
+        s = np.clip(ti / target_duration, 0.0, 1.0)
+        theta[i] = theta_final * (10 * s**3 - 15 * s**4 + 6 * s**5)
+        omega[i] = (theta_final / target_duration) * (30 * s**2 - 60 * s**3 + 30 * s**4)
+        alpha[i] = (theta_final / target_duration**2) * (60 * s - 180 * s**2 + 120 * s**3)
+        jerk[i] = (theta_final / target_duration**3) * (60 - 360 * s + 360 * s**2)
+        snap[i] = (theta_final / target_duration**4) * (-360 + 720 * s)
+
+    if settling_time > 0:
+        n_settle = int(round(settling_time / dt))
+        if n_settle > 0:
+            t_extra = t[-1] + np.arange(1, n_settle + 1) * dt
+            t = np.concatenate([t, t_extra])
+            alpha = np.concatenate([alpha, np.zeros(n_settle)])
+            omega = np.concatenate([omega, np.zeros(n_settle)])
+            theta = np.concatenate([theta, np.full(n_settle, theta_final)])
+            jerk = np.concatenate([jerk, np.zeros(n_settle)])
+            snap = np.concatenate([snap, np.zeros(n_settle)])
+
+    torque = I_axis * alpha
+    torque_peak = float(np.max(np.abs(torque))) if len(torque) else 0.0
+    if max_torque is not None and torque_peak > max_torque * 1.001:
+        print(f"  WARNING: S-curve peak torque {torque_peak:.4f} Nm exceeds limit {max_torque:.4f} Nm")
+
+    alpha_bb = 4.0 * theta_final / (target_duration**2)
+    peak_ratio_to_bang_bang = abs(np.max(np.abs(alpha)) / alpha_bb) if abs(alpha_bb) > 0 else 1.0
+    if peak_ratio_to_bang_bang > 1.2:
+        print(
+            "  NOTE: S-curve peak acceleration is "
+            f"{peak_ratio_to_bang_bang:.3f}x bang-bang for the same duration."
+        )
+
+    trajectory_info = {
+        "method": "s_curve",
+        "duration": float(t[-1]) if len(t) else 0.0,
+        "maneuver_duration": float(target_duration),
+        "theta_target": float(theta_final),
+        "theta_achieved": float(theta[-1]) if len(theta) else 0.0,
+        "torque_peak": torque_peak,
+        "torque_limit": float(max_torque) if max_torque is not None else None,
+        "peak_accel_ratio_to_bang_bang": float(peak_ratio_to_bang_bang),
+    }
+
+    return t, theta, omega, alpha, jerk, snap, trajectory_info
+
+
 def design_fourth_order_trajectory_fixed(theta_final, mode_frequencies, 
                                         damping_ratios, I_axis, 
                                         max_torque=0.2, dt=None, plot=False,
