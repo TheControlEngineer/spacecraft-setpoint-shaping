@@ -41,7 +41,11 @@ from .feedback_control import (
 )
 
 # Shaper design
-from .design_shaper import compute_residual_vibration_continuous
+from .design_shaper import (
+    compute_residual_vibration_continuous,
+    design_trapezoidal_trajectory,
+    design_s_curve_trajectory,
+)
 
 # Camera simulators
 from .star_camera_simulator import StarCameraSimulator
@@ -68,6 +72,8 @@ __all__ = [
     "HybridController",
     # Shaper design
     "compute_residual_vibration_continuous",
+    "design_trapezoidal_trajectory",
+    "design_s_curve_trajectory",
     # Camera simulators
     "StarCameraSimulator",
     "CometCameraSimulator",

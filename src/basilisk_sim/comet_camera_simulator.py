@@ -312,20 +312,20 @@ def load_simulation_data(filename: str) -> Dict[str, Optional[np.ndarray]]:
 
 
 def create_comet_comparison_figure(
-    unshaped_data: Dict[str, np.ndarray],
-    shaped_data: Dict[str, np.ndarray],
+    s_curve_data: Dict[str, np.ndarray],
+    fourth_data: Dict[str, np.ndarray],
     output_filename: str = "comet_blur_comparison.png",
 ) -> Tuple[Dict[str, float], Dict[str, float]]:
     """
-    Create a side-by-side comparison of unshaped vs shaped comet images.
+    Create a side-by-side comparison of S-curve vs fourth-order comet images.
 
     Inputs:
-    - unshaped_data: dict containing time and sigma arrays.
-    - shaped_data: dict containing time and sigma arrays.
+    - s_curve_data: dict containing time and sigma arrays.
+    - fourth_data: dict containing time and sigma arrays.
     - output_filename: output path for the PNG figure.
 
     Outputs:
-    - Tuple of (unshaped blur stats, shaped blur stats).
+    - Tuple of (S-curve blur stats, fourth-order blur stats).
     """
     camera = CometCameraSimulator(
         fov_deg=0.5,
@@ -340,11 +340,11 @@ def create_comet_comparison_figure(
 
     print(f"\nGenerating comet images (exposure at t={exposure_start:.1f}s)...")
 
-    img_unshaped, stats_unshaped = camera.generate_image(
-        unshaped_data["sigma"], unshaped_data["time"], exposure_start
+    img_s_curve, stats_s_curve = camera.generate_image(
+        s_curve_data["sigma"], s_curve_data["time"], exposure_start
     )
-    img_shaped, stats_shaped = camera.generate_image(
-        shaped_data["sigma"], shaped_data["time"], exposure_start
+    img_fourth, stats_fourth = camera.generate_image(
+        fourth_data["sigma"], fourth_data["time"], exposure_start
     )
 
     # Reference image without jitter.
@@ -368,21 +368,21 @@ def create_comet_comparison_figure(
         bbox=dict(boxstyle="round", facecolor="black", alpha=0.5),
     )
 
-    axes[1].imshow(img_unshaped, cmap=cmap, origin="lower", vmin=0, vmax=0.9)
+    axes[1].imshow(img_s_curve, cmap=cmap, origin="lower", vmin=0, vmax=0.9)
     axes[1].set_title(
-        "UNSHAPED Control\n(Bang-Bang)",
+        "S-Curve Reference",
         fontsize=12,
         fontweight="bold",
-        color="red",
+        color="orange",
     )
     blur_text = (
-        f"Blur: {stats_unshaped['blur_pixels']:.1f} px\n"
-        f"({stats_unshaped['rms_arcsec']:.1f} arcsec RMS)"
+        f"Blur: {stats_s_curve['blur_pixels']:.1f} px\n"
+        f"({stats_s_curve['rms_arcsec']:.1f} arcsec RMS)"
     )
-    axes[1].set_xlabel(blur_text, fontsize=10, color="red")
+    axes[1].set_xlabel(blur_text, fontsize=10, color="orange")
     axes[1].axis("off")
 
-    if stats_unshaped["blur_pixels"] > 5:
+    if stats_s_curve["blur_pixels"] > 5:
         axes[1].text(
             0.5,
             0.02,
@@ -390,15 +390,15 @@ def create_comet_comparison_figure(
             transform=axes[1].transAxes,
             fontsize=14,
             ha="center",
-            color="red",
+            color="orange",
             fontweight="bold",
             bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
         )
 
-    axes[2].imshow(img_shaped, cmap=cmap, origin="lower", vmin=0, vmax=0.9)
+    axes[2].imshow(img_fourth, cmap=cmap, origin="lower", vmin=0, vmax=0.9)
     method_name = (
-        shaped_data["method"].upper()
-        if isinstance(shaped_data["method"], str)
+        fourth_data["method"].upper()
+        if isinstance(fourth_data["method"], str)
         else "SHAPED"
     )
     axes[2].set_title(
@@ -408,13 +408,13 @@ def create_comet_comparison_figure(
         color="green",
     )
     blur_text = (
-        f"Blur: {stats_shaped['blur_pixels']:.1f} px\n"
-        f"({stats_shaped['rms_arcsec']:.1f} arcsec RMS)"
+        f"Blur: {stats_fourth['blur_pixels']:.1f} px\n"
+        f"({stats_fourth['rms_arcsec']:.1f} arcsec RMS)"
     )
     axes[2].set_xlabel(blur_text, fontsize=10, color="green")
     axes[2].axis("off")
 
-    if stats_shaped["blur_pixels"] < 2:
+    if stats_fourth["blur_pixels"] < 2:
         axes[2].text(
             0.5,
             0.02,
@@ -435,9 +435,9 @@ def create_comet_comparison_figure(
         y=1.02,
     )
 
-    if stats_unshaped["blur_pixels"] > 0.1:
-        improvement = stats_unshaped["blur_pixels"] / max(
-            stats_shaped["blur_pixels"], 0.1
+    if stats_s_curve["blur_pixels"] > 0.1:
+        improvement = stats_s_curve["blur_pixels"] / max(
+            stats_fourth["blur_pixels"], 0.1
         )
         fig.text(
             0.5,
@@ -453,33 +453,33 @@ def create_comet_comparison_figure(
     print(f"\nSaved: {output_filename}")
     plt.close()
 
-    return stats_unshaped, stats_shaped
+    return stats_s_curve, stats_fourth
 
 
 def create_blur_demo_from_modal_data(
-    unshaped_file: str,
-    shaped_file: str,
+    s_curve_file: str,
+    fourth_file: str,
     output_filename: str = "comet_blur_comparison.png",
 ) -> None:
     """
     Load modal displacement data and render a blur comparison.
 
     Inputs:
-    - unshaped_file: NPZ with modal displacement data for unshaped case.
-    - shaped_file: NPZ with modal displacement data for shaped case.
+    - s_curve_file: NPZ with modal displacement data for S-curve case.
+    - fourth_file: NPZ with modal displacement data for fourth-order case.
     - output_filename: output PNG file name.
     """
-    unshaped = np.load(unshaped_file, allow_pickle=True)
-    shaped = np.load(shaped_file, allow_pickle=True)
+    s_curve = np.load(s_curve_file, allow_pickle=True)
+    fourth = np.load(fourth_file, allow_pickle=True)
 
-    time_u = unshaped["time"]
-    time_s = shaped["time"]
+    time_u = s_curve["time"]
+    time_s = fourth["time"]
 
     # Modal displacements (default to zeros if missing).
-    mode1_u = unshaped["mode1"] if "mode1" in unshaped else np.zeros_like(time_u)
-    mode2_u = unshaped["mode2"] if "mode2" in unshaped else np.zeros_like(time_u)
-    mode1_s = shaped["mode1"] if "mode1" in shaped else np.zeros_like(time_s)
-    mode2_s = shaped["mode2"] if "mode2" in shaped else np.zeros_like(time_s)
+    mode1_u = s_curve["mode1"] if "mode1" in s_curve else np.zeros_like(time_u)
+    mode2_u = s_curve["mode2"] if "mode2" in s_curve else np.zeros_like(time_u)
+    mode1_s = fourth["mode1"] if "mode1" in fourth else np.zeros_like(time_s)
+    mode2_s = fourth["mode2"] if "mode2" in fourth else np.zeros_like(time_s)
 
     vibration_u = np.sqrt(mode1_u**2 + mode2_u**2)
     vibration_s = np.sqrt(mode1_s**2 + mode2_s**2)
@@ -507,7 +507,7 @@ def create_blur_demo_from_modal_data(
     print("\n" + "=" * 60)
     print("COMET PHOTOGRAPHY MOTION BLUR ANALYSIS")
     print("=" * 60)
-    print("\nUnshaped (Bang-Bang):")
+    print("\nS-Curve:")
     print(f"  Angular jitter RMS:  {rms_u:.1f} arcsec")
     print(f"  Angular jitter Peak: {peak_u:.1f} arcsec")
     print(f"  Image blur:          {blur_px_u:.1f} pixels")
@@ -548,7 +548,7 @@ def create_blur_demo_from_modal_data(
         jitter_u_arcsec[time_u >= 30],
         "r-",
         alpha=0.7,
-        label="Unshaped",
+        label="S-curve",
         linewidth=0.8,
     )
     ax3.plot(
@@ -580,7 +580,7 @@ def create_blur_demo_from_modal_data(
         f_u, psd_u = sig.periodogram(data_u, fs, window="hann", scaling="density")
         f_s, psd_s = sig.periodogram(data_s, fs, window="hann", scaling="density")
 
-        ax4.semilogy(f_u, psd_u, "r-", linewidth=1.5, label="Unshaped", alpha=0.9)
+        ax4.semilogy(f_u, psd_u, "r-", linewidth=1.5, label="S-curve", alpha=0.9)
         ax4.semilogy(f_s, psd_s, "g-", linewidth=1.5, label="Fourth-Order", alpha=0.9)
 
         modal_freqs = [0.4, 1.3]
@@ -673,7 +673,7 @@ def create_blur_demo_from_modal_data(
     make_comet_image(0.0, ax5, "Reference\n(No Motion)")
 
     ax6 = fig.add_subplot(gs[2, 1])
-    make_comet_image(blur_px_u, ax6, f"UNSHAPED\nBlur: {blur_px_u:.1f} px", "red")
+    make_comet_image(blur_px_u, ax6, f"S-CURVE\nBlur: {blur_px_u:.1f} px", "red")
     if blur_px_u > 3:
         ax6.text(
             0.5,
@@ -723,41 +723,56 @@ if __name__ == "__main__":
     print("=" * 60)
     print("\nAligned with vizard_demo.py comet photography mission!")
 
-    unshaped_file = None
-    shaped_file = None
+    s_curve_file = None
+    fourth_file = None
 
-    possible_unshaped = [
-        "vizard_demo_unshaped_filtered_pd.npz",
-        "vizard_demo_unshaped_standard_pd.npz",
-        "vizard_demo_unshaped.npz",
-        "comparison_unshaped.npz",
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.abspath(os.path.join(script_dir, "..", ".."))
+    candidate_dirs = [
+        os.getcwd(),
+        root_dir,
+        os.path.join(root_dir, "data", "trajectories"),
+        os.path.join(root_dir, "output"),
     ]
-    possible_shaped = [
-        "vizard_demo_fourth_filtered_pd.npz",
+
+    possible_s_curve = [
+        "vizard_demo_s_curve_standard_pd.npz",
+        "vizard_demo_s_curve.npz",
+        "comparison_s_curve.npz",
+    ]
+    possible_fourth = [
         "vizard_demo_fourth_standard_pd.npz",
         "vizard_demo_fourth.npz",
         "comparison_fourth.npz",
     ]
 
-    for name in possible_unshaped:
-        if os.path.exists(name):
-            unshaped_file = name
+    for base_dir in candidate_dirs:
+        for name in possible_s_curve:
+            path = os.path.join(base_dir, name)
+            if os.path.exists(path):
+                s_curve_file = path
+                break
+        if s_curve_file:
             break
 
-    for name in possible_shaped:
-        if os.path.exists(name):
-            shaped_file = name
+    for base_dir in candidate_dirs:
+        for name in possible_fourth:
+            path = os.path.join(base_dir, name)
+            if os.path.exists(path):
+                fourth_file = path
+                break
+        if fourth_file:
             break
 
-    if unshaped_file and shaped_file:
+    if s_curve_file and fourth_file:
         print("\nUsing data files:")
-        print(f"  Unshaped: {unshaped_file}")
-        print(f"  Shaped:   {shaped_file}")
-        create_blur_demo_from_modal_data(unshaped_file, shaped_file)
+        print(f"  S-curve: {s_curve_file}")
+        print(f"  Fourth:  {fourth_file}")
+        create_blur_demo_from_modal_data(s_curve_file, fourth_file)
     else:
         print("\nNo simulation data found. Run run_vizard_demo.py first:")
-        print("  python scripts/run_vizard_demo.py unshaped --controller filtered_pd")
-        print("  python scripts/run_vizard_demo.py fourth --controller filtered_pd")
+        print("  python scripts/run_vizard_demo.py s_curve --controller standard_pd")
+        print("  python scripts/run_vizard_demo.py fourth --controller standard_pd")
         print("\nThen run this script again.")
 
         # Create a demo with synthetic vibration data for stand-alone use.
@@ -765,7 +780,7 @@ if __name__ == "__main__":
 
         t = np.linspace(0.0, 60.0, 6000)
 
-        # Unshaped: large oscillation after slew.
+        # S-curve: larger residual oscillation after slew.
         mode1_u = np.zeros_like(t)
         mode1_u[t >= 30] = (
             0.004
@@ -784,9 +799,9 @@ if __name__ == "__main__":
         mode1_s = mode1_u * 0.02
         mode2_s = mode2_u * 0.02
 
-        np.savez("demo_unshaped.npz", time=t, mode1=mode1_u, mode2=mode2_u, method="unshaped")
+        np.savez("demo_s_curve.npz", time=t, mode1=mode1_u, mode2=mode2_u, method="s_curve")
         np.savez("demo_fourth.npz", time=t, mode1=mode1_s, mode2=mode2_s, method="fourth")
 
         create_blur_demo_from_modal_data(
-            "demo_unshaped.npz", "demo_fourth.npz", "comet_blur_demo.png"
+            "demo_s_curve.npz", "demo_fourth.npz", "comet_blur_demo.png"
         )

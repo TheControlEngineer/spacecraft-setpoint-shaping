@@ -2,10 +2,8 @@
 Plot Monte Carlo comparison charts for all controller/method combinations.
 
 Reads monte_carlo_runs.csv and generates summary comparison plots for:
-  - Unshaped + Standard PD
-  - Unshaped + Filtered PD
-  - Fourth-order + Standard PD
-  - Fourth-order + Filtered PD
+  - S-curve + Standard/Filtered PD
+  - Fourth-order + Standard/Filtered PD
 """
 
 from __future__ import annotations
@@ -20,10 +18,10 @@ import numpy as np
 
 
 COMBOS = [
-    ("unshaped_standard_pd", "Unshaped + Standard PD", "#d62728"),  # red
-    ("unshaped_filtered_pd", "Unshaped + Filtered PD", "#ff7f0e"),  # orange
+    ("s_curve_standard_pd", "S-curve + Standard PD", "#ff7f0e"),  # orange
+    ("s_curve_filtered_pd", "S-curve + Filtered PD", "#ffbb78"),  # light orange
     ("fourth_standard_pd", "Fourth-order + Standard PD", "#1f77b4"),  # blue
-    ("fourth_filtered_pd", "Fourth-order + Filtered PD", "#9467bd"),  # violet
+    ("fourth_filtered_pd", "Fourth-order + Filtered PD", "#aec7e8"),  # light blue
 ]
 
 METRICS = [
@@ -104,7 +102,7 @@ def _plot_box_comparisons(rows: List[Dict[str, str]], out_path: str) -> None:
         axes[idx].axis("off")
 
     fig.suptitle("Monte Carlo Comparisons (Combined Feedforward + Feedback)", fontweight="bold")
-    fig.legend(legend_handles, legend_labels, loc="lower center", ncol=2, fontsize=9)
+    fig.legend(legend_handles, legend_labels, loc="lower center", ncol=4, fontsize=9)
     fig.tight_layout(rect=[0, 0.05, 1, 0.96])
     fig.savefig(out_path, dpi=160)
     plt.close(fig)

@@ -28,9 +28,10 @@ from .star_camera_simulator import StarCameraSimulator, generate_synthetic_vibra
 # Slew parameters (must match vizard_demo.py)
 SLEW_TIME = 30.0  # seconds - when the slew ends
 SETTLING_WINDOW = 30.0  # seconds of post-slew data to analyze
+METHODS = ["s_curve", "fourth"]
 
 
-def extract_post_slew_vibration(method='unshaped', controller=None):
+def extract_post_slew_vibration(method='s_curve', controller=None):
     """
     Extract POST-SLEW vibration data from Basilisk simulation.
     
@@ -181,7 +182,7 @@ def analyze_settling_comparison():
     print("POST-SLEW SETTLING ANALYSIS (Step and Stare)")
     print("="*60)
 
-    methods = ['unshaped', 'fourth']
+    methods = METHODS
     results = {}
 
     # Thresholds for different imaging requirements
@@ -249,9 +250,12 @@ def analyze_settling_comparison():
     # Calculate improvement
     print("")
     print("--- INPUT SHAPING BENEFIT ---")
-    if results['unshaped'] and results['unshaped']['settling_times']['normal']:
-        baseline = results['unshaped']['settling_times']['normal']
-        for method in ['fourth']:
+    baseline_method = "s_curve" if "s_curve" in methods else methods[0]
+    if results[baseline_method] and results[baseline_method]['settling_times']['normal']:
+        baseline = results[baseline_method]['settling_times']['normal']
+        for method in methods:
+            if method == baseline_method:
+                continue
             if results[method] and results[method]['settling_times']['normal']:
                 t_settle = results[method]['settling_times']['normal']
                 improvement = (baseline - t_settle) / baseline * 100
@@ -268,7 +272,7 @@ def generate_post_slew_video():
 
     # Load post-slew data
     simulation_data = {}
-    for method in ['unshaped', 'fourth']:
+    for method in METHODS:
         data = extract_post_slew_vibration(method)
         if data is not None:
             # Format for star camera simulator
@@ -323,17 +327,17 @@ def run_step_and_stare_analysis():
     print("="*60)
 
 
-def synthesize_vibration(time, omega_y, method='unshaped', f1=0.4, f2=1.3, zeta=0.02):
+def synthesize_vibration(time, omega_y, method='s_curve', f1=0.4, f2=1.3, zeta=0.02):
     """
     Synthesize flexible vibration based on control method.
     
-    For bang-bang (unshaped): abrupt accelerations excite both modes strongly
-    For fourth-order: the smooth profile excites almost no vibration
+    For S-curve: reduced but non-zero excitation.
+    For fourth-order: near-minimum excitation.
     
     Parameters:
         time: time array (s)
         omega_y: commanded angular rate (rad/s) - used to find transitions
-        method: 'unshaped' or 'fourth'
+        method: 's_curve' or 'fourth'
         f1, f2: flexible mode frequencies (Hz)
         zeta: damping ratio
     
@@ -354,9 +358,8 @@ def synthesize_vibration(time, omega_y, method='unshaped', f1=0.4, f2=1.3, zeta=
     base_amplitude = 0.002  # 2 mrad/s gives good visual effect
     
     # Scale based on shaping method effectiveness
-    if method == 'unshaped':
-        # Bang-bang fully excites modes
-        amp1, amp2 = base_amplitude, base_amplitude * 0.6
+    if method == 's_curve':
+        amp1, amp2 = base_amplitude * 0.20, base_amplitude * 0.10
     elif method == 'fourth':
         # Fourth-order spectral nulling - essentially zero excitation
         amp1, amp2 = base_amplitude * 0.01, base_amplitude * 0.01
@@ -380,7 +383,7 @@ def synthesize_vibration(time, omega_y, method='unshaped', f1=0.4, f2=1.3, zeta=
     return vibration
 
 
-def extract_basilisk_data(method='unshaped', controller=None):
+def extract_basilisk_data(method='s_curve', controller=None):
     """
     Extract angular rates from Basilisk simulation output.
     Returns dict with time, omega_x/y/z, vibration_rate, and dt.
@@ -455,7 +458,7 @@ def generate_all_videos():
     
     # Check if we have Basilisk data
     has_real_data = False
-    for method in ['unshaped', 'fourth']:
+    for method in METHODS:
         try:
             data = extract_basilisk_data(method)
             if 'time' in data:
@@ -483,7 +486,7 @@ def generate_all_videos():
     # Load data for all methods
     print("\nLoading simulation data...")
     simulation_data = {}
-    for method in ['unshaped', 'fourth']:
+    for method in METHODS:
         simulation_data[method] = extract_basilisk_data(method)
         n_points = len(simulation_data[method]['time'])
         duration = simulation_data[method]['time'][-1]
@@ -499,7 +502,7 @@ def generate_all_videos():
     
     # Generate individual videos
     print("\nGenerating individual videos...")
-    for method in ['unshaped', 'fourth']:
+    for method in METHODS:
         camera_hires = StarCameraSimulator(
             fov_deg=15.0,
             resolution=(1200, 1200),

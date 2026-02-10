@@ -4,7 +4,7 @@ This document describes the design, analysis, and validation of this GitHub proj
 
 I’ve written this in a conversational style on purpose. The goal isn’t to be a step by step construction manual or a formal academic paper, but to capture my thought process and explain the rationale behind key design decisions.
 
-So if you don’t mind a casual tone and a slightly unconventional writing style, feel free to read on! 😀👍
+So if you don’t mind a casual tone and a slightly unconventional writing style, feel free to read on!
 
 
 
@@ -47,7 +47,7 @@ This residual motion degrades pointing accuracy and can force the spacecraft to 
 |-------------|-------|-----------|
 | Slew angle | 180° | Mission geometry |
 | Slew time | 30 s | Operational constraint |
-| Post slew settling | < 5 s to 5 arcsec | Imaging window |
+| Post slew settling |  5 arcsec | Imaging window |
 | Residual vibration | < 1 mm modal displacement | Payload requirement 
 |Phase margin | 70°-75°| Robustness requirement
 
@@ -61,7 +61,7 @@ For the higher fidelity setup, we lean on Basilisk’s built in modules, mainly 
 
 After that, we’ll take a look at the linearised model derived from the nonlinear Basilisk model, since that’s what we’ll use for controller design. Along the way, I’ll also explain the rationale behind the modelling choices and the overall workflow.
 
-*Note:- If curiosity gets the better of you and you decide to wander into Basilisk’s documentation rabbit hole, here are the links to the modules we’re using so you don’t have to hunt them down: [spacecraft](https://hanspeterschaub.info/basilisk/Documentation/simulation/dynamics/spacecraft/spacecraft.html), [reaction wheels](https://hanspeterschaub.info/basilisk/Documentation/simulation/dynamics/reactionWheels/reactionWheelStateEffector.html), and [linear spring-mass-damper](https://hanspeterschaub.info/basilisk/Documentation/simulation/dynamics/LinearSpringMassDamper/linearSpringMassDamper.html).* 😁
+*Note:- If curiosity gets the better of you and you decide to wander into Basilisk’s documentation rabbit hole, here are the links to the modules we’re using so you don’t have to hunt them down: [spacecraft](https://hanspeterschaub.info/basilisk/Documentation/simulation/dynamics/spacecraft/spacecraft.html), [reaction wheels](https://hanspeterschaub.info/basilisk/Documentation/simulation/dynamics/reactionWheels/reactionWheelStateEffector.html), and [linear spring-mass-damper](https://hanspeterschaub.info/basilisk/Documentation/simulation/dynamics/LinearSpringMassDamper/linearSpringMassDamper.html).* 
 
 ### 2.1 Hub Properties
 We define our hub as :
@@ -218,7 +218,7 @@ Since $`G_s`$ is the spin axis matrix defined by:
 ```
 
 we can see from the compact torque expression that the torque we get depends directly on how we choose the wheel spin axes. So before we go any further, we need to pick those axes 
-which brings us to our first real design decision 🤓.
+which brings us to our first real design decision.
 
 ### 3.2 Actuator Alignment 
 
@@ -308,7 +308,7 @@ Since $`\det(\mathbf{G}_s) = 1 \neq 0`$, the system has full 3 axis controllabil
 
 With the reaction wheels now set up and the cant angle locked in, we can move on to our second `StateEffector`; the flexible solar arrays. As shown in the figure below, the arrays are mounted along the body Y axis.
 
-Now, the sketch isn’t exactly a work of art 😅, but it does the job! it shows where the [modal mass](https://www.sciencedirect.com/topics/engineering/modal-mass) is located and how far it sits from the spacecraft hub. In this section, we’ll dig into why the arrays get excited (and start vibrating) during a slew, we’ll try (our best!) to figure out which axis the dominant vibration shows up on, and finally we’ll look at how the `LinearSpringMassDamper` module models the array dynamics.
+Now, the sketch isn’t exactly a work of art , but it does the job! it shows where the [modal mass](https://www.sciencedirect.com/topics/engineering/modal-mass) is located and how far it sits from the spacecraft hub. In this section, we’ll dig into why the arrays get excited (and start vibrating) during a slew, we’ll try (our best!) to figure out which axis the dominant vibration shows up on, and finally we’ll look at how the `LinearSpringMassDamper` module models the array dynamics.
 
 <div style="display: flex; justify-content: center; gap: 10px;">
 
@@ -556,7 +556,7 @@ G_{rigid}(s) = \frac{\Sigma(s)}{T(s)} = \frac{1}{4I_{zz}s^2}
 
 This is basically a double [integrator](https://electronics.stackexchange.com/questions/333888/why-is-the-frequency-domain-representation-of-an-integrator-1-s)! two poles sitting at the origin. In frequency domain terms, it carries about $`180 \degree`$ of phase lag right out of the gate, which is not unstable by itself (it’s marginal in open loop), but it definitely makes the feedback design a tad bit more challenging.
 
-*Note :- As you’ve probably already guessed, I’m a little biased toward frequency domain control (life is just easier here) 😄*
+*Note :- As you’ve probably already guessed, I’m a little biased toward frequency domain control (life is just easier here)*
 
 ### 5.4 Flex Modes to Plant 
 
@@ -678,7 +678,7 @@ PM = \arctan\left(\frac{K_d\omega_c}{K_p}\right)
 \end{aligned}
 ```
 
-*Note :- For example, if $`K_d\omega_c/K_p = 1`$, we get $`PM = 45°`$. If $`K_d\omega_c/K_p = 2`$, we get $`PM = 63°`$. Pretty neat, right?* 😀
+*Note :- For example, if $`K_d\omega_c/K_p = 1`$, we get $`PM = 45°`$. If $`K_d\omega_c/K_p = 2`$, we get $`PM = 63°`$. Pretty neat, right?*
 
 Before we move on to gain selection, it's worth pausing to think about what PD control actually does physically. In the time domain, our control law is:
 
@@ -1349,19 +1349,19 @@ With this, we can represent our control system schematics as below:
 
 ## 8 Verification and Validation
 
-In the earlier sections, we mainly focused on building the plant model, linearizing it around our assumptions, designing the control system, and tuning the gains. Now we’re going to shift to verification and validation of our design. Basically, making sure the design performs the way we expect and that our assumptions still hold in simulation! We’ll break this section into three parts:
+In the earlier sections, we mainly focused on building the plant model, linearizing it around our assumptions, designing the control system, and tuning the gains. Now we are going to shift to verification and validation of our design. Basically, making sure the design performs the way we expect and that our assumptions still hold in simulation. We will break this section into three parts:
 
-- Mission run (verification against requirements): We will run the repositioning mission (a 180° slew in 30 s) and check whether all requirements are met. We will also monitor the feedback error to see if it grows large enough to invalidate the linearization and feedback control assumptions. From there, we will look at whether the feedforward and feedback torque commands contain significant energy near the resonant and anti resonant modes, and we will examine modal displacement and acceleration. Finally, we will compare all results against a baseline case: the same mission executed with bang bang feedforward.
+- Mission run (verification against requirements): We will run the repositioning mission (a 180 deg slew in 30 s) and check whether all requirements are met. We will also monitor the feedback error to see if it grows large enough to invalidate the linearization and feedback control assumptions. From there, we will look at whether the feedforward and feedback torque commands contain significant energy near the resonant and antiresonant modes, and we will examine modal displacement and acceleration. Finally, we will compare all results against a baseline case: the same mission executed with S-curve feedforward.
 
-- Parameter sweep (sensitivity testing): Next, we will run a parameter sweep (one parameter at a tme) to identify the conditions under which the mission requirements start to break down. This includes sweeps over inertia variation, damping variation, resonant frequency variations, disturbance levels, and noise levels.
+- Parameter sweep (sensitivity testing): Next, we will run a parameter sweep (one parameter at a time) to identify the conditions under which the mission requirements start to break down. This includes sweeps over inertia variation, damping variation, resonant frequency variations, disturbance levels, and noise levels.
 
-- Monte Carlo (robustness assessment): Lastly, we will run a Monte Carlo simulation with random parameter variations (±30% around the design values) to estimate how often the requirements are violated under uncertainty.
+- Monte Carlo (robustness assessment): Lastly, we will run a Monte Carlo simulation with random parameter variations (+-30% around the design values) to estimate how often the requirements are violated under uncertainty.
 
 *Note :- for the verification and validation, we will be using the nonlinear basilisk model*
 
 ### 8.1 Mission Run
 
-In this subsection, we simulate the repositioning mission and walk through a comparative analysis of the results. To make it easier to understand how the simulation is put together, here’s the simulation architecture we are using:
+In this subsection, we simulate the repositioning mission and walk through a comparative analysis of the results. To make it easier to understand how the simulation is put together, here is the simulation architecture we are using:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
   <img src="image-15.png" width="500">
@@ -1369,34 +1369,34 @@ In this subsection, we simulate the repositioning mission and walk through a com
 
 Now that the simulation architecture is defined, we can evaluate its results with a bit more context.
 
-To kick off the analysis, let’s start with the modal displacement and modal acceleration responses, shown below:
+To kick off the analysis, let us start with the modal displacement and modal acceleration responses, shown below:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
   <img src="mission_vibration.png" width="500">
 </div>
 
-If you look at the modal displacement and acceleration plots, you will notice the difference is pretty clear. The 4th order shaped feedforward + PD feedback brings the RMS displacement down from $`2.382\ \mathrm{mm}`$ to $`0.438\ \mathrm{mm}`$, which works out to an 81.61% reduction in displacement.
+If you look at the modal displacement and acceleration plots, you will notice the difference is pretty clear. The fourth order shaped feedforward + PD feedback brings the post slew RMS displacement down from $`0.2534\ \mathrm{mm}`$ (S-curve + PD) to $`0.099\ \mathrm{mm}`$, which works out to a bit over 60% reduction in displacement.
 
-The acceleration improvement is even more dramatic, where the RMS modal acceleration drops from $`27.209\ \mathrm{mm/s^2}`$ to $`1.566\ \mathrm{mm/s^2}`$, which is a 94.24% reduction.
+The acceleration improvement is also significant, where the post slew RMS modal acceleration drops from about $`1.561\ \mathrm{mm/s^2}`$ (S-curve + PD) to about $`0.445\ \mathrm{mm/s^2}`$ (fourth order + PD), i.e. roughly a 71.52% reduction.
 
-These two plots are great for getting the overall picture, but our main priority is the vibration after the slew is complete, i.e. the residual vibration, since that falls directly inside the mission’s imaging window. Thus, we need to figure out the frequency that contibutes the largest to these post slew ringdowns, or more precisely we need find out the lightly damped mode! and the best way to figure that out is to compute the power spectral density (PSD) and look at it in the plot below:
+These two plots are great for getting the overall picture, but our main priority is the vibration after the slew is complete, i.e. the residual vibration, since that falls directly inside the mission's imaging window. Thus, we need to figure out the frequency that contributes the largest amount to these post slew ringdowns, or more precisely we need to identify the lightly damped mode. The clean way to do that is to compute the power spectral density (PSD) and look at it in the plot below:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
   <img src="modal_acceleration_psd.png" width="500">
 </div>
 
-From this plot it is more or less obvious that the first mode carries more power in both cases. However, we still see a discrepancy in the ratio of power contents between the first and second mode, despite the PD control being identical!
+From this plot it is more or less obvious that the first mode carries more power in both cases. However, we still see a discrepancy in the ratio of power content between the first and second mode, despite the PD control being identical.
 
 *Note :- post slew manoeuvre, feedback control dominates as the torque from the feedforward is zero*
 
- To clarify, let $`P_1`$ be the first mode peak power and $`P_2`$ be the second mode peak power in the post slew modal acceleration PSD.
+To clarify, let $`P_1`$ be the first mode peak power and $`P_2`$ be the second mode peak power in the post-slew modal acceleration PSD.
 
 From the computed post slew PSD peaks, we have:
 
 ```math
 \begin{aligned}
-\text{Unshaped:}\quad &P_{1,u} \approx -33.07\ \mathrm{dB}, \quad P_{2,u} \approx -42.87\ \mathrm{dB} \\
-\text{Fourth order:}\quad &P_{1,4} \approx -57.95\ \mathrm{dB}, \quad P_{2,4} \approx -85.68\ \mathrm{dB}
+\text{S-curve:}\quad &P_{1,s} \approx -47.84\ \mathrm{dB}, \quad P_{2,s} \approx -71.77\ \mathrm{dB} \\
+\text{Fourth order:}\quad &P_{1,4} \approx -57.95\ \mathrm{dB}, \quad P_{2,4} \approx -88.72\ \mathrm{dB}
 \end{aligned}
 ```
 
@@ -1404,19 +1404,19 @@ Now converting dB differences to linear power ratios:
 
 ```math
 \begin{aligned}
-\frac{P_{1,u}}{P_{2,u}} &= 10^{\frac{P_{1,u,\mathrm{dB}} - P_{2,u,\mathrm{dB}}}{10}}
-= 10^{\frac{-33.07 - (-42.87)}{10}}
-= 10^{0.98}
-\approx 9.55
+\frac{P_{1,s}}{P_{2,s}} &= 10^{\frac{P_{1,s,\mathrm{dB}} - P_{2,s,\mathrm{dB}}}{10}}
+= 10^{\frac{-47.84 - (-71.77)}{10}}
+= 10^{2.393}
+\approx 247.25
 \end{aligned}
 ```
 
 ```math
 \begin{aligned}
 \frac{P_{1,4}}{P_{2,4}} &= 10^{\frac{P_{1,4,\mathrm{dB}} - P_{2,4,\mathrm{dB}}}{10}}
-= 10^{\frac{-57.95 - (-85.68)}{10}}
-= 10^{2.773}
-\approx 593.67
+= 10^{\frac{-57.95 - (-88.72)}{10}}
+= 10^{3.077}
+\approx 1193.67
 \end{aligned}
 ```
 
@@ -1424,8 +1424,8 @@ Equivalently, if we compare second mode power relative to first mode power:
 
 ```math
 \begin{aligned}
-\left(\frac{P_2}{P_1}\right)_u \approx 0.1047,\qquad
-\left(\frac{P_2}{P_1}\right)_4 \approx 0.001684
+\left(\frac{P_2}{P_1}\right)_s \approx 0.004044,\qquad
+\left(\frac{P_2}{P_1}\right)_4 \approx 0.000838
 \end{aligned}
 ```
 
@@ -1433,21 +1433,139 @@ so the relative second mode content is reduced by:
 
 ```math
 \begin{aligned}
-\frac{(P_2/P_1)_u}{(P_2/P_1)_4}
-\approx \frac{0.1047}{0.001684}
-\approx 62.16\times
+\frac{(P_2/P_1)_s}{(P_2/P_1)_4}
+\approx \frac{0.004044}{0.000838}
+\approx 4.83\times
 \end{aligned}
 ```
 
-This is the key point, feedback alone can’t suppress the modes this much when they are essentially the same.  
+This is the key point, feedback alone cannot create this difference when the PD law and gains are essentially the same.
 
-So why does the second mode show noticeably lower power than the first when we use the 4th order setpoint shaping? It’s because the feedforward command simply doesn’t inject as much energy into that mode in the first place.
+So why does the second mode show noticeably lower power than the first when we use the fourth order setpoint shaping? It is because the feedforward command simply does not inject as much energy into that mode in the first place.
 
-That’s very different from the bang bang (unshaped)profile, which tends to excite the flexible modes much more broadly, almost like it’s spreading energy across them more uniformly.
+Relative to the S-curve profile, the fourth order profile still leaves less residual mode 2 content after the slew. In other words, both references are smooth, but the fourth order shaping does a better job of keeping injected energy away from the structural modes.
 
-So the standout feature of our control approach isn’t that the PD feedback is doing some magical level of active damping. The real win is that setpoint shaping reduces how much we excite the resonant modes to begin with, which makes the vibrations smaller from the start and easier to manage overall.
+So the standout feature of our control approach is not that the PD feedback is doing some magical level of active damping. The real win is that setpoint shaping reduces how much we excite the resonant modes to begin with, which makes the vibrations smaller from the start and easier to manage overall.
 
-And yes, if we are giving credit where it’s due, kudos to setpoint shaping. 🙂
+And yes, if we are giving credit where it is due, kudos to setpoint shaping.
 
-Now that we have established the imporvements in our residual vibrations, we see how (if) they translate to an improvement in pointing error, from the pointing error plot shown below:
+Now that we have seen the improvement in residual vibrations, the next step is to make sure those gains did not come at the expense of violating the small angle (linearization) assumption used to design the PD feedback controller. A straightforward way to check that is to look at the attitude tracking error during the maneuver:
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="mission_tracking_error.png" width="500">
+</div>
+
+From the absolute tracking error plot, both the S-curve and fourth order cases stay close to the reference trajectory, with the error remaining bounded and relatively small throughout the slew. This suggests that the resulting deviation from the instantaneous reference does not grow large enough to invalidate the linear model assumptions behind the PD controller design.
+
+*Note :- S-curve exhibits a lower peak tracking error compared to the fourth order. This is because S-curve has lower vibrations mid slew compared to the fourth order.*
+
+On another note, if you look closely at the absolute tracking error plot, the S-curve + standard PD case has a clearer oscillatory pattern than the fourth order case. That oscillation lines up with the stronger residual flexible response we saw in the vibration plots.
+
+At the same time, the tracking error also shows a slower, non oscillatory trend in the background. To understand what is driving each part of the response (the oscillatory content versus the slower component), we can look at the power spectral density (PSD) of the absolute tracking error:
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="mission_tracking_error_psd.png" width="500">
+</div>
+
+From this PSD plot, it is clear that the slow trend we noticed in the absolute tracking error (in both cases) is coming from very low frequency content, mainly below about $`0.1\ \text{Hz}`$.
+
+That is exactly what we would expect. If we refer back to the closed loop characteristics in section 6.4, the disturbance torque -> pointing error transfer function shows that the system is most sensitive at low frequencies, particularly around $`0.1\ \text{Hz}`$ and below.
+
+So the PSD is really just confirming the same point, the non oscillatory portion of the tracking error is mainly driven by low frequency input disturbances. In our case, the gravity gradient torque and the SRP torque included in the simulation.
+
+Now that we’ve confirmed the feedback controller stays within the small angle assumptions used in its design, we can move on to evaluating post slew pointing stability.
+
+More specifically, we want to verify that the post slew RMS pointing error remains below 5 arcseconds, as required. To do that, we refer to the pointing error plot below:
+
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="mission_pointing_error.png" width="500">
+</div>
+
+From the plot above, the fouth order setpoint shaping cuts the post slew RMS pointing error by roughly 64.1%. More importantly, it satisfies the post slew pointing stability requirement, reaching an RMS pointing error of 4.65 arcsec.
+
+What’s especially telling is that this improvement happens without changing the feedback controller. That strongly suggests the main driver here is the trajectory shaping, reducing how much we excite the structural resonant modes in the first place, rather than relying on the closed loop controller to “actively” add damping. For this project, avoiding mode excitation upfront turns out to be the more effective approach!
+
+### 8.2 Parameter Sweep
+
+In the previous section, we ran a full mission simulation to verify that our design meets the requirements and that the assumptions we made during modeling and controller design still hold in simulation. In other words, that section answered the question,“Does my design work?”
+
+This section tackles a different set of questions “When does the design stop meeting the requirements?” and “Which parameter variations hurt performance the most?”  
+
+To answer those, we will run a set of simulations using a parameter sweep, where we intentionally under and overestimate key model parameters. This lets us quantify how sensitive the design is to uncertainty and identify which parameters are the most critical drivers of requirement violations.
+
+
+Since the solar array vibrations directly affect post slew pointing stability, we will start this sensitivity study by varying our modal frequency estimate to see whether the design is robust to changes in the structure’s natural frequency.
+
+The motivation is straightforward, in orbit effects like thermal expansion and other structural changes can shift modal frequencies over time. Modeling every possible source of variation is outside the scope of this project, so instead we apply a simple but meaningful test that vary the estimated modal frequency by ±30% and compare how the S-curve profile and the fourth order shaped profile perform.
+
+We will evaluate performance using three main metrics:
+
+- RMS vibration
+- RMS pointing error
+- Peak torque
+
+*Note: Earlier in the project, we assumed actuator constraints were out of scope. Even so, i am including peak torque here as an additional comparison metric, since it helps highlight practical trade offs between the approaches.*
+
+With that said, we observe the results of our modal sweep below:
+
+
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="mc_sweep_modal_frequency.png" width="500">
+</div>
+
+From these plots, it is clear that fourth order setpoint shaping outperforms the S-curve when the modal frequency estimate is within about ±20% of the nominal value.
+
+That said, performance degrades more noticeably when the true natural frequency is lower than expected (i.e., when we have overestimated the mode). The reason is tied to how the fourth order shaping works; it effectively “nulls” vibration starting at the first frequency targeted by the shaping window (through convolution with jerk and snap limited windows). Any excitation below that first targeted frequency isn’t nulled .so if the real mode shifts downward, it can fall into a range where the shaper is no longer doing much.  
+
+This also explains the asymmetry seen in the sweep, overestimating the modal frequency tends to hurt more than underestimating, since underestimation still places the true mode at or above the frequencies the shaper is designed to attenuate.
+
+On the torque side, we only see minor changes in both peak torque and RMS torque across the frequency sweep. That said, the S-curve generally shows a different torque trade off compared to the fourth order shaper. based on the plots, it tends to demand higher peak torque, while the RMS torque behavior differs depending on the specific case.
+
+ *Note :- A proper feasibility study that includes actuator saturation and power/energy budgeting would be needed to make a strong statement about which profile is more energy efficient. But purely in terms of vibration suppression, the fourth order setpoint shaping performs very well as long as the modal frequency estimation error stays within roughly 20%.*
+
+Next, we run a sensitivity study on modal damping ratio.
+
+In space, the primary source of natural damping comes from material/structural damping (as discussed in Section 1). The damping ratio determines how quickly an oscillation dies out. For a lightly damped structure like our solar arrays, getting this parameter wrong can matter especially for post slew pointing stability, because lower than expected damping means the vibrations ring down more slowly.
+
+To evaluate how sensitive our performance is to this uncertainty, we vary the modal damping ratio by ±30% and then compare the resulting changes in vibration suppression and pointing performance, as shown below:
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="mc_sweep_modal_damping.png" width="500">
+</div>
+
+From these plots, the nearly flat curves make the takeaway pretty clear that varying the damping ratio by ±30% doesn’t produce a noticeable change in performance.
+
+That result makes sense when you look at the absolute numbers. With nominal damping ratios of 0.02 and 0.015, a ±30% variation only shifts them to:
+
+- Mode 1: 0.014 to 0.026
+- Mode 2: 0.0105 to 0.0195
+
+Those ranges are still very small in absolute terms, so the change in damping isn’t large enough to either positively or negatively affect the vibration or pointing performance in our simulations.
+
+
+
+The next set of sweeps focuses mainly on the feedback loop, so we expect the feedforward component to have only a limited effect, especially at the lower frequencies we care about here. Because of that, we would also expect both versions of our control architecture to show very similar behavior in this part of the study.
+
+Based on the closed loop characteristics from the earlier section, we can use the rate noise → pointing error transfer function to guide our intuition. It shows that low frequency noise or drift in the gyro rate measurement tends to produce the largest pointing error, since the controller responds strongly to those components.
+
+To validate that behavior in simulation, we inject a sinusoidal rate noise and sweep its frequency from 0.1 Hz up to 50 Hz (the Nyquist frequency). We then track how the sweep impacts our performance metrics, as shown below:
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="mc_sweep_noise_level.png" width="500">
+</div>
+
+Just as expected, at low frequencies the two cases behave almost identically; the performance trends are essentially the same.
+
+Things start to separate around the ~1.3 Hz region. If we go back to the rate noise → pointing error transfer function, that is roughly where the response drops below 0 dB. In other words, beyond about 1.3 Hz, the rate noise is no longer strongly amplified into pointing error by the feedback loop. From that point onward, the overall behavior is increasingly shaped by what the feedforward/trajectory is doing rather than by the feedback response to measurement noise.
+
+Since we have already seen that fourth order setpoint shaping is better at avoiding excitation of the structural resonances, it makes sense that it maintains a lower RMS pointing error, and as a direct consequence, a lower RMS vibration from about 1.3 Hz and above.
+
+One interesting thing shows up when you look at the peak torque and RMS torque plots. You will notice that whenever the RMS vibration and RMS pointing error spike (i.e., near resonance), the peak torque and RMS torque actually dip.
+
+This makes sense if we relate it back to the closed loop sensitivity behavior discussed in Section 6.4. In those frequency ranges, the closed loop system is less responsive to certain disturbance/noise components coming through the measurement path. As a result, the controller doesn’t “fight” those components as aggressively, and the commanded torque around those frequencies ends up being lower compared to frequency ranges where the loop has higher sensitivity.
+
+*Note :- we can verify this by referring back to the sensitivity fucntion in section 6.4*
+
 

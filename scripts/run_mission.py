@@ -33,6 +33,9 @@ from basilisk_sim.spacecraft_properties import (
     compute_mode_lever_arms,
     FLEX_MODE_MASS,
 )
+from basilisk_sim.design_shaper import (
+    design_s_curve_trajectory,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -64,18 +67,18 @@ class MissionConfig:
     rw_max_torque_nm: Optional[float] = 70.0
 
 
-METHODS = ["unshaped", "fourth"]
+METHODS = ["s_curve", "fourth"]
 # Mission comparison is intentionally constrained to standard PD only.
 CONTROLLERS = ["standard_pd"]
 UNIFIED_SAMPLE_DT = 0.01  # 100 Hz to match Basilisk simulation
 
 METHOD_LABELS = {
-    "unshaped": "Unshaped",
+    "s_curve": "S-Curve",
     "fourth": "Fourth-Order",
 }
 
 METHOD_COLORS = {
-    "unshaped": "#d62728",  # red
+    "s_curve": "#17becf",  # cyan
     "fourth": "#2ca02c",  # green
 }
 
@@ -89,8 +92,8 @@ CONTROLLER_COLORS = {
 
 # Comparison colors for method + controller combinations (solid lines).
 COMBO_COLORS = {
-    ("unshaped", "standard_pd"): "#d62728",  # red
-    ("fourth", "standard_pd"): "#1f77b4",  # blue
+    ("s_curve", "standard_pd"): "#17becf",  # cyan
+    ("fourth", "standard_pd"): "#2ca02c",  # green
 }
 
 
@@ -753,53 +756,6 @@ def _npz_matches_config(npz_data: Dict[str, object], config: MissionConfig) -> b
 # ---------------------------------------------------------------------------
 
 
-def _compute_bang_bang_trajectory(
-    theta_final: float, duration: float, dt: float = 0.01, settling_time: float = 30.0
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Compute bang-bang trajectory with settling time after maneuver.
-
-    Args:
-        theta_final: Target angle in radians
-        duration: Maneuver duration in seconds
-        dt: Time step in seconds
-        settling_time: Additional time after maneuver for vibration settling
-
-    Returns:
-        Tuple of (time, theta, omega, alpha) arrays
-    """
-    total_time = duration + settling_time
-    t = np.arange(0, total_time + dt, dt)
-    n = len(t)
-    t_half = duration / 2
-    alpha_max = 4 * theta_final / duration**2
-
-    theta = np.zeros(n)
-    omega = np.zeros(n)
-    alpha = np.zeros(n)
-
-    for i, ti in enumerate(t):
-        if ti <= t_half:
-            alpha[i] = alpha_max
-            omega[i] = alpha_max * ti
-            theta[i] = 0.5 * alpha_max * ti**2
-        elif ti <= duration:
-            t_dec = ti - t_half
-            alpha[i] = -alpha_max
-            omega[i] = alpha_max * t_half - alpha_max * t_dec
-            theta[i] = (
-                0.5 * alpha_max * t_half**2
-                + alpha_max * t_half * t_dec
-                - 0.5 * alpha_max * t_dec**2
-            )
-        else:
-            # Settling phase: maneuver complete, no torque
-            alpha[i] = 0.0
-            omega[i] = 0.0
-            theta[i] = theta_final
-
-    return t, theta, omega, alpha
-
-
 def _integrate_trajectory(
     alpha: np.ndarray, dt: float, theta_final: float, scale_to_final: bool = True
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -823,7 +779,7 @@ def _compute_torque_profile(
 
     Args:
         config: Mission configuration
-        method: Shaping method ('unshaped' or 'fourth')
+        method: Shaping method ('s_curve' or 'fourth')
         settling_time: Time after maneuver for vibration settling (seconds)
 
     Returns:
@@ -894,13 +850,20 @@ def _compute_torque_profile(
             "maneuver_end": maneuver_end,
         }
 
-    t, theta, omega, alpha = _compute_bang_bang_trajectory(
-        theta_final, duration, settling_time=settling_time
-    )
-    torque_unshaped = I_axis * alpha
-    maneuver_end = duration  # Default maneuver end time
+    if method == "s_curve":
+        t, theta, omega, alpha, _, _, _ = design_s_curve_trajectory(
+            target_duration=duration,
+            theta_final=theta_final,
+            I_axis=I_axis,
+            max_torque=config.rw_max_torque_nm,
+            dt=UNIFIED_SAMPLE_DT,
+            settling_time=settling_time,
+        )
+    else:
+        raise ValueError(f"Unknown shaping method: {method}")
 
-    torque = torque_unshaped
+    maneuver_end = duration
+    torque = I_axis * alpha
 
     return {
         "time": t,
@@ -2236,6 +2199,25 @@ def _plot_vibration_comparison(
 
     plot_feedback_only = bool(feedback_vibration)
 
+    def _compute_total_and_post_rms(
+        time_arr: np.ndarray,
+        signal_arr: np.ndarray,
+        maneuver_end_time: Optional[float],
+    ) -> Tuple[float, float]:
+        """Return RMS over full timeline and post-slew timeline."""
+        if len(signal_arr) == 0:
+            return 0.0, 0.0
+        rms_total = float(np.sqrt(np.mean(signal_arr**2)))
+        if maneuver_end_time is None or len(time_arr) == 0:
+            return rms_total, rms_total
+        post_mask = np.array(time_arr, dtype=float) >= float(maneuver_end_time)
+        if np.any(post_mask):
+            post_vals = signal_arr[post_mask]
+        else:
+            post_vals = signal_arr[int(0.9 * len(signal_arr)):] if len(signal_arr) > 10 else signal_arr
+        rms_post = float(np.sqrt(np.mean(post_vals**2))) if len(post_vals) > 0 else rms_total
+        return rms_total, rms_post
+
     plot_entries = []
     if not plot_feedback_only:
         # Plot FEEDFORWARD data (solid lines) only when feedback data is missing
@@ -2270,8 +2252,12 @@ def _plot_vibration_comparison(
                 acc_arr = _highpass_filter(acc_arr, np.array(time, dtype=float), cutoff_hz)
             disp_mm = disp_arr * 1000.0
             acc_mm = acc_arr * 1000.0
-            disp_rms_mm = float(np.sqrt(np.mean(disp_mm**2))) if len(disp_mm) > 0 else 0.0
-            acc_rms_mms2 = float(np.sqrt(np.mean(acc_mm**2))) if len(acc_mm) > 0 else 0.0
+            disp_rms_total_mm, disp_rms_post_mm = _compute_total_and_post_rms(
+                np.array(time, dtype=float), disp_mm, maneuver_end
+            )
+            acc_rms_total_mms2, acc_rms_post_mms2 = _compute_total_and_post_rms(
+                np.array(time, dtype=float), acc_mm, maneuver_end
+            )
 
             label = f"FF: {METHOD_LABELS.get(method, method)}"
             plot_entries.append({
@@ -2279,8 +2265,10 @@ def _plot_vibration_comparison(
                 "disp": disp_mm,
                 "acc": acc_mm,
                 "label": label,
-                "disp_rms_mm": disp_rms_mm,
-                "acc_rms_mms2": acc_rms_mms2,
+                "disp_rms_total_mm": disp_rms_total_mm,
+                "disp_rms_post_mm": disp_rms_post_mm,
+                "acc_rms_total_mms2": acc_rms_total_mms2,
+                "acc_rms_post_mms2": acc_rms_post_mms2,
                 "linestyle": "-",
                 "color": METHOD_COLORS.get(method, "#555555"),
             })
@@ -2301,6 +2289,8 @@ def _plot_vibration_comparison(
                 continue
             if run_mode and run_mode != "combined":
                 continue
+            if maneuver_end is None:
+                maneuver_end = data.get("maneuver_end", config.slew_duration_s)
 
             disp_raw = data.get("displacement_modal_raw")
             acc_raw = data.get("acceleration_modal_raw")
@@ -2319,8 +2309,12 @@ def _plot_vibration_comparison(
                 acc_arr = _highpass_filter(acc_arr, np.array(time, dtype=float), cutoff_hz)
             disp_mm = disp_arr * 1000.0
             acc_mm = acc_arr * 1000.0
-            disp_rms_mm = float(np.sqrt(np.mean(disp_mm**2))) if len(disp_mm) > 0 else 0.0
-            acc_rms_mms2 = float(np.sqrt(np.mean(acc_mm**2))) if len(acc_mm) > 0 else 0.0
+            disp_rms_total_mm, disp_rms_post_mm = _compute_total_and_post_rms(
+                np.array(time, dtype=float), disp_mm, maneuver_end
+            )
+            acc_rms_total_mms2, acc_rms_post_mms2 = _compute_total_and_post_rms(
+                np.array(time, dtype=float), acc_mm, maneuver_end
+            )
 
             label = _combo_label(method, controller)
             plot_entries.append({
@@ -2328,8 +2322,10 @@ def _plot_vibration_comparison(
                 "disp": disp_mm,
                 "acc": acc_mm,
                 "label": label,
-                "disp_rms_mm": disp_rms_mm,
-                "acc_rms_mms2": acc_rms_mms2,
+                "disp_rms_total_mm": disp_rms_total_mm,
+                "disp_rms_post_mm": disp_rms_post_mm,
+                "acc_rms_total_mms2": acc_rms_total_mms2,
+                "acc_rms_post_mms2": acc_rms_post_mms2,
                 "linestyle": "-",
                 "color": _combo_color(method, controller),
             })
@@ -2338,13 +2334,25 @@ def _plot_vibration_comparison(
         plt.close(fig)
         return None
 
+    time_min = min(float(np.min(np.array(entry["time"], dtype=float))) for entry in plot_entries)
+    time_max = max(float(np.max(np.array(entry["time"], dtype=float))) for entry in plot_entries)
+
+    if maneuver_end is not None and time_max > float(maneuver_end):
+        post_color = "#e8f5df"
+        ax_disp.axvspan(float(maneuver_end), time_max, color=post_color, alpha=0.30, zorder=0, label="Post slew region")
+        ax_acc.axvspan(float(maneuver_end), time_max, color=post_color, alpha=0.30, zorder=0)
+
     for entry in plot_entries:
         color = entry.get("color", "#555555")
         ax_disp.plot(
             entry["time"],
             entry["disp"],
             color=color,
-            label=f'{entry["label"]} (RMS={entry["disp_rms_mm"]:.3f} mm)',
+            label=(
+                f'{entry["label"]} '
+                f'(RMS total={entry["disp_rms_total_mm"]:.3f} mm, '
+                f'post-slew={entry["disp_rms_post_mm"]:.3f} mm)'
+            ),
             linewidth=1.5,
             linestyle=entry["linestyle"],
         )
@@ -2352,7 +2360,11 @@ def _plot_vibration_comparison(
             entry["time"],
             entry["acc"],
             color=color,
-            label=f'{entry["label"]} (RMS={entry["acc_rms_mms2"]:.3f} mm/s^2)',
+            label=(
+                f'{entry["label"]} '
+                f'(RMS total={entry["acc_rms_total_mms2"]:.3f} mm/s^2, '
+                f'post-slew={entry["acc_rms_post_mms2"]:.3f} mm/s^2)'
+            ),
             linewidth=1.5,
             linestyle=entry["linestyle"],
         )
@@ -2367,14 +2379,14 @@ def _plot_vibration_comparison(
     ax_disp.set_title("Modal Displacement Response", fontweight="bold")
     ax_disp.set_ylabel("Displacement (mm)")
     ax_disp.grid(True, alpha=0.3)
-    ax_disp.legend(loc="upper right", fontsize=8, ncol=2)
+    ax_disp.legend(loc="upper right", fontsize=8)
     ax_disp.axhline(0, color="black", linewidth=0.5, alpha=0.3)
 
     # Acceleration subplot
     ax_acc.set_title("Modal Acceleration Response", fontweight="bold")
     ax_acc.set_ylabel(r"Acceleration (mm/s$^2$)")
     ax_acc.grid(True, alpha=0.3)
-    ax_acc.legend(loc="upper right", fontsize=8, ncol=2)
+    ax_acc.legend(loc="upper right", fontsize=8)
     ax_acc.axhline(0, color="black", linewidth=0.5, alpha=0.3)
 
     ax_disp.set_xlabel("Time (s)")
@@ -2748,7 +2760,7 @@ def _plot_pointing_error(
     fallback_maneuver_end = float(config.slew_duration_s) if config is not None else 30.0
 
     target_controller = "standard_pd"
-    target_methods = [m for m in ("unshaped", "fourth") if m in METHODS]
+    target_methods = [m for m in METHODS if m in pointing_errors]
 
     for method in target_methods:
         method_data = pointing_errors.get(method, {})
@@ -2788,13 +2800,15 @@ def _plot_pointing_error(
         rms_arcsec = float(np.sqrt(np.mean(np.square(residual))) * 3600.0) if len(residual) else 0.0
         post_slew_rms_arcsec[method] = rms_arcsec
 
-        errors_arcsec = np.abs(errors_deg) * 3600.0
+        errors_deg_abs = np.abs(errors_deg)
+        errors_arcsec = errors_deg_abs * 3600.0
         positive_time = time[time > 0]
         time_floor = float(np.min(positive_time)) if len(positive_time) else 1e-6
         time_plot = np.where(time > 0, time, time_floor)
         label = f"{_combo_label(method, target_controller)} (post-slew RMS={rms_arcsec:.2f} arcsec)"
         plot_entries.append({
             "time": time_plot,
+            "errors_deg": errors_deg_abs,
             "errors_arcsec": errors_arcsec,
             "label": label,
             "color": _combo_color(method, target_controller),
@@ -2826,7 +2840,7 @@ def _plot_pointing_error(
     for entry in plot_entries:
         ax_full.semilogx(
             entry["time"],
-            entry["errors_arcsec"],
+            entry["errors_deg"],
             color=entry["color"],
             label=entry["label"],
             linewidth=1.8,
@@ -2834,7 +2848,7 @@ def _plot_pointing_error(
         )
         mask_post = entry["time"] >= post_start
         if np.any(mask_post):
-            ax_post.semilogx(
+            ax_post.plot(
                 entry["time"][mask_post],
                 entry["errors_arcsec"][mask_post],
                 color=entry["color"],
@@ -2857,11 +2871,11 @@ def _plot_pointing_error(
 
     ax_full.set_title("Full Mission Pointing Error", fontweight="bold")
     ax_full.set_xlabel("Time (s)")
-    ax_full.set_ylabel("Absolute Pointing Error (arcsec)")
+    ax_full.set_ylabel("Absolute Pointing Error (deg)")
     ax_full.grid(True, alpha=0.3, which="both")
     if time_end > time_start:
         ax_full.set_xlim([time_start, time_end])
-    y_max = max(float(np.max(entry["errors_arcsec"])) for entry in plot_entries if len(entry["errors_arcsec"]) > 0)
+    y_max = max(float(np.max(entry["errors_deg"])) for entry in plot_entries if len(entry["errors_deg"]) > 0)
     ax_full.set_ylim([0.0, max(y_max * 1.05, 1e-3)])
 
     ax_post.set_title("Post-Slew Pointing Error", fontweight="bold")
@@ -2889,7 +2903,7 @@ def _plot_pointing_error(
     ax_full.legend(unique_handles, unique_labels, loc="lower left")
     ax_post.legend(loc="upper right")
 
-    fig.suptitle("Pointing Error Comparison: Unshaped vs Fourth-Order (Standard PD)", fontweight="bold", y=0.98)
+    fig.suptitle("Pointing Error Comparison: Feedforward Profiles (Standard PD)", fontweight="bold", y=0.98)
     fig.subplots_adjust(left=0.06, right=0.99, top=0.90, bottom=0.14, wspace=0.22)
     _ensure_dir(out_dir)
     plot_path = os.path.abspath(os.path.join(out_dir, "mission_pointing_error.png"))
