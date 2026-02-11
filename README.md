@@ -30,7 +30,7 @@ The control architecture is designed to address the mission requirements as give
   <summary>Click to view motion profiles</summary>
   
   <p align="center">
-  <img src="output/plots/motion_profile_comparison.png" width="700">
+  <img src="Docs/plots/motion_profile_comparison.png" width="700">
   </p>
   </details>
 - **Feedback Control**: MRP based PD feedback loop tuned for 
