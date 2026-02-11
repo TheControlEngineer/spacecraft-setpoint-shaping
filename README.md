@@ -1,4 +1,4 @@
-# Setpoint Shaping and Pointing Control for Satellite Repositioning
+# Setpoint Shaping and Pointing Control for Satellite Repositioning  
 
 <video controls src="Screen Recording 2026-02-11 164011.mp4" title="180° slew simulation in Vizard"></video>
 
