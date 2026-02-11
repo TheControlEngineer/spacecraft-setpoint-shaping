@@ -1,6 +1,7 @@
 # Setpoint Shaping and Pointing Control for Satellite Repositioning  
 
-<video controls src="Screen Recording 2026-02-11 164011.mp4" title="180° slew simulation in Vizard"></video>
+https://github.com/user-attachments/assets/1fa069d6-fafc-4ed7-aaca-9640928969a5
+
 
 This project is a Basilisk simulation framework for spacecraft attitude control that demonstrates how jerk and snap limited setpoint shaping can reduce residual vibrations in flexible structures during rapid slew manoeuvres. The project implements an  GNC workflow from nonlinear plant modeling to Monte Carlo mission analysis to enable a spacecraft to perform 180° slew in 30 s with flexible solar arrays, while maintaining sub 7 arcsecond pointing stability within 60s of post slew, for the improvement of comet imaging resolution.
 
