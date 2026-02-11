@@ -7,6 +7,8 @@ This project is a Basilisk simulation framework for spacecraft attitude control 
 
 The control architecture is designed to address the mission requirements as given:
 
+<div align="center">
+
 | Requirement | Value | 
 |-------------|-------|
 | Slew angle | 180° |
@@ -14,6 +16,8 @@ The control architecture is designed to address the mission requirements as give
 | Post slew settling |  RMS ≤7 arcsec (within 60s) |
 | Post slew array acceleration | RMS < 10 $`mm/s^2`$  |
 |Phase margin | 75°|
+
+</div>
 
 > **Note**: For the full design, analysis, derivations, and trade studies, see the **[Design Report](Docs/design_report.md)**.
 
@@ -44,11 +48,15 @@ instantaneous trajectory tracking and limited active damping capabilities.
 
 The mission simulation compares an S-curve motion profile as baseline against the custom fourth order shaped motion profile.
 
+<div align="center">
+
 | Metric | S-Curve (Baseline) | Fourth order | Improvement |
 |---|---|---|---|
 | **RMS Pointing Error** | 12.96 arcsec | **4.65 arcsec** | **64% reduction**  |
 | **RMS Array Acceleration** | 1.56 mm/s² | **0.45 mm/s²** | **71% reduction** |
 | **Imaging Blur** | 10 px | **3.3 px** | **~70% reduction** |
+
+</div>
 
 <p align="center">
   <img src="Docs/plots/comet_blur_comparison_psd_check.png" alt="Pointing error comparison" width="700">
@@ -65,8 +73,7 @@ In a 500 run Monte Carlo analysis with ±20% parameter variations, the fourth or
   <em>Figure: Monte Carlo simulation.</em>
 </p>
 
-
-
+<div align="center">
 
 | Metric | S-Curve (Baseline) | Fourth order | Results |
 |---|---|---|---|
@@ -74,6 +81,8 @@ In a 500 run Monte Carlo analysis with ±20% parameter variations, the fourth or
 | **Pointing Error (Mean)** | 19.75 arcsec (P95: 27.91) | **3.70 arcsec** (P95: 5.14) | **~5x better** |
 | **Vibration (Mean)** | 0.59 mm (P95: 0.84) | **0.26 mm** (P95: 0.36) | **~2.2x better** |
 | **Peak Torque (Mean)** | 16.9 Nm | **18.9 Nm** | *~1.2x higher* |
+
+</div>
 
 ---
 
@@ -120,12 +129,16 @@ basilisk_simulation/
 
 ### Prerequisites
 
+<div align="center">
+
 | Dependency | Notes |
 |---|---|
 | **Python 3.10+** | |
 | **[Basilisk](https://hanspeterschaub.info/basilisk/)** | Spacecraft dynamics simulation framework |
 | NumPy, SciPy, Matplotlib | Installed automatically via `pip` |
 | **Vizard** *(optional)* | For interactive 3-D mission visualisation |
+
+</div>
 
 ### 1. Clone the repository
 
