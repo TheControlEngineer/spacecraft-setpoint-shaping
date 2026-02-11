@@ -14,12 +14,12 @@ import numpy as np
 
 try:
     import imageio.v2 as imageio
-except ImportError:  # pragma: no cover - optional dependency
+except ImportError:  # pragma: no cover optional dependency
     imageio = None
 
 try:
     from scipy.ndimage import gaussian_filter
-except ImportError:  # pragma: no cover - optional dependency
+except ImportError:  # pragma: no cover optional dependency
     gaussian_filter = None
 
 

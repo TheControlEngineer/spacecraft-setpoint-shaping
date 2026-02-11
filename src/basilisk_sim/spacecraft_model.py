@@ -42,9 +42,9 @@ class FlexibleSpacecraft:
     def __init__(self):
         """Set up spacecraft parameters."""
         
-        # Hub properties - these are typical for a small observation satellite
-        self.hub_mass = 750.0  # kg - main body mass
-        self.hub_inertia = HUB_INERTIA.tolist()  # kg*m^2 - principal inertias
+        # Hub properties these are typical for a small observation satellite
+        self.hub_mass = 750.0  # kg main body mass
+        self.hub_inertia = HUB_INERTIA.tolist()  # kg*m^2 principal inertias
         self.modal_mass = FLEX_MODE_MASS
         self.flex_mode_locations = {name: loc.copy() for name, loc in FLEX_MODE_LOCATIONS.items()}
         
@@ -52,7 +52,7 @@ class FlexibleSpacecraft:
         # Each array is about 50 kg deployed mass
         self.array_mass = 50.0  # kg each
         
-        # Modal data - these are the two dominant bending modes we want to suppress
+        # Modal data these are the two dominant bending modes we want to suppress
         # First mode is typically the fundamental bending, second is a higher harmonic
         self.array_modes = [
             {'frequency': 0.4, 'damping': 0.02, 'name': 'First bending'},
@@ -102,7 +102,7 @@ class FlexibleSpacecraft:
         RW1.Js = self.rw_inertia
         RW1.u_max = self.rw_max_torque
         
-        # Wheel 2: Canted -X+Y
+        # Wheel 2: canted with negative X and positive Y
         RW2 = reactionWheelStateEffector.RWConfigPayload()
         RW2.gsHat_B = [[-np.sqrt(2)/2], [np.sqrt(2)/2], [0.0]]
         RW2.Js = self.rw_inertia
@@ -157,7 +157,7 @@ class FlexibleSpacecraft:
         # Effective mass participating in each mode (about 10% of array mass)
         modal_mass = self.modal_mass  # kg
         
-        # Mode 1: First bending (0.4 Hz) - Port side array
+        # Mode 1: First bending (0.4 Hz) Port side array
         mode1_port = linearSpringMassDamper.LinearSpringMassDamper()
         mode1_port.ModelTag = "mode1_port"
         omega1 = 2 * np.pi * self.array_modes[0]['frequency']
@@ -167,13 +167,13 @@ class FlexibleSpacecraft:
         mode1_port.massInit = modal_mass
         r_mode1_port = self.flex_mode_locations["mode1_port"]
         mode1_port.r_PB_B = [[float(r_mode1_port[0])], [float(r_mode1_port[1])], [float(r_mode1_port[2])]]
-        # For yaw (Z-rotation) with mass on Y-axis, tangential direction is X
+        # For yaw (Z rotation) with mass on Y axis, tangential direction is X
         mode1_port.pHat_B = [[1.0], [0.0], [0.0]]
         mode1_port.rhoInit = 0.0
         mode1_port.rhoDotInit = 0.0
         self.scObject.addStateEffector(mode1_port)
         
-        # Mode 2: Second bending (1.3 Hz) - Port side
+        # Mode 2: Second bending (1.3 Hz) Port side
         mode2_port = linearSpringMassDamper.LinearSpringMassDamper()
         mode2_port.ModelTag = "mode2_port"
         omega2 = 2 * np.pi * self.array_modes[1]['frequency']
@@ -188,7 +188,7 @@ class FlexibleSpacecraft:
         mode2_port.rhoDotInit = 0.0
         self.scObject.addStateEffector(mode2_port)
         
-        # Mode 1: First bending - Starboard side
+        # Mode 1: First bending Starboard side
         mode1_stbd = linearSpringMassDamper.LinearSpringMassDamper()
         mode1_stbd.ModelTag = "mode1_starboard"
         mode1_stbd.k = modal_mass * omega1**2
@@ -201,7 +201,7 @@ class FlexibleSpacecraft:
         mode1_stbd.rhoDotInit = 0.0
         self.scObject.addStateEffector(mode1_stbd)
         
-        # Mode 2: Second bending - Starboard side
+        # Mode 2: Second bending Starboard side
         mode2_stbd = linearSpringMassDamper.LinearSpringMassDamper()
         mode2_stbd.ModelTag = "mode2_starboard"
         mode2_stbd.k = modal_mass * omega2**2

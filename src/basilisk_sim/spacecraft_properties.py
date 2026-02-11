@@ -20,7 +20,7 @@ HUB_INERTIA = np.array(
     dtype=float,
 )
 
-# Modal mass is the effective mass for each flexible mode (spring-mass-damper).
+# Modal mass is the effective mass for each flexible mode (spring mass damper).
 FLEX_MODE_MASS = 5.0
 # Array mass is the physical appendage mass (not used by default in inertia sizing).
 ARRAY_MASS_PER_WING = 50.0

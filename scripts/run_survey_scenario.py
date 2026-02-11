@@ -37,7 +37,7 @@ class StepAndStareSurveyScenario:
         self.exposure_duration = exposure_duration
         self.settling_budget = settling_budget
         
-        # Step-and-stare timeline
+        # Step and stare timeline
         self.slew_end = slew_duration
         self.earliest_image = slew_duration  # Can't image before slew ends!
         self.latest_image = slew_duration + settling_budget
@@ -160,7 +160,7 @@ class SurveyCamera:
         rms_attitude_error = np.sqrt(np.mean(attitude_error**2))
         peak_attitude_error = np.max(np.abs(attitude_error))
         
-        # Vibration-induced jitter - what input shaping suppresses
+        # Vibration induced jitter. This is what input shaping suppresses
         vibration_exposure = vibration[idx]
         rms_vibration = np.sqrt(np.mean(vibration_exposure**2))
         peak_vibration = np.max(np.abs(vibration_exposure))
@@ -180,7 +180,7 @@ class SurveyCamera:
         blur_arcsec = np.degrees(total_jitter) * 3600
         blur_pixels = blur_arcsec / self.plate_scale_arcsec
         
-        # Also report jitter-only blur (pure input shaping metric)
+        # Also report jitter only blur (pure input shaping metric)
         jitter_blur_arcsec = np.degrees(rms_jitter) * 3600
         jitter_blur_pixels = jitter_blur_arcsec / self.plate_scale_arcsec
         

@@ -109,13 +109,13 @@ def _build_flexible_plant_tf(inertia: np.ndarray,
     if len(zetas) < n_modes:
         zetas.extend([zetas[-1]] * (n_modes - len(zetas)))
 
-    # Infer lever arms from modal gains: gain = r / I_axis -> r = gain * I_axis
+    # Infer lever arms from modal gains: gain = r / I_axis to r = gain * I_axis
     lever_arms = [float(g) * I_axis for g in modal_gains[:n_modes]]
     masses = [float(FLEX_MODE_MASS)] * n_modes
 
     # Assemble mass, damping, stiffness matrices for coupled model
     sum_mr2 = sum(m * r * r for m, r in zip(masses, lever_arms))
-    # Avoid double-counting if inertia already includes modal masses.
+    # Avoid double counting if inertia already includes modal masses.
     base_inertia = I_axis - sum_mr2 if I_axis > sum_mr2 else I_axis
 
     m_mat = np.zeros((n_modes + 1, n_modes + 1))
@@ -267,7 +267,7 @@ class MRPFeedbackController:
             self.last_time = current_time
         
         # Compute control torque
-        # tau = -K * sigma_error - P * omega_error + Ki * integral(sigma_error dt)
+        # Control torque combines proportional, derivative, and optional integral action
         torque = -self.K * sigma_error - self.P * omega_error
         
         if self.Ki > 0:
@@ -299,7 +299,7 @@ class MRPFeedbackController:
         # Damping ratio (sigma_dot ≈ 0.25 * omega)
         zeta = self.P / np.sqrt(self.K * I_avg)
         
-        # Closed-loop bandwidth (approximately)
+        # Closed loop bandwidth (approximately)
         omega_bw = omega_n * np.sqrt(1 - 2*zeta**2 + np.sqrt(4*zeta**4 - 4*zeta**2 + 2))
         
         # Settling time (2% criterion)
@@ -339,12 +339,12 @@ class MRPFeedbackController:
         """
         I = self.inertia[axis, axis]
         
-        # Plant (torque -> sigma): 1/(4*I*s^2)
+        # Plant (torque to sigma): 1/(4*I*s^2)
         sigma_scale = 4.0
         plant_num = [1.0]
         plant_den = [sigma_scale * I, 0, 0]
         
-        # Controller in sigma-domain: K + 4*P*s (PD on omega)
+        # Controller in sigma domain: K + 4*P*s (PD on omega)
         if self.Ki > 0:
             # PID: (Ki + K*s + 4*P*s^2) / s
             ctrl_num = [4.0 * self.P, self.K, self.Ki]
@@ -354,7 +354,7 @@ class MRPFeedbackController:
             ctrl_num = [4.0 * self.P, self.K]
             ctrl_den = [1]
         
-        # Open-loop: G*C
+        # Open loop: G*C
         G = signal.TransferFunction(plant_num, plant_den)
         C = signal.TransferFunction(ctrl_num, ctrl_den)
         
@@ -370,7 +370,7 @@ class MRPFeedbackController:
         open_loop = signal.ZerosPolesGain(ol_zeros, ol_poles, ol_gain)
         open_loop_tf = open_loop.to_tf()
         
-        # Closed-loop: GC / (1 + GC)
+        # Closed loop: GC / (1 + GC)
         # For simple PD on double integrator: 4*I*s^2 + 4*P*s + K
         if self.Ki > 0:
             cl_num = [4.0 * self.P, self.K, self.Ki]
@@ -416,7 +416,7 @@ class MRPFeedbackController:
             sigma_scale = 4.0
             plant = signal.TransferFunction([1.0], [sigma_scale * I, 0, 0])
         
-        # Controller in sigma-domain: K + 4*P*s
+        # Controller in sigma domain: K + 4*P*s
         if self.Ki > 0:
             ctrl_num = [4.0 * self.P, self.K, self.Ki]
             ctrl_den = [1, 0]
@@ -426,7 +426,7 @@ class MRPFeedbackController:
         
         controller = signal.TransferFunction(ctrl_num, ctrl_den)
         
-        # Open-loop = Plant * Controller
+        # Open loop = Plant * Controller
         plant_num = np.atleast_1d(np.squeeze(plant.num))
         plant_den = np.atleast_1d(np.squeeze(plant.den))
         ctrl_num = np.atleast_1d(np.squeeze(controller.num))
@@ -483,7 +483,7 @@ class FilteredDerivativeController:
         self.sigma_target = np.zeros(3)
         self.omega_target = np.zeros(3)
         
-        # Filter state (3-axis)
+        # Filter state (3 axis)
         self.filtered_rate = np.zeros(3)
         self.last_time = None
         
@@ -532,12 +532,12 @@ class FilteredDerivativeController:
         sigma_error = self.compute_mrp_error(sigma_current)
         omega_error = omega_current - self.omega_target
         
-        # Update filtered rate (first-order low-pass filter)
+        # Update filtered rate (first order low pass filter)
         if self.last_time is not None:
             dt = current_time - self.last_time
             if dt > 0:
-                # Low-pass filter: tau*omega_f' + omega_f = omega
-                # Discretized: omega_f[k+1] = omega_f[k] + (dt/tau)*(omega[k] - omega_f[k])
+                # Low pass filter: tau*omega_f' + omega_f = omega
+                # Discrete form updates omega_f with the difference between omega and omega_f
                 alpha = dt / (self.tau + dt)  # Bilinear approximation
                 self.filtered_rate = (1 - alpha) * self.filtered_rate + alpha * omega_error
         else:
@@ -621,7 +621,7 @@ class FilteredDerivativeController:
         # Filtered controller: C(s) = K + P*s/(tau*s + 1)
         controller = self.get_transfer_function(axis)
 
-        # Open-loop = Plant * Controller
+        # Open loop = Plant * Controller
         plant_num = np.atleast_1d(np.squeeze(plant.num))
         plant_den = np.atleast_1d(np.squeeze(plant.den))
         ctrl_num = np.atleast_1d(np.squeeze(controller.num))
@@ -704,14 +704,14 @@ class NotchFilterController:
         """Compute discrete notch filter coefficients using bilinear transform."""
         self.notch_coeffs = []
 
-        # Depth factor: 10^(-depth_dB/20) for zero damping
+        # Depth factor: 10^( depth_dB/20) for zero damping
         depth_factor = 10 ** (-self.notch_depth_db / 20.0)
         zeta_z = depth_factor * 0.5  # Zero damping for depth
         zeta_p = self.notch_width  # Pole damping for width
 
         for f_notch in self.notch_freqs_hz:
             omega_n = 2 * np.pi * f_notch
-            # Store continuous-time parameters for transfer function analysis
+            # Store continuous time parameters for transfer function analysis
             self.notch_coeffs.append({
                 'omega_n': omega_n,
                 'zeta_z': zeta_z,
@@ -751,11 +751,11 @@ class NotchFilterController:
             x1, x2 = self.notch_states[notch_idx][axis]
             u = input_signal[axis]
 
-            # Semi-implicit Euler integration for stability
+            # Semi implicit Euler integration for stability
             x2_new = x2 + dt * (-omega_n**2 * x1 - 2 * zeta_p * omega_n * x2 + u)
             x1_new = x1 + dt * x2_new
 
-            # y = C*x + D*u, where C = [0, 2*omega_n*(zeta_z - zeta_p)], D = 1
+            # y = C*x + D*u, where C = [0, 2*omega_n*(zeta_z zeta_p)], D = 1
             output[axis] = 2.0 * omega_n * (zeta_z - zeta_p) * x2_new + u
 
             self.notch_states[notch_idx][axis] = [x1_new, x2_new]
@@ -794,7 +794,7 @@ class NotchFilterController:
 
         self.last_time = current_time
 
-        # Compute torque with notch-filtered rate
+        # Compute torque with notch filtered rate
         torque = -self.K * sigma_error - self.P * omega_filtered
 
         return torque
@@ -805,7 +805,7 @@ class NotchFilterController:
 
         Returns C(s) = K + P * s * H_notch1(s) * H_notch2(s) * ...
         """
-        # Base PD in sigma-domain: 4*P*s + K
+        # Base PD in sigma domain: 4*P*s + K
         num = np.array([4.0 * self.P, self.K])
         den = np.array([1.0])
 
@@ -1168,7 +1168,7 @@ def design_gains_from_bandwidth(inertia: np.ndarray,
     # From omegan = sqrt(K/(4I))
     K = 4.0 * omega_n**2 * I_avg
 
-    # From zeta = P / sqrt(K*I)  (sigma_dot ≈ 0.25*omega)
+    # From zeta = P / sqrt(K*I) (sigma_dot ≈ 0.25*omega)
     P = 2.0 * damping_ratio * omega_n * I_avg
     
     print(f"Gain design for {bandwidth_hz:.2f} Hz bandwidth, zeta={damping_ratio}:")
@@ -1197,7 +1197,7 @@ if __name__ == "__main__":
     # Set target
     controller.set_target(np.array([0.0, 0.0, 1.0]))  # 180 deg yaw
     
-    # Get closed-loop parameters
+    # Get closed loop parameters
     params = controller.get_closed_loop_params()
     print(f"\nClosed-loop parameters:")
     print(f"  Natural frequency: {params['omega_n_hz']:.3f} Hz")

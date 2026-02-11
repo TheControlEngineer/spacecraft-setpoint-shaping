@@ -12,17 +12,15 @@ So if you don’t mind a casual tone and a slightly unconventional writing style
 ## Table of Contents
 
 1. [Problem Statement and Requirements](#1-problem-statement-and-requirements)
-2. [Spacecraft Physical Model](#2-spacecraft-physical-model)
-3. [Reaction Wheel Configuration: Why This Geometry?](#3-reaction-wheel-configuration-why-this-geometry)
-4. [Flexible Mode Dynamics: The Base Excitation Problem](#4-flexible-mode-dynamics-the-base-excitation-problem)
-5. [From Nonlinear Basilisk Model to Linear Control Design](#5-from-nonlinear-basilisk-model-to-linear-control-design)
-6. [Why PD Control? A Transfer Function Analysis](#6-why-pd-control-a-transfer-function-analysis)
-7. [Gain Selection: Deriving K and P from Requirements](#7-gain-selection-deriving-k-and-p-from-requirements)
-8. [Why Feedforward? The Fundamental Limitation of Feedback](#8-why-feedforward-the-fundamental-limitation-of-feedback)
-9. [Why Fourth-Order Shaping? Spectral Analysis](#9-why-fourth-order-shaping-spectral-analysis)
-10. [System Integration and Trajectory Tracking](#10-system-integration-and-trajectory-tracking)
-11. [Validation and Results](#11-validation-and-results)
-12. [Summary of Design Decisions](#12-summary-of-design-decisions)
+2. [Spacecraft Model](#2-spacecraft-model)
+3. [Reaction Wheels ](#3-reaction-wheels)
+4. [Flexible Mode Dynamics](#4-flexible-mode-dynamics)
+5. [Linearization of the Spacecraft Model](#5-linearization-of-the-spacecraft-model)
+6. [Feedback Control Design](#6-feedback-control-design)
+7. [Feedforward Control Design](#7-feedforward-control-design)
+8. [Verification and Validation](#8-verification-and-validation)
+9. [Conclusion](#9-conclusion)
+
 
 
 ## 1. Problem Statement and Requirements 
@@ -45,10 +43,10 @@ This residual motion degrades pointing accuracy and can force the spacecraft to 
 
 | Requirement | Value | Rationale |
 |-------------|-------|-----------|
-| Slew angle | 180° | Mission geometry |
-| Slew time | 30 s | Operational constraint |
-| Post slew settling |  5 arcsec | Imaging window |
-| Residual vibration | < 1 mm modal displacement | Payload requirement 
+| Slew angle | 180° | Comet observation (coma) |
+| Slew time | 30 s | Mission requirement |
+| Post slew settling |  RMS ≤7 arcsec (within 60s) | Imaging requirement |
+| Post slew array acceleration | RMS < 10 $`mm/s^2`$ modal acceleration | Saftey requirement 
 |Phase margin | 70°-75°| Robustness requirement
 
  *Note:- These requirements are defined solely for this project and do not represent any known ongoing or past mission requirements.*
@@ -253,8 +251,8 @@ With our parameter sweep now complete, we analyse the results given in the figur
 
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <img src="image.png" width="300">
-  <img src="image-1.png" width="300">
+  <img src="plots\image.png" width="300">
+  <img src="plots\image-1.png" width="300">
 </div>
 
 
@@ -312,7 +310,7 @@ Now, the sketch isn’t exactly a work of art , but it does the job! it shows wh
 
 <div style="display: flex; justify-content: center; gap: 10px;">
 
-<image src = "image-2.png" width = 600>
+<image src = "plots\image-2.png" width = 600>
 
 </div>
 
@@ -447,7 +445,7 @@ t_s \approx \frac{4}{0.02 \times 2.51} = \frac{4}{0.05} = 80 \text{ seconds}
 \end{aligned}
 ```
 
-So yeah… this mode takes on the order of 80 seconds to settle, which is more than twice our slew time! That’s exactly why we’d like to avoid (as much as possible) exciting these flexible mode frequencies during the manoeuvre.
+So, this mode takes on the order of 80 seconds to settle, which is more than twice our slew time! That’s exactly why we’d like to avoid (as much as possible) exciting these flexible mode frequencies during the manoeuvre.
 
 *Note :- if you are wondering about the second mode, the settling time is around 24.48 seconds!*
 
@@ -583,7 +581,7 @@ So yeah, in the Bode plot of our flexible plant (torque $`\rightarrow`$ attitude
 
 <div style="display: flex; justify-content: center; gap: 10px;">
 
-<image src = "image-3.png" width = 500>
+<image src = "plots\image-3.png" width = 500>
 
 
 
@@ -862,14 +860,14 @@ we obtain
 \boxed{K_d = 2 \times 0.9 \times 1.0 \times 925 = 1665\ \text{N}\cdot\text{m}\cdot\text{s}}
 \end{aligned}
 ```
-*Note: This derivation uses a second order approximation, so expect some follow up tuning in simulation. You can do this manually  or set up an optimizer to selcet PD gains that satisfy the closed loop requirements (objective,constraints...etc). i used an optimizer to tune $`K_p = 3.74\times10^3`$ and $`K_d = 1.67\times10^3`$ and validated the outcome in simulation. (tools like copilot ot chatgpt can help with grunt work and setups, but the specs and validation are still on us🤷‍♂️.)*
+*Note: This derivation uses a second order approximation, so expect some follow up tuning in simulation. You can do this manually  or set up an optimizer to selcet PD gains that satisfy the closed loop requirements (objective,constraints...etc). i used an optimizer to tune $`K_p = 3.74\times10^3`$ and $`K_d = 1.67\times10^3`$ and validated the outcome in simulation. (tools like copilot ot chatgpt can help with grunt work and setups, but the specs and validation are still on us.)*
 
 
 Now with our gains finalised, we look at the bode plot of our loop transfer function $`L(s)`$ :
 
 <div style="display: flex; justify-content: center; gap: 10px;">
 
-<image src = "image-4.png" width = 500>
+<image src = "plots\image-4.png" width = 500>
 
 </div>
 
@@ -945,7 +943,7 @@ Now, we look into the stability of our closed loop system. Looking back at the N
 
 <div style="display: flex; justify-content: center; gap: 10px;">
 
-<image src = "image-5.png" width = 500>
+<image src = "plots\image-5.png" width = 500>
 
 </div>
 
@@ -956,7 +954,7 @@ From the Nyquist plot, we immediately see that the closed loop system is stable,
 Now that we’ve checked the Nyquist plot and convinced ourselves the closed loop is stable (with a decent phase margin), the next step is to look at how the loop behaves for tracking, disturbance rejection, and noise rejection. The standard way to do that is by plotting the sensitivity functions: the sensitivity $`S(j\omega)`$ (disturbance rejection) and complementary sensitivity $`T(j\omega)`$ (tracking / noise shaping).
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <image src="image-6.png" width=500>
+  <image src="plots\image-6.png" width=500>
 </div>
 
 From the sensitivity plot, it looks like we get strong disturbance rejection up to about $`0.25\,\text{Hz}`$ (highlighted in green). Around the two resonance frequencies, $`S(j\omega)`$ shows dips (roughly $`-5dB`$ in our plot). That’s consistent with the loop having meaningful authority at those frequencies (and in our case, with the added damping from rate feedback helping to keep the resonances under control).
@@ -997,7 +995,7 @@ I’m asking these because the requirement in Section 1 is stated in time domain
 To understand how input disturbance torques map into pointing error, we look at the closed-loop transfer function $`G(j\omega)S(j\omega)`$, shown below:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <image src="image-7.png" width=500>
+  <image src="plots\image-7.png" width=500>
 </div>
 
 From the plot, the first thing that jumps out is that below about $`0.1\,\text{Hz}`$ the curve is fairly flat at roughly $`-25\,\text{dB}`$. Converting that to linear units:
@@ -1017,7 +1015,7 @@ Next we check much does our gyro rate measurement noise affect our pointing erro
 
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <image src="image-8.png" width=500>
+  <image src="plots\image-8.png" width=500>
 </div>
 
 Well, right off the bat we see a huge gain at low frequencies (below 0.1 Hz) of about $`40\ \mathrm{dB}`$ (i.e roughly a $`100\times`$ linear gain, since $`20\log_{10}(100)=40`$). 
@@ -1043,7 +1041,7 @@ We achieve this by deliberately shaping the reference trajectory so that its spe
 Before we start with trajectory shaping, I want to briefly cover a bit of theory to help motivate my approach. Now that being said,lets consider a rectangular time domain [window function](https://en.wikipedia.org/wiki/Window_function) with a window length of 1 second. When we represent this window in the frequency domain, it becomes a [sinc function](https://en.wikipedia.org/wiki/Sinc_function), as shown below:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <image src="image-10.png" width=500>
+  <image src="plots\image-10.png" width=500>
 </div>
 
 Now, if you look at the region highlighted by the two arrows, you can see spectral nulls or in other words, frequencies where the spectral magnitude (and therefore the power) is vanishingly close to zero. To make this observation more rigorous, lets derive this behavior mathematically:
@@ -1168,7 +1166,7 @@ To illustrate where I’m going with this, let’s consider a superimposed sinus
 
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <image src="image-11.png" width=500>
+  <image src="plots\image-11.png" width=500>
 </div>
 
 From these figures, we can quickly see that after convolution the PSD shows vanishingly small power at frequencies other than $`2.5\ \mathrm{Hz}`$. This is exactly what we expect for a rectangular window of length $`1\ \mathrm{s}`$, the spectral nulls occur at integer multiples of $`1\ \mathrm{Hz}`$. If we also want to null $`2.5\ \mathrm{Hz}`$, we can simply increase the window length to $`2\ \mathrm{s}`$, which places nulls every $`0.5\ \mathrm{Hz}`$.
@@ -1314,7 +1312,7 @@ Finally, the feedforward torque is simply Newton's second law for rotation:
 Now with that being said, we look at a comparion plot between a bang bang acceleration profile, and our fourth order shaped profile, used for the same $`180^\circ`$ slew manoeuvre:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <image src="image-12.png" width=500>
+  <image src="plots\image-12.png" width=500>
 </div>
 
 From this plot, we can see that the fourth order shaped profile has much less spectral power above 0.4 Hz than the bang bang acceleration profile. In practice, this means the shaped reference trajectory contains much less energy in that range, so it is much less likely to excite the solar array’s flexible dynamics during the slew manoeuvre.
@@ -1324,7 +1322,7 @@ From this plot, we can see that the fourth order shaped profile has much less sp
 With the trajectory now shaped, we can visualise the reference position, velocity, acceleration, jerk, and snap as shown below:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <img src="image-13.png" width="500">
+  <img src="plots\image-13.png" width="500">
 </div>
 
 From these plots, we can see that the instantaneous reference signals tracked by the feedback controller are significantly smoother. However, discontinuities still appear in the snap profile, which implies an infinite crackle (the sixth derivative of position). See: [Fourth, fifth, and sixth derivatives of position](https://en.wikipedia.org/wiki/Fourth,_fifth,_and_sixth_derivatives_of_position).
@@ -1344,7 +1342,7 @@ With this, we can represent our control system schematics as below:
 
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <img src="image-14.png" >
+  <img src="plots\image-14.png" >
 </div>
 
 ## 8 Verification and Validation
@@ -1364,7 +1362,7 @@ In the earlier sections, we mainly focused on building the plant model, lineariz
 In this subsection, we simulate the repositioning mission and walk through a comparative analysis of the results. To make it easier to understand how the simulation is put together, here is the simulation architecture we are using:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <img src="image-15.png" width="500">
+  <img src="plots\image-15.png" width="500">
 </div>
 
 Now that the simulation architecture is defined, we can evaluate its results with a bit more context.
@@ -1372,7 +1370,7 @@ Now that the simulation architecture is defined, we can evaluate its results wit
 To kick off the analysis, let us start with the modal displacement and modal acceleration responses, shown below:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <img src="mission_vibration.png" width="500">
+  <img src="plots\mission_vibration.png" width="500">
 </div>
 
 If you look at the modal displacement and acceleration plots, you will notice the difference is pretty clear. The fourth order shaped feedforward + PD feedback brings the post slew RMS displacement down from $`0.2534\ \mathrm{mm}`$ (S-curve + PD) to $`0.099\ \mathrm{mm}`$, which works out to a bit over 60% reduction in displacement.
@@ -1382,7 +1380,7 @@ The acceleration improvement is also significant, where the post slew RMS modal 
 These two plots are great for getting the overall picture, but our main priority is the vibration after the slew is complete, i.e. the residual vibration, since that falls directly inside the mission's imaging window. Thus, we need to figure out the frequency that contributes the largest amount to these post slew ringdowns, or more precisely we need to identify the lightly damped mode. The clean way to do that is to compute the power spectral density (PSD) and look at it in the plot below:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <img src="modal_acceleration_psd.png" width="500">
+  <img src="plots\modal_acceleration_psd.png" width="500">
 </div>
 
 From this plot it is more or less obvious that the first mode carries more power in both cases. However, we still see a discrepancy in the ratio of power content between the first and second mode, despite the PD control being identical.
@@ -1452,7 +1450,7 @@ And yes, if we are giving credit where it is due, kudos to setpoint shaping.
 Now that we have seen the improvement in residual vibrations, the next step is to make sure those gains did not come at the expense of violating the small angle (linearization) assumption used to design the PD feedback controller. A straightforward way to check that is to look at the attitude tracking error during the maneuver:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <img src="mission_tracking_error.png" width="500">
+  <img src="plots\mission_tracking_error.png" width="500">
 </div>
 
 From the absolute tracking error plot, both the S-curve and fourth order cases stay close to the reference trajectory, with the error remaining bounded and relatively small throughout the slew. This suggests that the resulting deviation from the instantaneous reference does not grow large enough to invalidate the linear model assumptions behind the PD controller design.
@@ -1464,7 +1462,7 @@ On another note, if you look closely at the absolute tracking error plot, the S-
 At the same time, the tracking error also shows a slower, non oscillatory trend in the background. To understand what is driving each part of the response (the oscillatory content versus the slower component), we can look at the power spectral density (PSD) of the absolute tracking error:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <img src="mission_tracking_error_psd.png" width="500">
+  <img src="plots\mission_tracking_error_psd.png" width="500">
 </div>
 
 From this PSD plot, it is clear that the slow trend we noticed in the absolute tracking error (in both cases) is coming from very low frequency content, mainly below about $`0.1\ \text{Hz}`$.
@@ -1479,12 +1477,25 @@ More specifically, we want to verify that the post slew RMS pointing error remai
 
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <img src="mission_pointing_error.png" width="500">
+  <img src="plots\mission_pointing_error.png" width="500">
 </div>
 
 From the plot above, the fouth order setpoint shaping cuts the post slew RMS pointing error by roughly 64.1%. More importantly, it satisfies the post slew pointing stability requirement, reaching an RMS pointing error of 4.65 arcsec.
 
 What’s especially telling is that this improvement happens without changing the feedback controller. That strongly suggests the main driver here is the trajectory shaping, reducing how much we excite the structural resonant modes in the first place, rather than relying on the closed loop controller to “actively” add damping. For this project, avoiding mode excitation upfront turns out to be the more effective approach!
+
+Now that we’ve established the performance improvements, the next step is to see what they actually mean for the mission,especially for long exposure imaging of the comet.
+
+To do that, we run a comet camera simulation that models the image blur caused by residual vibrations. The vibration response is converted into angular jitter using an assumed lever arm, and that jitter is then applied during the exposure to estimate the resulting blur.
+
+We then compare the image resolution and the jitter PSD for the different cases, as shown in the results below:
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="plots\comet_blur_comparison_psd_check.png" width="500">
+</div>
+
+
+From this we understand that the fourth order setpoint shaping improves the image resolution by reducing the blur from 10 pixes to 3.3 pixels yeilding a 70% imporvement in blur reduction!
 
 ### 8.2 Parameter Sweep
 
@@ -1512,7 +1523,7 @@ With that said, we observe the results of our modal sweep below:
 
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <img src="mc_sweep_modal_frequency.png" width="500">
+  <img src="plots\mc_sweep_modal_frequency.png" width="500">
 </div>
 
 From these plots, it is clear that fourth order setpoint shaping outperforms the S-curve when the modal frequency estimate is within about ±20% of the nominal value.
@@ -1532,7 +1543,7 @@ In space, the primary source of natural damping comes from material/structural d
 To evaluate how sensitive our performance is to this uncertainty, we vary the modal damping ratio by ±30% and then compare the resulting changes in vibration suppression and pointing performance, as shown below:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <img src="mc_sweep_modal_damping.png" width="500">
+  <img src="plots\mc_sweep_modal_damping.png" width="500">
 </div>
 
 From these plots, the nearly flat curves make the takeaway pretty clear that varying the damping ratio by ±30% doesn’t produce a noticeable change in performance.
@@ -1553,7 +1564,7 @@ Based on the closed loop characteristics from the earlier section, we can use th
 To validate that behavior in simulation, we inject a sinusoidal rate noise and sweep its frequency from 0.1 Hz up to 50 Hz (the Nyquist frequency). We then track how the sweep impacts our performance metrics, as shown below:
 
 <div style="display: flex; justify-content: center; gap: 10px;">
-  <img src="mc_sweep_noise_level.png" width="500">
+  <img src="plots\mc_sweep_noise_level.png" width="500">
 </div>
 
 Just as expected, at low frequencies the two cases behave almost identically; the performance trends are essentially the same.
@@ -1567,5 +1578,118 @@ One interesting thing shows up when you look at the peak torque and RMS torque p
 This makes sense if we relate it back to the closed loop sensitivity behavior discussed in Section 6.4. In those frequency ranges, the closed loop system is less responsive to certain disturbance/noise components coming through the measurement path. As a result, the controller doesn’t “fight” those components as aggressively, and the commanded torque around those frequencies ends up being lower compared to frequency ranges where the loop has higher sensitivity.
 
 *Note :- we can verify this by referring back to the sensitivity fucntion in section 6.4*
+
+In the same way, we also run a sweep on input disturbances and track how they impact our performance metrics, as shown below:
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="plots\mc_sweep_disturbance_frequency_targeted.png" width="500">
+</div>
+
+looking at this plot, we can quickly see that low frequency disturbances contribute to the largest RMS pointing error and RMS vibrations. This behavior is echoed from the disturbance torque to pointing error transfer function given in the closed loop characteristics section (6.4).
+
+
+*Note :- this implies that gravity gradiant torques, SRP torques and other low frequency torque affects out pointing stability the most*
+
+### 8.3 Monte Carlo Simulation
+
+ In the previous section, we looked at how individual parameter changes affect post slew pointing stability and vibration suppression. Those sweeps are useful for building intuition, but they don’t try to reflect a real mission where multiple parameters can vary at the same time, in different directions.
+
+That is exactly what this Monte Carlo simulation is meant to capture. Here, we randomly vary each parameter within ±20% of its nominal value and run 500 trials in total. We then evaluate the performance of both control architectures, with the main focus on requirement compliance.
+
+Each simulation runs for 90 seconds. The slew ends at t = 30 s, and we compute RMS metrics over the post slew window to check for requirement violations:
+
+- Pointing stability: RMS pointing error must remain below 7 arcsec over the 60 s after the slew  
+
+
+After identifying any violations, we will investigate why  they happen by correlating the outcomes with the randomly perturbed parameters.
+
+The Monte Carlo results are shown below:
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="plots\monte_carlo_comparisons_box.png" width="500">
+</div>
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="plots\monte_carlo_post_slew_pointing_box.png" width="500">
+</div>
+
+From our monte carlo results, we can clearly see that the fourth order acheived lower pointing error, RMS vibration , and peak torque. However, the fourth order required higher RMS torque than the S-curve profile. on top of these imporvements, the fourth order violations of our mission RMS pointng error requirement was about 13% of the total run, in comparison to 100% of the total run by the S-curve profile. This means that for the 500 runs in the monte carlo, S-curve did not meet the mission RMS pointing error requirement in any of the runs!
+
+Now that we’ve confirmed the fourth order setpoint shaping provides better pointing stability and vibration suppression than the S-curve, the next step is to understand, which uncertain parameters are driving the RMS pointing error for each control architecture.
+
+To do that, we look at the parameter impact histogram below, which shows how strongly each parameter variation contributes to the RMS pointing error:
+
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="plots\monte_carlo_post_slew_pointing_factor_hist_fourth_standard_pd.png" width="500">
+</div>
+
+<div style="display: flex; justify-content: center; gap: 10px;">
+  <img src="plots\monte_carlo_post_slew_pointing_factor_hist_s_curve_standard_pd.png" width="500">
+</div>
+
+
+Each panel in these figures corresponds to one uncertain parameter from the Monte Carlo run. For that parameter, the histogram compares two groups of simulations:
+
+1. a low quartile group, where the parameter is in the lowest 25 percent of sampled values  
+2. a high quartile group, where the parameter is in the highest 25 percent of sampled values
+
+The horizontal axis is post slew RMS pointing error in arcsec, and the vertical axis is the number of Monte Carlo runs in each pointing error bin.
+
+So the interpretation is straightforward. If the high quartile distribution shifts to the right relative to the low quartile distribution, increasing that parameter tends to worsen pointing stability. If it shifts to the left, increasing that parameter tends to improve pointing stability.
+
+To make this quantitative, we use the median shift between the two groups:
+
+```math
+\begin{aligned}
+\Delta_{\text{median}} = \text{median}(e_{\text{RMS, high quartile}}) - \text{median}(e_{\text{RMS, low quartile}})
+\end{aligned}
+```
+
+and rank factors by:
+
+```math
+\begin{aligned}
+\left|\Delta_{\text{median}}\right|
+\end{aligned}
+```
+
+From the Monte Carlo data, the dominant contributor for both controllers is resonant mode variation (`freq_scale`):
+
+- S curve + standard PD:  $`\Delta_{\text{median}} \approx 7.10`$ arcsec  
+- Fourth order + standard PD:  $`\Delta_{\text{median}} \approx 1.12`$ arcsec
+
+This is a very important result. It tells us that post slew pointing performance is most sensitive to uncertainty in modal frequency, not to noise level or disturbance level.
+
+For the S curve case, this sensitivity is severe. The median post slew RMS pointing error shifts from about \(17.09\) arcsec to \(9.99\) arcsec across the resonant mode quartiles. Both values are still above the 7 arcsec requirement, which is consistent with the earlier Monte Carlo finding that S curve violates the pointing requirement in all runs.
+
+For the fourth order case, the same factor shift moves the median from about \(7.05\) arcsec to \(5.93\) arcsec. This lands close to the requirement boundary on the worst side and comfortably below it on the best side, which directly explains why fourth order passes in most runs but still shows a finite number of violations.
+
+The next strongest contributors are damping variation and inertia variation, and both have much smaller impact in the fourth order architecture than in the S curve architecture. This confirms that the fourth order trajectory shaping does not only reduce nominal vibration excitation, it also reduces sensitivity to plant uncertainty.
+
+Finally, disturbance and noise factors are comparatively weak drivers in this post slew window, especially for the fourth order case. That aligns with our closed loop analysis in Section 6.4 and with the frequency sweeps in Section 8.2, where low frequency structural dynamics dominate the final pointing stability outcome.
+
+In short, the histogram based impact study agrees with the rest of the report:
+
+1. the critical robustness driver is modal frequency uncertainty  
+2. fourth order shaping keeps the system closer to requirement compliance under that uncertainty  
+3. S curve remains structurally more vulnerable in post slew precision pointing
+
+## 9 Conclusion
+
+In this project, we designed and validated a complete attitude control architecture for a 180 degree rest to rest slew of a flexible spacecraft, with the main objective of acheiving post slew pointing stability. The architecture combines feedforward setpoint shaping with feedback PD control, and the full workflow was tested on both linearized models and the nonlinear Basilisk simulation.
+
+The core result is clear. Fourth order setpoint shaping consistently outperforms the S curve baseline in the metrics that matter for this mission. It gives lower post slew RMS pointing error, lower residual vibration, and lower peak control torque. The tradeoff is a slightly higher RMS control torque, which is acceptable in this context because it is exchanged for substantially better structural quieting and precision pointing.
+
+From the closed loop and frequency domain analysis, we confirmed two important mechanisms. First, the feedforward profile is what primarily determines whether structural modes are excited during the slew. Second, the feedback loop mainly governs low frequency tracking and disturbance response, while modal robustness is strongly tied to where trajectory spectral energy sits relative to the flexible resonances and antiresonances.
+
+The Monte Carlo analysis then tested whether these conclusions hold under uncertainty. With 500 randomized trials at plus or minus 20 percent variation, the fourth order architecture remains significantly more robust than S curve. Using the post slew RMS pointing requirement of 7 arcsec over the 60 second post slew window, fourth order shows a finite violation rate, while S curve fails in all runs. This means the fourth order method is not just better in nominal cases, but materially better in our mission conditions.
+
+The parameter impact histograms also identify what drives the remaining risk. Modal frequency uncertainty is the dominant contributor to pointing degradation for both controllers, followed by damping and inertia variations. Disturbance and sensor noise are secondary in the post slew window for this mission setup. This matches the transfer function analysis and closes the loop between theory, simulation, and uncertainty quantification.
+
+So the final engineering takeaway is direct. If the mission objective is precise post slew pointing on a flexible spacecraft, fourth order setpoint shaping with standard PD feedback is the stronger baseline architecture than S curve shaping with the same feedback law for our project. The next improvement path is not changing the basic architecture, but reducing sensitivity to modal frequency uncertainty through better mode identification, more robust shaping against mode drift, or adaptive retuning around the first flexible mode.
+
+## Author
+**[Jomin Joseph Karukakalam](https://www.linkedin.com/in/jomin-joseph-karukakalam-601955225)**
 
 
