@@ -41,6 +41,8 @@ This residual motion degrades pointing accuracy and can force the spacecraft to 
 
 ### 1.3 Requirements
 
+<div align="center">
+
 | Requirement | Value | Rationale |
 |-------------|-------|-----------|
 | Slew angle | 180° | Comet observation (coma) |
@@ -48,6 +50,8 @@ This residual motion degrades pointing accuracy and can force the spacecraft to 
 | Post slew settling |  RMS ≤7 arcsec (within 60s) | Imaging requirement |
 | Post slew array acceleration | RMS < 10 $`mm/s^2`$ modal acceleration | Saftey requirement 
 |Phase margin | 70°-75°| Robustness requirement
+
+</div>
 
  *Note:- These requirements are defined solely for this project and do not represent any known ongoing or past mission requirements.*
 
@@ -419,10 +423,14 @@ G_{modal} = \frac{r_y}{I_{zz}}
 
 ### 4.4 Modal Parameters
 
+<div align="center">
+
 | Mode | Frequency $`f_n`$ | $`\omega_n`$ (rad/s) | Damping $`\zeta`$ | Lever Arm $`r`$ | Modal Gain |
 |------|-----------------|-------------------|-----------------|---------------|------------|
 | 1 | 0.4 Hz | 2.51 | 0.02 | 3.5 m | 0.0056 |
 | 2 | 1.3 Hz | 8.17 | 0.015 | 4.5 m | 0.0073 |
+
+</div>
 
 
 *Note :- i picked the modal parameters to roughly represent a large solar array. In general, big arrays tend to have very low natural frequencies. Also, pure material (structural) damping is usually quite small, but in real hardware the attachment points, fasteners, and joints add a bit of extra damping. Taking all that into account, a damping ratio in the ballpark of 0.01 to 0.02 is what I kept seeing during my literature review. If you think I’ve overestimated the damping, please reach out! I’m happy to revisit it and update both this documentation and the codes 👍*
@@ -593,12 +601,16 @@ So yeah, in the Bode plot of our flexible plant (torque $`\rightarrow`$ attitude
 
 Before we pick a controller, let’s first get a feel for the basic properties of the plant:
 
+<div align="center">
+
 | Property | Value |
 |----------|-------|
 | Magnitude at DC | $`\infty`$ (two poles at the origin) |
 | Magnitude slope | -40 dB/decade (away from flexible modes) |
 | Phase | $`\approx -180°`$ (away from resonance/anti resonance) |
 | Gain margin | Not very informative in the usual sense (the phase sits near $`-180°`$ for most frequencies, and flexible mode distort the standard crossover picture) |
+
+</div>
 
 Now, if we drive this plant with a sinusoid at a frequency that's not near a flexible mode, the output will be roughly shifted by $`-180\degree`$. In plain english, the plant mostly behaves like a sign inversion, except around the resonance/anti resonance neighbourhood where the flexible dynamics take over.
 
