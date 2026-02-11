@@ -48,7 +48,7 @@ This residual motion degrades pointing accuracy and can force the spacecraft to 
 | Slew angle | 180° | Comet observation (coma) |
 | Slew time | 30 s | Mission requirement |
 | Post slew settling |  RMS ≤7 arcsec (within 60s) | Imaging requirement |
-| Post slew array acceleration | RMS < 10 $`mm/s^2`$ modal acceleration | Saftey requirement 
+| Post slew array acceleration | RMS < 10 $`mm/s^2`$ modal acceleration | Safety requirement 
 |Phase margin | 70°-75°| Robustness requirement
 
 </div>
