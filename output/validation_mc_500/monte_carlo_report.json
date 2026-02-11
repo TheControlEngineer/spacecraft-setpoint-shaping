@@ -1,0 +1,78 @@
+{
+  "timestamp": "2026-02-11T02:36:14.363601",
+  "n_runs": 500,
+  "n_passed": 0,
+  "pass_rate": 0.0,
+  "thresholds": {
+    "rms_pointing_error_deg": 0.005,
+    "peak_torque_nm": 70.0,
+    "rms_vibration_mm": 0.1,
+    "torque_saturation_percent": 5.0
+  },
+  "percentiles": {
+    "rms_pointing_error_deg": {
+      "P50": 0.0036243648280797304,
+      "P95": 0.005143440130460199,
+      "P99": 0.0055744434172155565,
+      "mean": 0.003704128106636228,
+      "std": 0.0008081631599928034,
+      "min": 0.0023919680229658948,
+      "max": 0.0056746868730326765
+    },
+    "peak_torque_nm": {
+      "P50": 18.975278624739268,
+      "P95": 20.5356489217499,
+      "P99": 20.72620824725455,
+      "mean": 18.897515301061162,
+      "std": 1.0727577645669533,
+      "min": 17.00082347057858,
+      "max": 20.8240476023408
+    },
+    "rms_vibration_mm": {
+      "P50": 0.256598632643184,
+      "P95": 0.360475822353145,
+      "P99": 0.38797178192453746,
+      "mean": 0.2618146323347849,
+      "std": 0.05643103602560641,
+      "min": 0.17164010434032337,
+      "max": 0.39499250299395333
+    },
+    "rms_torque_nm": {
+      "P50": 8.239044436902557,
+      "P95": 8.917460849671679,
+      "P99": 9.000338859290077,
+      "mean": 8.198033948690933,
+      "std": 0.4676712750211065,
+      "min": 7.381667537050157,
+      "max": 9.020323677480945
+    },
+    "torque_saturation_percent": {
+      "P50": 0.0,
+      "P95": 0.0,
+      "P99": 0.0,
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    }
+  },
+  "criteria": {
+    "rms_pointing_error_deg_P95": 0.005143440130460199,
+    "rms_vibration_mm_P95": 0.360475822353145,
+    "peak_torque_nm_P99": 20.72620824725455,
+    "torque_saturation_percent_P95": 0.0
+  },
+  "uncertainties": {
+    "inertia_pct": 0.2,
+    "modal_freq_pct": 0.1,
+    "modal_damping_pct": 0.5,
+    "modal_gain_pct": 0.2,
+    "sensor_noise_pct": 0.5,
+    "disturbance_pct": 0.5,
+    "filter_cutoff_pct": 0.2
+  },
+  "noise_disturbance_nominal": {
+    "sensor_noise_std_rad_s": 1e-05,
+    "disturbance_torque_nm": 1e-05
+  }
+}

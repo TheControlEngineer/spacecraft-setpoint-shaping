@@ -41,7 +41,7 @@ def compute_bang_bang_trajectory(theta_final, duration, dt=DEFAULT_SAMPLE_DT):
     n = len(t)
     t_half = duration / 2
     
-    # Maximum acceleration for bang-bang: alpha_max = 4 * theta_final / T^2
+    # Maximum acceleration for bang bang: alpha_max = 4 * theta_final / T^2
     alpha_max = 4 * theta_final / duration**2
     
     theta = np.zeros(n)
@@ -230,7 +230,7 @@ def compute_step_command_torque(theta_final, axis, inertia, duration, dt=DEFAULT
         raise ValueError(f"Unknown trajectory_type: {trajectory_type}")
     
     # Body torque: tau = J * alpha * axis
-    # For single-axis rotation about body axis
+    # For single axis rotation about body axis
     axis = np.array(axis) / np.linalg.norm(axis)
     
     # Get moment of inertia about rotation axis: I_axis = axis^T * J * axis
@@ -276,7 +276,7 @@ def apply_input_shaper_to_torque(t, torque, shaper_amplitudes, shaper_times, tra
     
     torque_shaped = np.zeros((n_shaped, 3))
     
-    # Convolve: tau_shaped(t) = Sum A_i * tau(t - t_i)
+    # Convolution applies each impulse amplitude to a time shifted copy of the base torque
     for amp, t_imp in zip(shaper_amplitudes, shaper_times):
         # Shift original torque by t_imp
         shift_idx = int(round(t_imp / dt))
@@ -333,7 +333,7 @@ def body_torque_to_rw_torque(body_torque, Gs_matrix):
     """
     Gs_pinv = np.linalg.pinv(Gs_matrix)
     
-    # tau_motor = -Gs_pinv @ tau_body (reaction torque opposes motor torque)
+    # Motor torque follows the opposite sign convention of body torque from reaction physics
     rw_torque = -body_torque @ Gs_pinv.T
     
     return rw_torque
@@ -361,13 +361,13 @@ def compute_minimum_duration(theta_final, rotation_axis, inertia, Gs_matrix, max
     # Maximum body torque we can command
     # For 3 RWs in pyramid config, effective torque is approximately:
     # tau_body_max ~= sqrt(2) * max_rw_torque for axes in the plane
-    # For single-axis (z), it's just max_rw_torque
+    # For single axis (z), it's just max_rw_torque
     # Conservative estimate: use worst case
     
-    # Compute using pseudo-inverse to find what body torque we can achieve
+    # Compute using pseudo inverse to find what body torque we can achieve
     Gs_pinv = np.linalg.pinv(Gs_matrix)
     # Test with unit body torque along axis to find scaling
-    # tau_motor = -Gs_pinv @ tau_body, so for unit body torque:
+    # For a unit body torque command, compute the required wheel torque allocation
     unit_body_torque = axis
     rw_for_unit = -unit_body_torque @ Gs_pinv.T  # Negative for reaction physics
     max_rw_needed = np.max(np.abs(rw_for_unit))
@@ -378,7 +378,7 @@ def compute_minimum_duration(theta_final, rotation_axis, inertia, Gs_matrix, max
     # Maximum body torque achievable
     tau_body_max = torque_scale  # Since we computed for unit torque
     
-    # For bang-bang: T_min = sqrt(4 * I * theta / tau_max)
+    # For bang bang: T_min = sqrt(4 * I * theta / tau_max)
     T_min = np.sqrt(4 * I_axis * abs(theta_final) / tau_body_max)
     
     return T_min
@@ -626,7 +626,7 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     
     # Spacecraft parameters (must match spacecraft_model.py)
-    # Flexible modes are modeled separately; use hub inertia for rigid-body slews.
+    # Flexible modes are modeled separately; use hub inertia for rigid body slews.
     inertia = np.diag([900.0, 800.0, 600.0])  # kg*m^2 [I_xx, I_yy, I_zz]
     # Gs matrix: columns are wheel spin axes
     Gs_matrix = np.array([
@@ -635,9 +635,9 @@ if __name__ == "__main__":
         [0.0,           0.0,          1.0]
     ])
     
-    # Test 180-degree YAW (Z-axis) - matches spacecraft_model.py configuration
+    # Test 180 degree YAW (Z axis) matches spacecraft_model.py configuration
     theta = np.radians(180.0)
-    axis = np.array([0.0, 0.0, 1.0])  # Z-axis (YAW) for strong flex coupling
+    axis = np.array([0.0, 0.0, 1.0])  # Z axis (YAW) for strong flex coupling
     duration = 30.0  # seconds
     
     # Create unshaped profile

@@ -140,7 +140,7 @@ def design_spacecraft_shaper(plot=True):
     print("\\nDesigning multi-mode ZVD shaper...")
     
     # Spacecraft modal parameters (solar array bending modes)
-    mode_frequencies = [0.4, 1.3]  # Hz - first and second bending
+    mode_frequencies = [0.4, 1.3]  # Hz first and second bending
     damping_ratios = [0.02, 0.015]  # Low damping = long settling without shaping
     
     print(f"  Modes: {mode_frequencies[0]} Hz (zeta={damping_ratios[0]}), {mode_frequencies[1]} Hz (zeta={damping_ratios[1]})")
@@ -197,7 +197,7 @@ def plot_zvd_cascading(amplitudes, times, info):
     omega1 = 2 * np.pi * f1
     omega2 = 2 * np.pi * f2
     
-    # Single-mode ZVD shapers
+    # Single mode ZVD shapers
     A1, t1, _ = ZVD_func(omega1, zeta1)
     A2, t2, _ = ZVD_func(omega2, zeta2)
     
@@ -349,7 +349,7 @@ def verify_shaper_suppression(amplitudes, times, mode_frequencies, damping_ratio
 
 
 # ============================================================================
-# FOURTH-ORDER SETPOINT SHAPING (Dual-Mode Spectral Nulling)
+# FOURTH ORDER SETPOINT SHAPING (Dual Mode Spectral Nulling)
 # ============================================================================
 
 def plot_window_formation(pulse_base, window_jerk, window_snap,
@@ -721,9 +721,9 @@ def design_fourth_order_trajectory_fixed(theta_final, mode_frequencies,
         print(f"  Warning: Discretization error - consider smaller dt")
 
     if target_duration is not None:
-        # Target duration constraint (discrete-time exactness)
+        # Target duration constraint (discrete time exactness)
         # Total duration = 2 * N_half * dt, where:
-        # N_half = n_base + n_jerk + n_snap - 2
+        # N_half = n_base + n_jerk + n_snap 2
         n_half = int(round(target_duration / (2.0 * dt)))
         n_base = n_half - n_jerk - n_snap + 2
         if n_base < 1:
@@ -1014,7 +1014,7 @@ OK Convolution-based approach
 
 
 # ============================================================================
-# DURATION-CONSTRAINED SHAPER DESIGN (for exact mission timing)
+# DURATION CONSTRAINED SHAPER DESIGN (for exact mission timing)
 # ============================================================================
 
 def _sort_and_combine_impulses(times, amplitudes, tol=1e-12):
@@ -1088,7 +1088,7 @@ def design_spacecraft_shaper_with_duration(target_duration=30.0, theta_final=np.
         period_d = 2 * np.pi / omega_d
         
         # ZVD shaper (3 impulses)
-        # K = exp(-zeta * pi / sqrt(1 - zeta^2)) is the standard formula
+        # K = exp( zeta * pi / sqrt(1 zeta^2)) is the standard formula
         K = np.exp(-zeta * omega_n * period_d / 2)
         A1 = 1 / (1 + 2*K + K**2)
         A2 = 2*K / (1 + 2*K + K**2)
@@ -1105,7 +1105,7 @@ def design_spacecraft_shaper_with_duration(target_duration=30.0, theta_final=np.
             'damping': zeta
         })
     
-    # Convolve shapers to get multi-mode shaper
+    # Convolve shapers to get multi mode shaper
     result_amps = shapers[0]['amplitudes']
     result_times = shapers[0]['times']
     
@@ -1209,25 +1209,25 @@ def design_fourth_order_with_duration_FIXED(target_duration, theta_final,
 
 
 # ============================================================================
-# UPDATED MAIN: Design Fourth-Order Trajectory (Corrected)
+# UPDATED MAIN: Design Fourth Order Trajectory (Corrected)
 # ============================================================================
 
 if __name__ == "__main__":
     
-    # Mission parameters - 180 degree pitch slew in 30 seconds
+    # Mission parameters 180 degree pitch slew in 30 seconds
     TARGET_DURATION = 30.0  # seconds
-    TARGET_ANGLE = 180.0  # degrees (YAW maneuver, Z-axis)
+    TARGET_ANGLE = 180.0  # degrees (YAW maneuver, Z axis)
     MODE_FREQUENCIES = [0.4, 1.3]  # Hz
     DAMPING_RATIOS = [0.02, 0.015]
     
-    # Spacecraft inertia (YAW axis, Z) - matches spacecraft_model.py
+    # Spacecraft inertia (YAW axis, Z) matches spacecraft_model.py
     I_AXIS = float(compute_effective_inertia()[2, 2])
     MAX_TORQUE = 70.0  # Nm
     
     print(f"\nDesigning shapers: {TARGET_ANGLE} deg in {TARGET_DURATION}s")
     print(f"  Inertia: {I_AXIS:.0f} kg*m^2, torque: {MAX_TORQUE} Nm")
     
-    # Fourth-Order Trajectory (FIXED: Uses Spectral Nulling)
+    # Fourth Order Trajectory (FIXED: Uses Spectral Nulling)
     t, theta, omega, alpha, jerk, snap, traj_info = design_fourth_order_with_duration_FIXED(
         target_duration=TARGET_DURATION,
         theta_final=np.radians(TARGET_ANGLE),

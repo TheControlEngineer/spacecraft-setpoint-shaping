@@ -49,6 +49,8 @@ from basilisk_sim.feedback_control import (
 CONTROLLERS = {"standard_pd", "filtered_pd", "notch", "trajectory_tracking"}
 RUN_MODES = {"combined", "fb_only", "ff_only"}
 SHAPING_METHODS = {"s_curve", "fourth"}
+VIZ_PRESETS = {"analysis", "linkedin"}
+ARCSEC_PER_RAD = 180.0 / np.pi * 3600.0
 
 
 def _skew(vec: np.ndarray) -> np.ndarray:
@@ -75,7 +77,16 @@ class CometPhotographyDemo:
 
     def __init__(self, shaping_method='fourth', controller='standard_pd', run_mode='combined',
                  use_trajectory_tracking=True, jitter_lever_arm=4.0, pixel_scale_arcsec=2.0,
-                 config_overrides: Optional[dict] = None, output_dir: Optional[str] = None):
+                 config_overrides: Optional[dict] = None, output_dir: Optional[str] = None,
+                 camera_sidecar: bool = False, camera_sidecar_fps: float = 5.0,
+                 camera_sidecar_exposure_s: float = 2.0, camera_sidecar_fov_deg: float = 0.5,
+                 camera_sidecar_resolution_px: int = 512, camera_sidecar_noise: float = 0.01,
+                 viz_preset: str = "analysis",
+                 live_motion_blur: bool = False, live_blur_camera_id: int = 1,
+                 live_blur_update_stride: int = 1, live_blur_arcsec_full: float = 120.0,
+                 live_blur_aperture_min: float = 0.3, live_blur_aperture_max: float = 8.0,
+                 live_blur_focus_distance_m: float = 1.0e8, live_blur_focal_length_m: float = 0.08,
+                 live_blur_max_kernel: int = 4):
         """
         Initialize the demo.
 
@@ -88,6 +99,14 @@ class CometPhotographyDemo:
             jitter_lever_arm: Lever arm from rotation axis to camera [m]
             pixel_scale_arcsec: Camera plate scale [arcsec/pixel]
             output_dir: Directory for output files (default: output/cache relative to script)
+            camera_sidecar: Generate synchronized synthetic sensor frames after run
+            camera_sidecar_fps: Sidecar frame rate
+            camera_sidecar_exposure_s: Exposure time per sidecar frame
+            camera_sidecar_fov_deg: Sidecar camera FOV in degrees
+            camera_sidecar_resolution_px: Sidecar frame width/height in pixels
+            camera_sidecar_noise: Sidecar image noise standard deviation
+            viz_preset: "analysis" or "linkedin"
+            live_motion_blur: Enable live Vizard camera blur driven by modal jitter
         """
         self.output_dir = output_dir
         if shaping_method not in SHAPING_METHODS:
@@ -96,9 +115,12 @@ class CometPhotographyDemo:
             raise ValueError(f"Unknown controller '{controller}'")
         if run_mode not in RUN_MODES:
             raise ValueError(f"Unknown run mode '{run_mode}'")
+        if viz_preset not in VIZ_PRESETS:
+            raise ValueError(f"Unknown viz preset '{viz_preset}'")
         self.method = shaping_method
         self.controller = controller
         self.run_mode = run_mode
+        self.viz_preset = str(viz_preset)
         self.use_trajectory_tracking = use_trajectory_tracking or (controller == "trajectory_tracking")
         self.dt = 0.01
         self.slew_duration = 30.0
@@ -173,6 +195,24 @@ class CometPhotographyDemo:
         self.hud_storage = []
         self.hud_sensor = None
         self.vib_trace = []
+        self.camera_sidecar = bool(camera_sidecar)
+        self.camera_sidecar_fps = float(camera_sidecar_fps)
+        self.camera_sidecar_exposure_s = float(camera_sidecar_exposure_s)
+        self.camera_sidecar_fov_deg = float(camera_sidecar_fov_deg)
+        sidecar_px = int(camera_sidecar_resolution_px)
+        self.camera_sidecar_resolution_px = max(64, sidecar_px)
+        self.camera_sidecar_noise = float(camera_sidecar_noise)
+        self.live_motion_blur = bool(live_motion_blur)
+        self.live_blur_camera_id = int(live_blur_camera_id)
+        self.live_blur_update_stride = max(1, int(live_blur_update_stride))
+        self.live_blur_arcsec_full = max(1e-6, float(live_blur_arcsec_full))
+        self.live_blur_aperture_min = float(live_blur_aperture_min)
+        self.live_blur_aperture_max = float(live_blur_aperture_max)
+        self.live_blur_focus_distance_m = max(0.1, float(live_blur_focus_distance_m))
+        self.live_blur_focal_length_m = float(live_blur_focal_length_m)
+        self.live_blur_max_kernel = int(np.clip(live_blur_max_kernel, 1, 4))
+        self._live_blur_payload = None
+        self._live_blur_msg = None
 
     def _apply_config_overrides(self, overrides: dict) -> None:
         """Apply configuration overrides for MC/validation runs."""
@@ -338,9 +378,9 @@ class CometPhotographyDemo:
         print(f"  Target sigma: {self.target_sigma} (ideal 180 deg yaw)")
 
         # =====================================================
-        # COMET - placed where camera will point after feedforward slew
+        # COMET location matches where the camera will point after the feedforward slew
         # =====================================================
-        # After the commanded yaw, the camera (-Y body) points to this inertial direction.
+        # After the commanded yaw, the camera on the negative Y body axis points here
         cometObject = spacecraft.Spacecraft()
         cometObject.ModelTag = "Comet67P"
         cometObject.hub.mHub = 1.0
@@ -444,7 +484,7 @@ class CometPhotographyDemo:
         print(f"  Feedforward: {self.method}, duration {self.actual_duration:.1f}s")
 
         # =====================================================
-        # FEEDBACK CONTROLLER (for post-slew fine pointing)
+        # FEEDBACK CONTROLLER (for post slew fine pointing)
         # =====================================================
         inertial3DObj = inertial3D.inertial3D()
         inertial3DObj.ModelTag = "inertial3D"
@@ -603,53 +643,114 @@ class CometPhotographyDemo:
             return storage
 
         self.hud_storage = [
-            _make_storage("Vibration", "", [255, 180, 0, 255], 50.0),
-            _make_storage("Acceleration", "", [255, 80, 80, 255], 500.0),
+            _make_storage("Array displacement", "", [255, 180, 0, 255], 50.0),
+            _make_storage("Array acceleration", "", [255, 80, 80, 255], 500.0),
             _make_storage("Pointing Err", "", [80, 200, 255, 255], 180.0),
             _make_storage("Rate", "", [120, 255, 120, 255], 10.0),
         ]
+
+        # Basilisk writes Unity binary into "<saveFile_dir>/_VizFiles/".
+        # Point saveFile at basilisk_simulation root so the final file is:
+        # basilisk_simulation/_VizFiles/viz_demo_<method>_UnityViz.bin
+        viz_root_dir = _script_dir.parent
+        viz_root_dir.mkdir(parents=True, exist_ok=True)
+        viz_save_file = str(viz_root_dir / f"viz_demo_{self.method}")
 
         viz = vizSupport.enableUnityVisualization(
             self.scSim,
             "simTask",
             [self.scObject, self.cometObject],
-            saveFile=f"viz_demo_{self.method}",
+            saveFile=viz_save_file,
             genericStorageList=[self.hud_storage, None],
         )
 
-        viz.settings.spacecraftSizeMultiplier = 2.0
-        viz.settings.showSpacecraftLabels = 1
-        viz.settings.orbitLinesOn = 1
-        viz.settings.spacecraftCSon = 1
-        viz.settings.showCSLabels = 1
-        viz.settings.planetCSon = 1
-        viz.settings.showHillFrame = 1
-        viz.settings.linesAndFramesLineWidth = 3.0
-        viz.settings.viewCameraBoresightHUD = 1
-        vizSupport.setInstrumentGuiSetting(
-            viz,
-            spacecraftName=self.scObject.ModelTag,
-            showGenericStoragePanel=1,
-        )
+        if self.viz_preset == "linkedin":
+            viz.settings.spacecraftSizeMultiplier = 2.3
+            viz.settings.showSpacecraftLabels = 1
+            viz.settings.orbitLinesOn = 0
+            viz.settings.spacecraftCSon = 0
+            viz.settings.showCSLabels = 0
+            viz.settings.planetCSon = 0
+            viz.settings.showHillFrame = 0
+            viz.settings.linesAndFramesLineWidth = 2.2
+            viz.settings.viewCameraBoresightHUD = 1
+            vizSupport.setInstrumentGuiSetting(
+                viz,
+                spacecraftName=self.scObject.ModelTag,
+                showGenericStoragePanel=1,
+            )
+        else:
+            viz.settings.spacecraftSizeMultiplier = 2.0
+            viz.settings.showSpacecraftLabels = 1
+            viz.settings.orbitLinesOn = 1
+            viz.settings.spacecraftCSon = 1
+            viz.settings.showCSLabels = 1
+            viz.settings.planetCSon = 1
+            viz.settings.showHillFrame = 1
+            viz.settings.linesAndFramesLineWidth = 3.0
+            viz.settings.viewCameraBoresightHUD = 1
+            vizSupport.setInstrumentGuiSetting(
+                viz,
+                spacecraftName=self.scObject.ModelTag,
+                showGenericStoragePanel=1,
+            )
 
-        # Comet with tail - single elongated ellipsoid shape
-        # Stretched heavily along Y axis to create tail effect
-        vizSupport.createCustomModel(viz,
+        # Comet appearance tuning for visualization.
+        # For the linkedin preset, bias the elongation away from boresight so
+        # the tail is visible in chase style viewpoints.
+        if self.viz_preset == "linkedin":
+            comet_color = [230, 242, 255, 215]
+            comet_scale = [120.0, 120.0, 120.0]
+            comet_tail_color = [170, 220, 255, 58]
+            comet_tail_axis = [1.0, 0.25, 0.12]
+            comet_tail_angle_deg = 7.0
+            comet_tail_height_m = 14000.0
+            fov_angle_deg = 3.5
+            cone_alpha = 16
+            chase_pos = [18, 44, 14]
+            wide_fov_deg = 12.0
+        else:
+            comet_color = [200, 230, 255, 200]
+            comet_scale = [50.0, 250.0, 50.0]
+            comet_tail_color = None
+            comet_tail_axis = None
+            comet_tail_angle_deg = None
+            comet_tail_height_m = None
+            fov_angle_deg = 5.0
+            cone_alpha = 40
+            chase_pos = [0, 50, 15]
+            wide_fov_deg = 10.0
+
+        vizSupport.createCustomModel(
+            viz,
             modelPath="SPHERE",
             simBodiesToModify=[self.cometObject.ModelTag],
-            color=[200, 230, 255, 200],  # Bright cyan-white
-            scale=[50.0, 250.0, 50.0],  # Stretched along Y for tail-like shape
-            shader=1
+            color=comet_color,
+            scale=comet_scale,
+            shader=1,
         )
+        if self.viz_preset == "linkedin":
+            # Render a translucent cone as visible cometary tail.
+            vizSupport.createConeInOut(
+                viz,
+                toBodyName=self.scObject.ModelTag,
+                fromBodyName=self.cometObject.ModelTag,
+                normalVector_B=comet_tail_axis,
+                incidenceAngle=np.radians(comet_tail_angle_deg),
+                isKeepIn=True,
+                coneColor=comet_tail_color,
+                coneHeight=float(comet_tail_height_m),
+                coneName="Comet Tail",
+            )
 
         # Camera FOV cone (soft, elegant style)
         vizSupport.createConeInOut(viz,
             toBodyName=self.cometObject.ModelTag,
             fromBodyName=self.scObject.ModelTag,
             normalVector_B=[0, -1, 0],
-            incidenceAngle=np.radians(5),
+            incidenceAngle=np.radians(fov_angle_deg),
             isKeepIn=True,
-            coneColor=[100, 200, 255, 40],
+            coneColor=[100, 200, 255, cone_alpha],
             coneHeight=80.0,
             coneName="Camera FOV"
         )
@@ -659,7 +760,7 @@ class CometPhotographyDemo:
             spacecraftName=self.scObject.ModelTag,
             setMode=1,
             pointingVector_B=[0, -1, 0],
-            position_B=[0, 50, 15],
+            position_B=chase_pos,
             displayName="Chase Cam"
         )
 
@@ -677,12 +778,67 @@ class CometPhotographyDemo:
             setMode=1,
             pointingVector_B=[0, -1, 0],
             position_B=[0, -2, 0],
-            fieldOfView=np.radians(10),
+            fieldOfView=np.radians(wide_fov_deg),
             displayName="Wide"
         )
 
+        if self.live_motion_blur:
+            self._configure_live_motion_blur(viz)
+
         self.viz = viz
-        print("  Vizard: configured")
+        print(f"  Vizard: configured with '{self.viz_preset}' preset")
+        print(f"  Vizard output: {viz_root_dir / '_VizFiles' / f'viz_demo_{self.method}_UnityViz.bin'}")
+
+    def _configure_live_motion_blur(self, viz):
+        """Create a camera config stream to drive live post-processing blur in Vizard."""
+        aperture0 = float(np.clip(self.live_blur_aperture_max, 0.05, 32.0))
+        f_length = float(np.clip(self.live_blur_focal_length_m, 0.001, 0.3))
+        payload, msg = vizSupport.createCameraConfigMsg(
+            viz=viz,
+            cameraID=self.live_blur_camera_id,
+            parentName=self.scObject.ModelTag,
+            fieldOfView=np.radians(0.5),
+            resolution=[self.camera_sidecar_resolution_px, self.camera_sidecar_resolution_px],
+            renderRate=self.dt,
+            cameraPos_B=[0.0, -2.0, 0.0],
+            sigma_CB=[0.0, 0.0, 0.0],
+            postProcessingOn=1,
+            ppFocusDistance=self.live_blur_focus_distance_m,
+            ppAperature=aperture0,
+            ppFocalLength=f_length,
+            ppMaxBlurSize=1,
+            updateCameraParameters=True,
+            showHUDElementsInImage=-1,
+        )
+        self._live_blur_payload = payload
+        self._live_blur_msg = msg
+        print(
+            f"  Live blur: enabled on cameraID={self.live_blur_camera_id}, "
+            f"arcsec_full={self.live_blur_arcsec_full:.1f}"
+        )
+
+    def _update_live_motion_blur(self, mode1_signed: float, mode2_signed: float) -> None:
+        """Update Vizard post-processing parameters from instantaneous modal jitter."""
+        if self._live_blur_payload is None or self._live_blur_msg is None:
+            return
+
+        vib_m = float(np.sqrt(mode1_signed ** 2 + mode2_signed ** 2))
+        jitter_arcsec = (vib_m / max(self.jitter_lever_arm, 1e-6)) * ARCSEC_PER_RAD
+        norm = float(np.clip(jitter_arcsec / self.live_blur_arcsec_full, 0.0, 1.0))
+
+        aperture_lo = float(np.clip(self.live_blur_aperture_min, 0.05, 32.0))
+        aperture_hi = float(np.clip(self.live_blur_aperture_max, 0.05, 32.0))
+        if aperture_hi < aperture_lo:
+            aperture_lo, aperture_hi = aperture_hi, aperture_lo
+        aperture = aperture_hi - (aperture_hi - aperture_lo) * norm
+
+        kernel = int(np.clip(round(1 + norm * (self.live_blur_max_kernel - 1)), 1, 4))
+
+        self._live_blur_payload.postProcessingOn = 1
+        self._live_blur_payload.ppAperture = float(aperture)
+        self._live_blur_payload.ppMaxBlurSize = int(kernel)
+        self._live_blur_payload.updateCameraParameters = 1
+        self._live_blur_msg.write(self._live_blur_payload)
 
     def run(self):
         """Execute simulation."""
@@ -839,6 +995,11 @@ class CometPhotographyDemo:
             self.modal_log['mode1_stbd_acc'].append(mode1_stbd_acc)
             self.modal_log['mode2_stbd_acc'].append(mode2_stbd_acc)
 
+            if self.live_motion_blur and (step % self.live_blur_update_stride == 0):
+                mode1_signed = 0.5 * (mode1_port - mode1_stbd)
+                mode2_signed = 0.5 * (mode2_port - mode2_stbd)
+                self._update_live_motion_blur(mode1_signed, mode2_signed)
+
             if self.hud_storage:
                 mode1_signed = 0.5 * (mode1_port - mode1_stbd)
                 mode2_signed = 0.5 * (mode2_port - mode2_stbd)
@@ -873,8 +1034,8 @@ class CometPhotographyDemo:
 
                     vib_display = vib_mm if np.isfinite(vib_mm) else 0.0
                     acc_display = acc_mm if np.isfinite(acc_mm) else 0.0
-                    self.hud_storage[0].label = f"Vibration: {vib_display:6.2f} mm"
-                    self.hud_storage[1].label = f"Acceleration: {acc_display:6.1f} mm/s²"
+                    self.hud_storage[0].label = f"Array displacement: {vib_display:6.2f} mm"
+                    self.hud_storage[1].label = f"Array acceleration: {acc_display:6.1f} mm/s^2"
                     self.hud_storage[2].label = f"Pointing Error: {pointing_error:6.3f}°"
                     self.hud_storage[3].label = f"Angular Rate: {omega_deg_s:6.3f}°/s"
 
@@ -883,7 +1044,9 @@ class CometPhotographyDemo:
 
         print("Done!")
         self._analyze_results()
-        self._save_results()
+        npz_path = self._save_results()
+        if self.camera_sidecar:
+            self._generate_camera_sidecar(npz_path)
 
     def _analyze_results(self):
         """Analyze results."""
@@ -1007,6 +1170,25 @@ class CometPhotographyDemo:
                  use_trajectory_tracking=self.use_trajectory_tracking,
                  rotation_axis=np.array([0.0, 0.0, 1.0]))
         print(f"\nSaved {output}")
+        return output
+
+    def _generate_camera_sidecar(self, npz_path: str) -> None:
+        """Render synchronized synthetic camera frames using saved mission history."""
+        from basilisk_sim.comet_camera_simulator import render_camera_sidecar_frames_from_npz
+
+        sidecar_dir = os.path.join(os.path.dirname(npz_path), "camera_sidecar")
+        prefix = f"{self.method}_{self.controller}_{self.run_mode}"
+        print("\nRendering camera sidecar frames...")
+        render_camera_sidecar_frames_from_npz(
+            npz_file=npz_path,
+            output_dir=sidecar_dir,
+            fps=self.camera_sidecar_fps,
+            exposure_time=self.camera_sidecar_exposure_s,
+            fov_deg=self.camera_sidecar_fov_deg,
+            resolution=(self.camera_sidecar_resolution_px, self.camera_sidecar_resolution_px),
+            noise_level=self.camera_sidecar_noise,
+            prefix=prefix,
+        )
 
 
 if __name__ == "__main__":
@@ -1027,6 +1209,38 @@ if __name__ == "__main__":
                         help="Optional JSON config override file")
     parser.add_argument("--output-dir", default=None,
                         help="Output directory for NPZ files (default: output/cache)")
+    parser.add_argument("--camera-sidecar", action="store_true",
+                        help="Render synchronized synthetic camera frames after the run")
+    parser.add_argument("--camera-sidecar-fps", type=float, default=5.0,
+                        help="Sidecar frame rate in Hz (default: 5.0)")
+    parser.add_argument("--camera-sidecar-exposure", type=float, default=2.0,
+                        help="Sidecar exposure time in seconds (default: 2.0)")
+    parser.add_argument("--camera-sidecar-fov", type=float, default=0.5,
+                        help="Sidecar camera FOV in degrees (default: 0.5)")
+    parser.add_argument("--camera-sidecar-resolution", type=int, default=512,
+                        help="Sidecar image resolution in pixels (default: 512)")
+    parser.add_argument("--camera-sidecar-noise", type=float, default=0.01,
+                        help="Sidecar image noise sigma (default: 0.01)")
+    parser.add_argument("--viz-preset", default="analysis", choices=sorted(VIZ_PRESETS),
+                        help="Vizard visual preset (default: analysis)")
+    parser.add_argument("--live-motion-blur", action="store_true",
+                        help="Enable live Vizard camera blur driven by modal jitter")
+    parser.add_argument("--live-blur-camera-id", type=int, default=1,
+                        help="Vizard camera ID for live blur updates (default: 1)")
+    parser.add_argument("--live-blur-update-stride", type=int, default=1,
+                        help="Apply live blur update every N sim steps (default: 1)")
+    parser.add_argument("--live-blur-arcsec-full", type=float, default=120.0,
+                        help="Jitter arcsec mapped to max blur effect (default: 120)")
+    parser.add_argument("--live-blur-aperture-min", type=float, default=0.3,
+                        help="Minimum f-number used at max blur (default: 0.3)")
+    parser.add_argument("--live-blur-aperture-max", type=float, default=8.0,
+                        help="Maximum f-number used near zero blur (default: 8.0)")
+    parser.add_argument("--live-blur-focus-distance", type=float, default=1.0e8,
+                        help="Focus distance in meters for blur post-processing (default: 1e8)")
+    parser.add_argument("--live-blur-focal-length", type=float, default=0.08,
+                        help="Focal length in meters for blur post-processing (default: 0.08)")
+    parser.add_argument("--live-blur-max-kernel", type=int, default=4,
+                        help="Max blur kernel 1..4 for Vizard bokeh (default: 4)")
     args = parser.parse_args()
 
     print(f"\nMethod: {args.method}")
@@ -1049,6 +1263,22 @@ if __name__ == "__main__":
         pixel_scale_arcsec=args.pixel_scale,
         config_overrides=config_overrides,
         output_dir=args.output_dir,
+        camera_sidecar=args.camera_sidecar,
+        camera_sidecar_fps=args.camera_sidecar_fps,
+        camera_sidecar_exposure_s=args.camera_sidecar_exposure,
+        camera_sidecar_fov_deg=args.camera_sidecar_fov,
+        camera_sidecar_resolution_px=args.camera_sidecar_resolution,
+        camera_sidecar_noise=args.camera_sidecar_noise,
+        viz_preset=args.viz_preset,
+        live_motion_blur=args.live_motion_blur,
+        live_blur_camera_id=args.live_blur_camera_id,
+        live_blur_update_stride=args.live_blur_update_stride,
+        live_blur_arcsec_full=args.live_blur_arcsec_full,
+        live_blur_aperture_min=args.live_blur_aperture_min,
+        live_blur_aperture_max=args.live_blur_aperture_max,
+        live_blur_focus_distance_m=args.live_blur_focus_distance,
+        live_blur_focal_length_m=args.live_blur_focal_length,
+        live_blur_max_kernel=args.live_blur_max_kernel,
     )
     demo.build_simulation()
     demo.run()

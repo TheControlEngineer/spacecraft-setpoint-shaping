@@ -1,0 +1,3 @@
+combo_key,combo_label,n_samples,n_violations,violation_percent,p95_arcsec,p99_arcsec,threshold_arcsec
+fourth_standard_pd,Fourth-order + Standard PD,378,50,13.227513227513228,8.738143136333782,9.682732373347525,7.0
+s_curve_standard_pd,S-curve + Standard PD,378,378,100.0,18.516384469656717,20.067996301976002,7.0

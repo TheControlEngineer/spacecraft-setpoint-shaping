@@ -1,113 +1,173 @@
-# Spacecraft Setpoint Shaping for Vibration Control 
+# Setpoint Shaping and Pointing Control for Satellite Repositioning
 
-A comprehensive Python library implementing input shaping techniques for controlling residual vibrations in flexible spacecraft structures, with application to  comet tracking and imaging.
+This project designs, implements, and validates a control architecture for a flexible spacecraft that must execute a fast 180 deg yaw slew in 30 seconds while preserving post-maneuver pointing stability for imaging.
 
-## 🎯 Project Overview
+Core idea: combine a shaped feedforward trajectory (to avoid exciting flexible modes) with MRP-based feedback control (to track and reject disturbances).
 
-This project demonstrates the design and application of input shaping controllers for spacecraft with flexible appendages (solar arrays), culminating in a high-fidelity mission scenario: tracking and photographing a comet while minimizing image blur from structural vibrations.
+## Mission Context
 
-**Inspired by:** Mars Reconnaissance Orbiter's HiRISE camera observations of Comet 3I ATLAS
+- Spacecraft mass: 750 kg
+- Slew maneuver: 180 deg about body Z axis in 30 s
+- Structural challenge: lightly damped flexible solar-array modes at 0.4 Hz and 1.3 Hz
+- Pointing requirement: post-slew RMS pointing error below 5 arcsec
+- Software baseline: Python 3.10+, NumPy/SciPy/Matplotlib, Basilisk
 
-## 🚀 Features
+## Why This Matters
 
-### Implemented Shapers
-- **ZV (Zero Vibration):** 2-impulse shaper, fastest but least robust
-- **ZVD (Zero Vibration Derivative):** 3-impulse shaper with improved robustness
-- **ZVDD (Zero Vibration Double Derivative):** 4-impulse shaper, maximum robustness
-- **EI (Extra-Insensitive):** Optimized for specified tolerance across frequency uncertainty
+Large slews inject energy into flexible appendages. Residual vibration then degrades pointing and image quality, forcing mission downtime while the structure settles. This project targets that bottleneck by reducing modal excitation at the command-design level instead of relying only on feedback damping.
 
-### Analysis Capabilities
-- Frequency response analysis
-- Robustness quantification (Monte Carlo with ±20% frequency uncertainty)
-- Performance vs. duration trade-off studies
-- Multi-mode shaping (cascaded and simultaneous optimization) - *Coming soon*
+## Technical Approach
 
-### Mission Application
-- High-fidelity flexible spacecraft dynamics in Basilisk
-- Comet tracking scenario with camera blur modeling
-- Comparison with LQR feedback control - *Coming soon*
-- 3D visualization with Vizard - *Coming soon*
+- **Nonlinear plant modeling:** rigid hub + 3-wheel actuation + flexible appendage dynamics in Basilisk.
+- **Feedback design:** MRP-based PD control with gain tuning around a 70 to 75 deg phase-margin target.
+- **Feedforward design:** compare S-curve baseline against fourth-order setpoint shaping with spectral notches near structural modes.
+- **Validation campaign:** mission run and one-factor sensitivity sweeps in the nonlinear simulation loop.
 
-## 📦 Installation
+## Engineering Skills Demonstrated
 
-### Requirements
-- Python 3.10+
-- NumPy, SciPy, Matplotlib
-- Basilisk
+- Spacecraft attitude dynamics and MRP kinematics
+- Flexible-mode modeling and vibration suppression
+- Frequency-domain control analysis (sensitivity and disturbance/noise pathways)
+- Simulation-based verification and robustness sweeps
+- Python tooling for reproducible analysis outputs (plots + metrics exports)
 
-### Install Package
+## Simulation Architecture
+
+![Mission simulation architecture](Docs/plots/image-15.png)
+
+## Key Results
+
+Mission-run comparison from `Docs/design_report.md`:
+
+| Metric | S-curve + PD | Fourth-order + PD | Outcome |
+|---|---:|---:|---|
+| Post-slew RMS modal displacement | 0.2534 mm | 0.099 mm | 60.9% reduction |
+| Post-slew RMS modal acceleration | 1.561 mm/s^2 | 0.445 mm/s^2 | 71.5% reduction |
+| Post-slew RMS pointing error | Baseline higher | 4.65 arcsec | Meets 5 arcsec requirement (64.1% lower than baseline) |
+| Estimated imaging blur | 10 px | 3.3 px | About 70% blur reduction |
+| Relative mode-2 residual content | Baseline | 4.83x lower | Less energy injected into higher mode |
+
+### Residual Vibration Comparison
+
+![Mission vibration comparison](Docs/plots/mission_vibration.png)
+
+### Pointing Error Comparison
+
+![Mission pointing error comparison](Docs/plots/mission_pointing_error.png)
+
+### Imaging Blur Impact
+
+![Comet blur comparison](Docs/plots/comet_blur_comparison_psd_check.png)
+
+### Robustness Sweep Example (Modal Frequency Uncertainty)
+
+![Modal frequency sweep](Docs/plots/mc_sweep_modal_frequency.png)
+
+## Vizard Demo (Video Placeholder)
+
+Replace the link below with your simulation video:
+
+[![Vizard demo placeholder](Docs/plots/mission_simulation_architecture.svg)](PASTE_YOUR_VIZARD_VIDEO_LINK_HERE)
+
+## Repository Structure
+
+```text
+basilisk_simulation/
+|- src/basilisk_sim/          # Dynamics, feedforward, feedback, models
+|- scripts/
+|  |- run_vizard_demo.py      # Nonlinear mission simulation + Vizard scenario
+|  |- run_mission.py          # Unified mission analysis, plots, CSV exports
+|  |- run_survey_scenario.py  # Step-and-stare mission framing
+|- analysis/
+|  |- monte_carlo_factor_sweeps.py
+|  |- validation_mc_runner.py
+|- Docs/
+|  |- design_report.md
+|  |- plots/
+|- data/trajectories/         # Reference trajectories + simulation NPZ files
+|- output/                    # Generated plots/metrics
+```
+
+## Installation
+
+Prerequisites:
+
+- Python 3.10 or newer
+- Basilisk Python package
+- Optional for interactive 3D viewing: Vizard runtime
+
+### 1. Create and activate a virtual environment
+
 ```bash
-git clone https://github.com/YOUR_USERNAME/spacecraft-input-shaping.git
-cd spacecraft-input-shaping
-pip install -e .
+python -m venv .venv
 ```
 
-## 🔧 Quick Start
-```python
-from input_shaping import ZV, ZVD, ZVDD, design_shaper
-import numpy as np
+Windows PowerShell:
 
-# Define flexible mode parameters
-omega_n = 2 * np.pi * 0.5  # 0.5 Hz natural frequency
-zeta = 0.02                 # 2% damping ratio
-
-# Design shapers
-A_zv, t_zv = ZV(omega_n, zeta)
-A_zvd, t_zvd = ZVD(omega_n, zeta)
-
-# Or use convenience function
-A, t = design_shaper(omega_n, zeta, method='ZVD')
-
-print(f"ZVD Shaper: {len(A)} impulses")
-print(f"Amplitudes: {A}")
-print(f"Times: {t}")
-print(f"Duration: {t[-1]:.2f} seconds")
+```powershell
+.\.venv\Scripts\Activate.ps1
 ```
 
-## 🧪 Testing
+macOS/Linux:
 
-Run the test suite:
 ```bash
-pytest tests/ -v
+source .venv/bin/activate
 ```
 
-With coverage:
+### 2. Install package dependencies
+
 ```bash
-pytest tests/ --cov=src/input_shaping --cov-report=html
+python -m pip install --upgrade pip
+pip install -e ".[basilisk]"
 ```
 
-## 📚 Theory
+If you are running from the full monorepo and want the shared input-shaping package too:
 
-Input shaping is a feedforward control technique that shapes commanded inputs to avoid exciting structural vibrations. By convolving a reference command with a sequence of impulses designed based on the system's natural frequency and damping, residual vibrations can be eliminated or significantly reduced.
+```bash
+pip install -e ..
+```
 
-**Key Trade-off:** More impulses → better robustness to frequency uncertainty → longer maneuver duration
+## How To Run
 
-## 🗺️ Roadmap
+### A. Generate fresh mission trajectories (recommended)
 
-- [x] Core shaper library (ZV/ZVD/ZVDD/EI)
-- [x] Unit tests and validation
-- [x] Robustness analysis
-- [x] Multi-mode shaping (cascaded + simultaneous)
-- [ ] Basilisk spacecraft model with flexible solar arrays
-- [ ] Comet tracking mission scenario
-- [ ] LQR comparison
-- [ ] Camera blur modeling
-- [ ] Vizard visualization
-- [ ] Technical write-up
+From `basilisk_simulation/`:
 
-## 👤 Author
+```bash
+python scripts/run_vizard_demo.py s_curve --controller standard_pd --mode combined --output-dir data/trajectories
+python scripts/run_vizard_demo.py fourth --controller standard_pd --mode combined --output-dir data/trajectories
+```
 
-**Jomin Joseph Karukakalam**
-- Background: M.Sc Systems & Control
-- LinkedIn: https://www.linkedin.com/in/jomin-joseph-karukakalam-601955225
-- Email: j.j.karukakalam@outlook.com
+### B. Run mission analysis and create plots/metrics
 
+```bash
+python scripts/run_mission.py --data-dir data/trajectories
+```
 
+Generated artifacts:
 
-## 📝 License
+- Plots: `output/plots/`
+- Metrics CSVs: `output/metrics/`
 
-MIT License - See LICENSE file for details
+### C. Run sensitivity sweeps
 
----
+```bash
+python analysis/monte_carlo_factor_sweeps.py --samples 500 --out-dir output/mc_sweep_500
+```
 
-**Status:** 🟢 Active Development | Week 1 of 12-week intensive project
+### D. Run verification/validation checks
+
+```bash
+python analysis/validation_mc_runner.py --verification --validation --output-dir analysis
+```
+
+## Design Report
+
+Full derivations, modeling assumptions, controller rationale, and result interpretation are documented in:
+
+- `Docs/design_report.md`
+
+## Notes
+
+- Monte Carlo automation and report JSON outputs are included under `analysis/`.
+- This project emphasizes dynamics/control behavior and vibration suppression effectiveness for fast repositioning and imaging readiness.

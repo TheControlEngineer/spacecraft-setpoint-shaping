@@ -18,7 +18,7 @@ Why this fits your repo:
 
 Core math (per mode):
   u[k]      = y[k] * exp(-j*ω*k*dt)        # complex demodulation
-  a[k+1]    = (1-α)*a[k] + α*u[k]          # complex 1st-order LPF (envelope)
+  a[k+1]    = (1-α)*a[k] + α*u[k]          # complex 1st order LPF (envelope)
   y_hat[k]  = 2*Re{ a[k] * exp(+j*ω*k*dt)} # reconstruct narrowband component
 
 α is tuned directly by a bandwidth parameter (Hz) or time constant.
@@ -58,7 +58,7 @@ class ModeState:
     freq_hz: float
     bw_hz: float
     env: complex          # complex envelope (≈ (A/2) * e^{j phase})
-    phase: complex        # unit-magnitude carrier exp(j*ωt)
+    phase: complex        # unit magnitude carrier exp(j*ωt)
 
 
 class PhasorModeBankEstimator:
@@ -107,7 +107,7 @@ class PhasorModeBankEstimator:
         if self.dt <= 0:
             raise ValueError("dt must be > 0")
 
-        # Per-mode parameters (cached for nominal dt)
+        # Per mode parameters (cached for nominal dt)
         self._update_cached_coeffs(self.dt)
 
         # State: complex carrier phase and envelope per axis/mode
@@ -152,10 +152,10 @@ class PhasorModeBankEstimator:
                 self.dt = dt
                 self._update_cached_coeffs(self.dt)
 
-        # Demodulate to DC: y * e^{-jωt}
+        # Demodulate to DC: y * e^{ jωt}
         demod = y[:, None] * np.conj(self._carrier)  # (axes, modes) complex
 
-        # Envelope LPF: env <- (1-α) env + α demod
+        # Envelope LPF: env less than (1 α) env + α demod
         self._env = (1.0 - self._alpha)[None, :] * self._env + self._alpha[None, :] * demod
 
         # Reconstruct narrowband component: y_hat = 2*Re{ env * e^{jωt} }

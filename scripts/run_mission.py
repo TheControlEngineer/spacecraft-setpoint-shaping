@@ -38,9 +38,9 @@ from basilisk_sim.design_shaper import (
 )
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Configuration
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 @dataclass
@@ -78,8 +78,8 @@ METHOD_LABELS = {
 }
 
 METHOD_COLORS = {
-    "s_curve": "#17becf",  # cyan
-    "fourth": "#2ca02c",  # green
+    "s_curve": "#17becf", # cyan
+    "fourth": "#2ca02c", # green
 }
 
 CONTROLLER_LABELS = {
@@ -87,13 +87,13 @@ CONTROLLER_LABELS = {
 }
 
 CONTROLLER_COLORS = {
-    "standard_pd": "#ff7f0e",  # orange
+    "standard_pd": "#ff7f0e", # orange
 }
 
 # Comparison colors for method + controller combinations (solid lines).
 COMBO_COLORS = {
-    ("s_curve", "standard_pd"): "#17becf",  # cyan
-    ("fourth", "standard_pd"): "#2ca02c",  # green
+    ("s_curve", "standard_pd"): "#17becf", # cyan
+    ("fourth", "standard_pd"): "#2ca02c", # green
 }
 
 
@@ -135,7 +135,7 @@ def default_config() -> MissionConfig:
         modal_gains = (modal_gains + [modal_gains[-1]] * len(modal_freqs_hz))[: len(modal_freqs_hz)]
     first_mode = min(modal_freqs_hz) if modal_freqs_hz else 0.4
     control_bandwidth_hz = first_mode / 2.5
-    # Filtered PD cutoff (user-requested): 8.0 Hz for current tuning.
+    # Filtered PD cutoff (user requested): 8.0 Hz for current tuning.
     control_filter_cutoff_hz = 8.0
     return MissionConfig(
         inertia=inertia_eff.copy(),
@@ -158,9 +158,9 @@ def default_config() -> MissionConfig:
     )
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Utility Functions
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 def _ensure_dir(path: str) -> None:
@@ -293,7 +293,7 @@ def _choose_psd_params(time: np.ndarray, signal_data: np.ndarray) -> Optional[Di
     nperseg_target = int(round(fs / target_df))
     nperseg = min(max_nperseg, max(8, nperseg_target))
 
-    # Use a power-of-two length for efficiency and stable grids.
+    # Use a power of two length for efficiency and stable grids.
     nperseg = 2 ** int(np.floor(np.log2(nperseg)))
     nperseg = max(8, min(nperseg, max_nperseg))
 
@@ -744,16 +744,16 @@ def _npz_matches_config(npz_data: Dict[str, object], config: MissionConfig) -> b
     if not _match_array("inertia_control", config.inertia.flatten(), rtol=0.02):
         return False
     
-    # Check modal gains - critical for vibration magnitude
+    # Check modal gains because they strongly drive vibration magnitude
     if not _match_array("modal_gains", config.modal_gains, rtol=0.1):
         return False
 
     return True
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Feedforward Analysis
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 def _integrate_trajectory(
@@ -970,7 +970,7 @@ def _compute_feedforward_metrics(
         fallback_start = int(0.9 * len(disp))
         residual = disp[fallback_start:]
     else:
-        # Not enough data - use all available
+        # If the record is too short, use all available samples
         residual = disp
 
     if len(residual) > 0 and np.max(np.abs(residual)) > 1e-15:
@@ -1045,7 +1045,7 @@ def _collect_feedforward_data(
             mode1_acc = aligned[3] if len(aligned) > 3 else np.array([])
             mode2_acc = aligned[4] if len(aligned) > 4 else np.array([])
 
-            # Raw modal-state signals (no filtering/detrending) for plotting/debug.
+            # Raw modal state signals (no filtering/detrending) for plotting/debug.
             displacement_raw = _combine_modal_displacement(mode1, mode2)
             displacement_raw = displacement_raw[: len(time)] if len(time) > 0 else displacement_raw
             acceleration_raw = np.array([])
@@ -1194,7 +1194,7 @@ def _collect_feedback_data(
             mode1_acc = aligned[5] if len(aligned) > 5 else np.array([])
             mode2_acc = aligned[6] if len(aligned) > 6 else np.array([])
 
-            # Raw modal-state signals (no filtering/detrending) for plotting/debug.
+            # Raw modal state signals (no filtering/detrending) for plotting/debug.
             displacement_raw = _combine_modal_displacement(mode1, mode2)
             displacement_raw = displacement_raw[: len(time)] if len(time) > 0 else displacement_raw
             acceleration_raw = np.array([])
@@ -1285,9 +1285,9 @@ def run_feedforward_comparison(
     return results
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Feedback Control Analysis
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 def _build_flexible_plant_tf(
@@ -1359,7 +1359,7 @@ def _build_coupled_flex_state_space(
     arms = _pad_list(lever_arms, n_modes, 0.0)
 
     m_mat = np.zeros((n_modes + 1, n_modes + 1))
-    # Use hub inertia for the rigid coordinate to avoid double-counting appendage inertia.
+    # Use hub inertia for the rigid coordinate to avoid double counting appendage inertia.
     m_mat[0, 0] = base_inertia + sum(m * r * r for m, r in zip(masses, arms))
     for idx, (m_i, r_i) in enumerate(zip(masses, arms), start=1):
         m_mat[0, idx] = m_i * r_i
@@ -1508,7 +1508,7 @@ def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
         MRPFeedbackController,
     )
 
-    axis = 2  # Z-axis
+    axis = 2  # Z axis
     axis_vec = _normalize_axis(config.rotation_axis)
     I = float(axis_vec @ config.inertia @ axis_vec)
     sigma_scale = 4.0  # For small angles, sigma ~ theta/4
@@ -1542,10 +1542,10 @@ def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
         Ki=-1.0
     )
 
-    # Build rigid plant for MRP attitude output (torque -> sigma)
+    # Build rigid plant for MRP attitude output (torque to sigma)
     plant_rigid = signal.TransferFunction([1.0], [sigma_scale * I, 0.0, 0.0])
 
-    # Controller in sigma-domain: K + 4*P*s
+    # Controller in sigma domain: K + 4*P*s
     controller_std_tf = signal.TransferFunction([4.0 * p_std, k_std], [1.0])
     def _open_loop_tf(plant: signal.TransferFunction, controller: signal.TransferFunction) -> signal.TransferFunction:
         plant_num = np.atleast_1d(np.squeeze(plant.num))
@@ -1573,16 +1573,16 @@ def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
     _, plant_flex_body = signal.freqresp(flex_ss["body"], omega)
 
     _, c_std_resp = signal.freqresp(controller_std_tf, omega)
-    # Rate-feedback path (omega noise -> torque).
+    # Rate feedback path (omega noise to torque).
     c_rate_std_resp = p_std * np.ones_like(omega, dtype=complex)
 
-    # Open-loop rigid-body (torque -> sigma) and sensitivity
+    # Open loop rigid body (torque to sigma) and sensitivity
     l_std_rigid = plant_rigid_resp * c_std_resp
 
     s_std = 1 / (1 + l_std_rigid)
     t_std = l_std_rigid / (1 + l_std_rigid)
 
-    # Open-loop using flexible sigma output
+    # Open loop using flexible sigma output
     l_std_flex = plant_flex_body * c_std_resp
 
     s_std_flex = 1 / (1 + l_std_flex)
@@ -1690,9 +1690,9 @@ def run_control_analysis(
     return results
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # NPZ File Loading (for Basilisk simulation data)
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 def _find_npz(
@@ -1958,9 +1958,9 @@ def _load_all_pointing_data(
     return pointing
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Pointing Summary
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 def _compute_pointing_error(sigma: np.ndarray, target_sigma: np.ndarray) -> np.ndarray:
@@ -2047,10 +2047,10 @@ def run_pointing_summary(
     results: Dict[str, Dict[str, float]] = {}
 
     for method, method_data in pointing_data.items():
-        # Check if this is legacy single-controller data
+        # Check if this is legacy single controller data
         is_legacy = len(method_data) == 1
         for controller, data in method_data.items():
-            # Use just method name for legacy format, combined for multi-controller
+            # Use just method name for legacy format, combined for multi controller
             key = method if is_legacy else f"{method}_{controller}"
             time = np.array(data.get("time", np.array([])), dtype=float)
             mode1 = data.get("mode1", np.array([]))
@@ -2108,9 +2108,9 @@ def run_pointing_summary(
     return results
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # PSD Data Building
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 def _build_mission_psd_data(
@@ -2170,9 +2170,9 @@ def _build_mission_psd_data(
     return mission_psd
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Plotting Functions
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 def _plot_vibration_comparison(
@@ -2273,7 +2273,7 @@ def _plot_vibration_comparison(
                 "color": METHOD_COLORS.get(method, "#555555"),
             })
 
-    # Plot FEEDBACK data (combined FF + FB) - same displacement and acceleration
+    # Plot FEEDBACK data from the combined feedforward and feedback run
     for method in METHODS:
         for controller in CONTROLLERS:
             key = f"{method}_{controller}"
@@ -2457,7 +2457,7 @@ def _plot_modal_acceleration_psd(
                 time_use = np.array(time[post_mask], dtype=float)
                 acc_use = np.array(combined_acc[post_mask], dtype=float)
             else:
-                # Fallback when post-slew window is too short for PSD estimation.
+                # Fallback when post slew window is too short for PSD estimation.
                 time_use = time
                 acc_use = combined_acc
 
@@ -2947,7 +2947,7 @@ def _plot_psd_comparison(
             if len(psd_freq) == 0:
                 continue
 
-            # Filter to 0-10 Hz range
+            # Filter to the 0 to 10 Hz range
             mask = (psd_freq > 0) & (psd_freq <= 10.0) & np.isfinite(psd_vals) & (psd_vals > 0)
             if not np.any(mask):
                 continue
@@ -3285,7 +3285,7 @@ def _plot_tracking_response(
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper right")
 
-    # Remove legacy tracking-response image to avoid confusion.
+    # Remove legacy tracking response image to avoid confusion.
     legacy_path = os.path.abspath(os.path.join(out_dir, "mission_tracking_response.png"))
     if os.path.exists(legacy_path):
         try:
@@ -3687,7 +3687,7 @@ def _plot_torque_psd_split(
         ax_fb.grid(True, alpha=0.3, which="minor", linestyle="-", linewidth=0.4, color="lightgray")
         ax_fb.legend(loc="best", framealpha=0.95, fontsize=10, fancybox=True, shadow=True, ncol=1)
 
-    # Keep low-frequency content readable while retaining mission band up to 10 Hz.
+    # Keep low frequency content readable while retaining mission band up to 10 Hz.
     for ax in (ax_ff, ax_fb):
         ax.set_xlim(2e-2, 10.0)
         ax.xaxis.set_major_locator(LogLocator(base=10, numticks=12))
@@ -4306,7 +4306,7 @@ def _plot_loop_components(
 
     plot_paths: List[str] = []
 
-    # Loop-components plot for the configured comparison controller.
+    # Loop components plot for the configured comparison controller.
     pd_plot = _plot_one(
         "standard_pd",
         "Loop Components: Standard PD",
@@ -4318,9 +4318,9 @@ def _plot_loop_components(
     return plot_paths
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # CSV Export Functions
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 def _export_vibration_csv(
@@ -4519,9 +4519,9 @@ def _export_mission_summary_csv(
     print(f"Wrote mission summary CSV: {path}")
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Main Mission Simulation
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 def run_mission_simulation(
@@ -4664,9 +4664,9 @@ def run_mission_simulation(
     }
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # CLI
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 def main() -> None:

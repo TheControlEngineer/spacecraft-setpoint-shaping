@@ -69,6 +69,15 @@ from basilisk_sim.spacecraft_properties import (
 METHODS = ["s_curve", "fourth"]
 CONTROLLERS = ["standard_pd", "filtered_pd"]
 UNIFIED_SAMPLE_DT = 0.01  # 100 Hz to match Basilisk simulation
+POST_SLEW_POINTING_LIMIT_ARCSEC = 7.0
+POST_SLEW_VIBRATION_LIMIT_MM = 0.2
+POST_SLEW_ACCEL_LIMIT_MM_S2 = 10.0
+MC_COMBO_STYLES = {
+    "s_curve_standard_pd": ("S-curve + Standard PD", "#ff7f0e"),
+    "s_curve_filtered_pd": ("S-curve + Filtered PD", "#ffbb78"),
+    "fourth_standard_pd": ("Fourth-order + Standard PD", "#1f77b4"),
+    "fourth_filtered_pd": ("Fourth-order + Filtered PD", "#aec7e8"),
+}
 
 # Default pass/fail thresholds (validation_mc.md section 3.3)
 DEFAULT_THRESHOLDS = {
@@ -263,6 +272,690 @@ def _compute_post_slew_stats(
     rms = _compute_rms(series)
     peak = float(np.max(np.abs(series))) if len(series) else float("nan")
     return rms, peak
+
+
+def _plot_post_slew_pointing_box_from_csv(
+    out_dir: str,
+    threshold_arcsec: float = POST_SLEW_POINTING_LIMIT_ARCSEC,
+) -> Optional[str]:
+    """Create post-slew RMS pointing box plot from existing Monte Carlo CSV."""
+    csv_path = os.path.join(out_dir, "monte_carlo_runs.csv")
+    if not os.path.isfile(csv_path):
+        print(f"Post-slew box plot skipped, missing CSV: {csv_path}")
+        return None
+
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    if not rows:
+        print(f"Post-slew box plot skipped, no rows in CSV: {csv_path}")
+        return None
+
+    combo_cols: List[str] = []
+    for col in rows[0].keys():
+        if col.endswith("_rms_pointing_error_deg") and col != "rms_pointing_error_deg":
+            combo_cols.append(col)
+
+    if not combo_cols:
+        print(f"Post-slew box plot skipped, no per-combo RMS columns in: {csv_path}")
+        return None
+
+    combo_cols = sorted(combo_cols)
+    data: List[np.ndarray] = []
+    labels: List[str] = []
+    colors: List[str] = []
+    violation_rows: List[List[Any]] = []
+
+    for col in combo_cols:
+        combo_key = col.replace("_rms_pointing_error_deg", "")
+        vals_deg = []
+        for row in rows:
+            raw = row.get(col, "nan")
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                val = float("nan")
+            if np.isfinite(val):
+                vals_deg.append(val)
+
+        if not vals_deg:
+            continue
+
+        vals_arcsec = np.array(vals_deg, dtype=float) * 3600.0
+        style = MC_COMBO_STYLES.get(combo_key, (combo_key.replace("_", " "), "#7f7f7f"))
+        combo_label, combo_color = style
+
+        n_total = int(vals_arcsec.size)
+        n_viol = int(np.sum(vals_arcsec > float(threshold_arcsec)))
+        viol_pct = (100.0 * n_viol / n_total) if n_total > 0 else float("nan")
+        p95_arcsec = float(np.percentile(vals_arcsec, 95)) if n_total > 0 else float("nan")
+        p99_arcsec = float(np.percentile(vals_arcsec, 99)) if n_total > 0 else float("nan")
+
+        data.append(vals_arcsec)
+        labels.append(combo_label)
+        colors.append(combo_color)
+        violation_rows.append(
+            [
+                combo_key,
+                combo_label,
+                n_total,
+                n_viol,
+                viol_pct,
+                p95_arcsec,
+                p99_arcsec,
+                float(threshold_arcsec),
+            ]
+        )
+
+    if not data:
+        print(f"Post-slew box plot skipped, no finite post-slew RMS data in: {csv_path}")
+        return None
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    bp = ax.boxplot(
+        data,
+        labels=[lbl.replace(" + ", "\n+ ") for lbl in labels],
+        patch_artist=True,
+        showfliers=True,
+    )
+
+    for patch, color in zip(bp["boxes"], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.75)
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(1.5)
+
+    ax.axhline(
+        y=float(threshold_arcsec),
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        label=f"{threshold_arcsec:.1f} arcsec RMS limit",
+    )
+
+    y_max = float(max(np.nanmax(vals) for vals in data))
+    if np.isfinite(y_max) and y_max > 0:
+        ax.set_ylim(bottom=0.0, top=max(y_max * 1.18, threshold_arcsec * 1.3))
+
+    for idx, row in enumerate(violation_rows, start=1):
+        n_total = int(row[2])
+        n_viol = int(row[3])
+        viol_pct = float(row[4])
+        txt = f"{n_viol}/{n_total} violated ({viol_pct:.1f}%)"
+        ax.text(
+            idx,
+            ax.get_ylim()[1] * 0.96,
+            txt,
+            ha="center",
+            va="top",
+            fontsize=9,
+            color="black",
+        )
+
+    ax.set_title("Post-slew RMS Pointing Error (Monte Carlo)")
+    ax.set_ylabel("RMS pointing error (arcsec)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="lower right")
+    fig.tight_layout()
+
+    plot_path = os.path.join(out_dir, "monte_carlo_post_slew_pointing_box.png")
+    fig.savefig(plot_path, dpi=180)
+    plt.close(fig)
+
+    violation_csv = os.path.join(out_dir, "monte_carlo_post_slew_pointing_violations.csv")
+    _write_csv(
+        violation_csv,
+        [
+            "combo_key",
+            "combo_label",
+            "n_samples",
+            "n_violations",
+            "violation_percent",
+            "p95_arcsec",
+            "p99_arcsec",
+            "threshold_arcsec",
+        ],
+        violation_rows,
+    )
+
+    print(f"Saved post-slew pointing box plot: {plot_path}")
+    print(f"Saved post-slew violation table: {violation_csv}")
+    return plot_path
+
+
+def _plot_post_slew_vibration_box_from_csv(
+    out_dir: str,
+    threshold_mm: float = POST_SLEW_VIBRATION_LIMIT_MM,
+) -> Optional[str]:
+    """Create post-slew RMS vibration box plot from existing Monte Carlo CSV."""
+    csv_path = os.path.join(out_dir, "monte_carlo_runs.csv")
+    if not os.path.isfile(csv_path):
+        print(f"Post-slew vibration box plot skipped, missing CSV: {csv_path}")
+        return None
+
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    if not rows:
+        print(f"Post-slew vibration box plot skipped, no rows in CSV: {csv_path}")
+        return None
+
+    combo_cols: List[str] = []
+    for col in rows[0].keys():
+        if col.endswith("_rms_vibration_mm") and col != "rms_vibration_mm":
+            combo_cols.append(col)
+
+    if not combo_cols:
+        print(f"Post-slew vibration box plot skipped, no per-combo RMS columns in: {csv_path}")
+        return None
+
+    combo_cols = sorted(combo_cols)
+    data: List[np.ndarray] = []
+    labels: List[str] = []
+    colors: List[str] = []
+    violation_rows: List[List[Any]] = []
+
+    for col in combo_cols:
+        combo_key = col.replace("_rms_vibration_mm", "")
+        vals_mm: List[float] = []
+        for row in rows:
+            raw = row.get(col, "nan")
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                val = float("nan")
+            if np.isfinite(val):
+                vals_mm.append(val)
+
+        if not vals_mm:
+            continue
+
+        arr_mm = np.array(vals_mm, dtype=float)
+        style = MC_COMBO_STYLES.get(combo_key, (combo_key.replace("_", " "), "#7f7f7f"))
+        combo_label, combo_color = style
+
+        n_total = int(arr_mm.size)
+        n_viol = int(np.sum(arr_mm > float(threshold_mm)))
+        viol_pct = (100.0 * n_viol / n_total) if n_total > 0 else float("nan")
+        p95_mm = float(np.percentile(arr_mm, 95)) if n_total > 0 else float("nan")
+        p99_mm = float(np.percentile(arr_mm, 99)) if n_total > 0 else float("nan")
+
+        data.append(arr_mm)
+        labels.append(combo_label)
+        colors.append(combo_color)
+        violation_rows.append(
+            [
+                combo_key,
+                combo_label,
+                n_total,
+                n_viol,
+                viol_pct,
+                p95_mm,
+                p99_mm,
+                float(threshold_mm),
+            ]
+        )
+
+    if not data:
+        print(f"Post-slew vibration box plot skipped, no finite post-slew RMS data in: {csv_path}")
+        return None
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    bp = ax.boxplot(
+        data,
+        labels=[lbl.replace(" + ", "\n+ ") for lbl in labels],
+        patch_artist=True,
+        showfliers=True,
+    )
+
+    for patch, color in zip(bp["boxes"], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.75)
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(1.5)
+
+    ax.axhline(
+        y=float(threshold_mm),
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        label=f"{threshold_mm:.2f} mm RMS limit",
+    )
+
+    y_max = float(max(np.nanmax(vals) for vals in data))
+    if np.isfinite(y_max) and y_max > 0:
+        ax.set_ylim(bottom=0.0, top=max(y_max * 1.18, threshold_mm * 1.3))
+
+    for idx, row in enumerate(violation_rows, start=1):
+        n_total = int(row[2])
+        n_viol = int(row[3])
+        viol_pct = float(row[4])
+        txt = f"{n_viol}/{n_total} violated ({viol_pct:.1f}%)"
+        ax.text(
+            idx,
+            ax.get_ylim()[1] * 0.96,
+            txt,
+            ha="center",
+            va="top",
+            fontsize=9,
+            color="black",
+        )
+
+    ax.set_title("Post-slew RMS Vibration (Monte Carlo)")
+    ax.set_ylabel("RMS vibration (mm)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="lower right")
+    fig.tight_layout()
+
+    plot_path = os.path.join(out_dir, "monte_carlo_post_slew_vibration_box.png")
+    fig.savefig(plot_path, dpi=180)
+    plt.close(fig)
+
+    violation_csv = os.path.join(out_dir, "monte_carlo_post_slew_vibration_violations.csv")
+    _write_csv(
+        violation_csv,
+        [
+            "combo_key",
+            "combo_label",
+            "n_samples",
+            "n_violations",
+            "violation_percent",
+            "p95_mm",
+            "p99_mm",
+            "threshold_mm",
+        ],
+        violation_rows,
+    )
+
+    print(f"Saved post-slew vibration box plot: {plot_path}")
+    print(f"Saved post-slew vibration violation table: {violation_csv}")
+    return plot_path
+
+
+def _plot_post_slew_acceleration_box_from_csv(
+    out_dir: str,
+    threshold_mm_s2: float = POST_SLEW_ACCEL_LIMIT_MM_S2,
+) -> Optional[str]:
+    """Create post-slew RMS modal acceleration box plot from existing Monte Carlo CSV."""
+    csv_path = os.path.join(out_dir, "monte_carlo_runs.csv")
+    if not os.path.isfile(csv_path):
+        print(f"Post-slew acceleration box plot skipped, missing CSV: {csv_path}")
+        return None
+
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    if not rows:
+        print(f"Post-slew acceleration box plot skipped, no rows in CSV: {csv_path}")
+        return None
+
+    combo_cols: List[str] = []
+    for col in rows[0].keys():
+        if col.endswith("_rms_modal_accel_mm_s2") and col != "rms_modal_accel_mm_s2":
+            combo_cols.append(col)
+
+    if not combo_cols:
+        print(f"Post-slew acceleration box plot skipped, no per-combo RMS columns in: {csv_path}")
+        return None
+
+    combo_cols = sorted(combo_cols)
+    data: List[np.ndarray] = []
+    labels: List[str] = []
+    colors: List[str] = []
+    violation_rows: List[List[Any]] = []
+
+    for col in combo_cols:
+        combo_key = col.replace("_rms_modal_accel_mm_s2", "")
+        vals_mm_s2: List[float] = []
+        for row in rows:
+            raw = row.get(col, "nan")
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                val = float("nan")
+            if np.isfinite(val):
+                vals_mm_s2.append(val)
+
+        if not vals_mm_s2:
+            continue
+
+        arr_mm_s2 = np.array(vals_mm_s2, dtype=float)
+        style = MC_COMBO_STYLES.get(combo_key, (combo_key.replace("_", " "), "#7f7f7f"))
+        combo_label, combo_color = style
+
+        n_total = int(arr_mm_s2.size)
+        n_viol = int(np.sum(arr_mm_s2 > float(threshold_mm_s2)))
+        viol_pct = (100.0 * n_viol / n_total) if n_total > 0 else float("nan")
+        p95_mm_s2 = float(np.percentile(arr_mm_s2, 95)) if n_total > 0 else float("nan")
+        p99_mm_s2 = float(np.percentile(arr_mm_s2, 99)) if n_total > 0 else float("nan")
+
+        data.append(arr_mm_s2)
+        labels.append(combo_label)
+        colors.append(combo_color)
+        violation_rows.append(
+            [
+                combo_key,
+                combo_label,
+                n_total,
+                n_viol,
+                viol_pct,
+                p95_mm_s2,
+                p99_mm_s2,
+                float(threshold_mm_s2),
+            ]
+        )
+
+    if not data:
+        print(f"Post-slew acceleration box plot skipped, no finite post-slew RMS data in: {csv_path}")
+        return None
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    bp = ax.boxplot(
+        data,
+        labels=[lbl.replace(" + ", "\n+ ") for lbl in labels],
+        patch_artist=True,
+        showfliers=True,
+    )
+
+    for patch, color in zip(bp["boxes"], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.75)
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(1.5)
+
+    ax.axhline(
+        y=float(threshold_mm_s2),
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        label=f"{threshold_mm_s2:.1f} mm/s^2 RMS limit",
+    )
+
+    y_max = float(max(np.nanmax(vals) for vals in data))
+    if np.isfinite(y_max) and y_max > 0:
+        ax.set_ylim(bottom=0.0, top=max(y_max * 1.18, threshold_mm_s2 * 1.3))
+
+    for idx, row in enumerate(violation_rows, start=1):
+        n_total = int(row[2])
+        n_viol = int(row[3])
+        viol_pct = float(row[4])
+        txt = f"{n_viol}/{n_total} violated ({viol_pct:.1f}%)"
+        ax.text(
+            idx,
+            ax.get_ylim()[1] * 0.96,
+            txt,
+            ha="center",
+            va="top",
+            fontsize=9,
+            color="black",
+        )
+
+    ax.set_title("Post-slew RMS Modal Acceleration (Monte Carlo)")
+    ax.set_ylabel("RMS modal acceleration (mm/s^2)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="lower right")
+    fig.tight_layout()
+
+    plot_path = os.path.join(out_dir, "monte_carlo_post_slew_acceleration_box.png")
+    fig.savefig(plot_path, dpi=180)
+    plt.close(fig)
+
+    violation_csv = os.path.join(out_dir, "monte_carlo_post_slew_acceleration_violations.csv")
+    _write_csv(
+        violation_csv,
+        [
+            "combo_key",
+            "combo_label",
+            "n_samples",
+            "n_violations",
+            "violation_percent",
+            "p95_mm_s2",
+            "p99_mm_s2",
+            "threshold_mm_s2",
+        ],
+        violation_rows,
+    )
+
+    print(f"Saved post-slew acceleration box plot: {plot_path}")
+    print(f"Saved post-slew acceleration violation table: {violation_csv}")
+    return plot_path
+
+
+def _reconstruct_mc_perturbations(n_runs: int, seed: int = 42) -> Dict[str, np.ndarray]:
+    """Rebuild perturbation factors using the same RNG stream as PlanMonteCarloRunner."""
+    rng = np.random.default_rng(seed)
+    factors = {
+        "inertia_scale": np.zeros(n_runs, dtype=float),
+        "freq_scale": np.zeros(n_runs, dtype=float),
+        "damp_scale": np.zeros(n_runs, dtype=float),
+        "modal_gains_scale": np.zeros(n_runs, dtype=float),
+        "cutoff_scale": np.zeros(n_runs, dtype=float),
+        "noise_scale": np.zeros(n_runs, dtype=float),
+        "disturbance_scale": np.zeros(n_runs, dtype=float),
+    }
+    for i in range(n_runs):
+        factors["inertia_scale"][i] = 1.0 + rng.uniform(-0.2, 0.2)
+        factors["freq_scale"][i] = 1.0 + rng.uniform(-0.1, 0.1)
+        factors["damp_scale"][i] = 1.0 + rng.uniform(-0.5, 0.5)
+        factors["modal_gains_scale"][i] = 1.0 + rng.uniform(-0.2, 0.2)
+        factors["cutoff_scale"][i] = 1.0 + rng.uniform(-0.2, 0.2)
+        factors["noise_scale"][i] = 1.0 + rng.uniform(-0.5, 0.5)
+        factors["disturbance_scale"][i] = 1.0 + rng.uniform(-0.5, 0.5)
+    return factors
+
+
+def _plot_post_slew_pointing_factor_histograms_from_csv(
+    out_dir: str,
+    seed: int = 42,
+) -> List[str]:
+    """Plot histogram-based parameter impact views for post-slew RMS pointing error."""
+    csv_path = os.path.join(out_dir, "monte_carlo_runs.csv")
+    if not os.path.isfile(csv_path):
+        print(f"Pointing factor histogram skipped, missing CSV: {csv_path}")
+        return []
+
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        print(f"Pointing factor histogram skipped, no rows in CSV: {csv_path}")
+        return []
+
+    run_ids: List[int] = []
+    metric_by_run: Dict[int, Dict[str, float]] = {}
+    metric_cols = [
+        "s_curve_standard_pd_rms_pointing_error_deg",
+        "fourth_standard_pd_rms_pointing_error_deg",
+    ]
+
+    for row in rows:
+        try:
+            run_id = int(row.get("run_id", "-1"))
+        except (TypeError, ValueError):
+            continue
+        if run_id < 0:
+            continue
+        run_ids.append(run_id)
+        metric_map: Dict[str, float] = {}
+        for col in metric_cols:
+            raw = row.get(col, "nan")
+            try:
+                val = float(raw)
+            except (TypeError, ValueError):
+                val = float("nan")
+            metric_map[col] = val
+        metric_by_run[run_id] = metric_map
+
+    if not run_ids:
+        print(f"Pointing factor histogram skipped, no valid run_id in CSV: {csv_path}")
+        return []
+
+    n_runs = max(run_ids) + 1
+    factors = _reconstruct_mc_perturbations(n_runs=n_runs, seed=seed)
+    factor_names = [name for name in factors.keys() if name != "cutoff_scale"]
+    factor_labels = {
+        "inertia_scale": "Inertia scale",
+        "freq_scale": "Resonant mode scale",
+        "damp_scale": "Modal damping scale",
+        "modal_gains_scale": "Modal gain scale",
+        "cutoff_scale": "Filter cutoff scale",
+        "noise_scale": "Rate noise scale",
+        "disturbance_scale": "Disturbance scale",
+    }
+    method_specs = [
+        ("s_curve_standard_pd_rms_pointing_error_deg", "S-curve + Standard PD", "s_curve_standard_pd"),
+        ("fourth_standard_pd_rms_pointing_error_deg", "Fourth-order + Standard PD", "fourth_standard_pd"),
+    ]
+
+    saved_paths: List[str] = []
+    impact_rows: List[List[Any]] = []
+
+    for metric_col, method_label, method_tag in method_specs:
+        fig, axes = plt.subplots(3, 3, figsize=(16, 12))
+        axes_flat = np.atleast_1d(axes).flatten()
+        for idx, factor_name in enumerate(factor_names):
+            ax = axes_flat[idx]
+            x_vals: List[float] = []
+            y_vals: List[float] = []
+            for rid in run_ids:
+                metric = metric_by_run.get(rid, {}).get(metric_col, float("nan"))
+                if not np.isfinite(metric):
+                    continue
+                if rid >= len(factors[factor_name]):
+                    continue
+                x = float(factors[factor_name][rid])
+                y_arcsec = float(metric) * 3600.0
+                if np.isfinite(x) and np.isfinite(y_arcsec):
+                    x_vals.append(x)
+                    y_vals.append(y_arcsec)
+
+            if len(x_vals) < 8:
+                ax.set_title(f"{factor_labels.get(factor_name, factor_name)}\nno data")
+                ax.axis("off")
+                continue
+
+            x_arr = np.array(x_vals, dtype=float)
+            y_arr = np.array(y_vals, dtype=float)
+            q1 = float(np.percentile(x_arr, 25))
+            q3 = float(np.percentile(x_arr, 75))
+            low_mask = x_arr <= q1
+            high_mask = x_arr >= q3
+            y_low = y_arr[low_mask]
+            y_high = y_arr[high_mask]
+            if y_low.size == 0 or y_high.size == 0:
+                ax.set_title(f"{factor_labels.get(factor_name, factor_name)}\nno quartile split")
+                ax.axis("off")
+                continue
+
+            y_all = np.concatenate([y_low, y_high])
+            y_min = float(np.min(y_all))
+            y_max = float(np.max(y_all))
+            if not np.isfinite(y_min) or not np.isfinite(y_max) or y_max <= y_min:
+                bins = 15
+            else:
+                bins = np.linspace(y_min, y_max, 22)
+
+            ax.hist(y_low, bins=bins, alpha=0.65, color="#1f77b4", label=f"Low quartile <= {q1:.3f}")
+            ax.hist(y_high, bins=bins, alpha=0.65, color="#ff7f0e", label=f"High quartile >= {q3:.3f}")
+
+            med_low = float(np.median(y_low))
+            med_high = float(np.median(y_high))
+            delta_med = med_high - med_low
+            effect_abs = abs(delta_med)
+            impact_rows.append(
+                [
+                    method_label,
+                    factor_name,
+                    factor_labels.get(factor_name, factor_name),
+                    int(x_arr.size),
+                    int(y_low.size),
+                    int(y_high.size),
+                    q1,
+                    q3,
+                    med_low,
+                    med_high,
+                    delta_med,
+                    effect_abs,
+                ]
+            )
+
+            ax.set_title(factor_labels.get(factor_name, factor_name))
+            ax.set_xlabel("Post-slew RMS pointing error (arcsec)")
+            ax.set_ylabel("Count")
+            ax.grid(True, alpha=0.25)
+            ax.legend(fontsize=8)
+            ax.text(
+                0.98,
+                0.95,
+                f"|Δmedian|={effect_abs:.2f} arcsec",
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                fontsize=9,
+                bbox=dict(facecolor="white", edgecolor="gray", alpha=0.85),
+            )
+
+        for idx in range(len(factor_names), len(axes_flat)):
+            axes_flat[idx].axis("off")
+
+        fig.suptitle(f"Monte Carlo Parameter Impact Histograms\n{method_label}", fontsize=14, fontweight="bold")
+        fig.tight_layout(rect=[0, 0.02, 1, 0.96])
+        plot_path = os.path.join(out_dir, f"monte_carlo_post_slew_pointing_factor_hist_{method_tag}.png")
+        fig.savefig(plot_path, dpi=180)
+        plt.close(fig)
+        saved_paths.append(plot_path)
+        print(f"Saved post-slew pointing factor histograms: {plot_path}")
+
+    impact_rows_sorted: List[List[Any]] = []
+    for method_label in [m[1] for m in method_specs]:
+        rows_method = [r for r in impact_rows if r[0] == method_label]
+        rows_method.sort(key=lambda r: (float(r[11]) if np.isfinite(float(r[11])) else -1.0), reverse=True)
+        rank = 1
+        for row in rows_method:
+            impact_rows_sorted.append([rank] + row)
+            rank += 1
+
+    impact_csv = os.path.join(out_dir, "monte_carlo_post_slew_pointing_factor_impact.csv")
+    _write_csv(
+        impact_csv,
+        [
+            "rank_within_method",
+            "method",
+            "factor",
+            "factor_label",
+            "n_samples",
+            "n_low_quartile",
+            "n_high_quartile",
+            "q25_factor",
+            "q75_factor",
+            "median_low_arcsec",
+            "median_high_arcsec",
+            "delta_median_arcsec",
+            "abs_delta_median_arcsec",
+        ],
+        impact_rows_sorted,
+    )
+    print(f"Saved post-slew pointing factor impact table: {impact_csv}")
+
+    return saved_paths
+
+
+def _remove_legacy_correlation_outputs(out_dir: str) -> None:
+    """Remove legacy correlation outputs that were replaced by histogram outputs."""
+    legacy_files = [
+        os.path.join(out_dir, "monte_carlo_post_slew_pointing_correlation.png"),
+        os.path.join(out_dir, "monte_carlo_post_slew_pointing_correlation.csv"),
+    ]
+    for path in legacy_files:
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+                print(f"Removed legacy correlation output: {path}")
+            except OSError:
+                pass
 
 
 def _format_eta(seconds: float) -> str:
@@ -1097,12 +1790,7 @@ class PlanMonteCarloRunner:
         ("rms_torque_nm", "RMS Torque (N*m)"),
         ("rw_saturation_percent", "RW Saturation (%)"),
     ]
-    COMBO_STYLES = {
-        "s_curve_standard_pd": ("S-curve + Standard PD", "#ff7f0e"),
-        "s_curve_filtered_pd": ("S-curve + Filtered PD", "#ffbb78"),
-        "fourth_standard_pd": ("Fourth-order + Standard PD", "#1f77b4"),
-        "fourth_filtered_pd": ("Fourth-order + Filtered PD", "#aec7e8"),
-    }
+    COMBO_STYLES = MC_COMBO_STYLES
 
     def __init__(
         self,
@@ -1200,6 +1888,7 @@ class PlanMonteCarloRunner:
         peak_torque_list: List[float] = []
         rms_torque_list: List[float] = []
         vib_list: List[float] = []
+        accel_list: List[float] = []
         sat_list: List[float] = []
 
         for method in METHODS:
@@ -1221,17 +1910,27 @@ class PlanMonteCarloRunner:
         for key, data in feedback_vibration.items():
             time = np.array(data.get("time", []), dtype=float)
             disp = np.array(data.get("displacement", []), dtype=float)
+            accel = np.array(data.get("acceleration_modal_raw", data.get("acceleration", np.array([]))), dtype=float)
             torque = data.get("torque_total", data.get("torque", np.array([])))
             torque = np.array(torque, dtype=float)
             if len(time) == 0:
                 continue
-            time, aligned = ms._align_series(time, disp, torque)
+            time, aligned = ms._align_series(time, disp, torque, accel)
             disp = aligned[0]
             torque = aligned[1]
+            accel = aligned[2]
             rms_disp, _ = _compute_post_slew_stats(time, disp, cfg.slew_duration_s)
             rms_vib_mm = rms_disp * 1000.0 if np.isfinite(rms_disp) else float("nan")
             vib_list.append(rms_vib_mm)
             metrics[f"{key}_rms_vibration_mm"] = rms_vib_mm
+            if len(accel):
+                rms_accel, _ = _compute_post_slew_stats(time, accel, cfg.slew_duration_s)
+                rms_modal_accel_mm_s2 = rms_accel * 1000.0 if np.isfinite(rms_accel) else float("nan")
+            else:
+                rms_modal_accel_mm_s2 = float("nan")
+            metrics[f"{key}_rms_modal_accel_mm_s2"] = rms_modal_accel_mm_s2
+            if np.isfinite(rms_modal_accel_mm_s2):
+                accel_list.append(rms_modal_accel_mm_s2)
 
             if len(torque):
                 peak_torque = float(np.max(np.abs(torque)))
@@ -1260,6 +1959,7 @@ class PlanMonteCarloRunner:
         metrics["peak_torque_nm"] = max(peak_torque_list) if peak_torque_list else float("nan")
         metrics["rms_torque_nm"] = max(rms_torque_list) if rms_torque_list else float("nan")
         metrics["rms_vibration_mm"] = max(vib_list) if vib_list else float("nan")
+        metrics["rms_modal_accel_mm_s2"] = max(accel_list) if accel_list else float("nan")
         metrics["torque_saturation_percent"] = max(sat_list) if sat_list else float("nan")
 
         return metrics
@@ -1272,6 +1972,7 @@ class PlanMonteCarloRunner:
                 metrics[f"{prefix}_rms_pointing_error_deg"] = float("nan")
                 metrics[f"{prefix}_peak_pointing_error_deg"] = float("nan")
                 metrics[f"{prefix}_rms_vibration_mm"] = float("nan")
+                metrics[f"{prefix}_rms_modal_accel_mm_s2"] = float("nan")
                 metrics[f"{prefix}_peak_torque_nm"] = float("nan")
                 metrics[f"{prefix}_rms_torque_nm"] = float("nan")
                 metrics[f"{prefix}_rw_saturation_percent"] = float("nan")
@@ -1336,6 +2037,20 @@ class PlanMonteCarloRunner:
         self._save_results(summary, runs)
         self._plot_histograms(summary)
         self._plot_comparison_boxes(runs)
+        _plot_post_slew_pointing_box_from_csv(
+            self.out_dir,
+            threshold_arcsec=POST_SLEW_POINTING_LIMIT_ARCSEC,
+        )
+        _plot_post_slew_vibration_box_from_csv(
+            self.out_dir,
+            threshold_mm=POST_SLEW_VIBRATION_LIMIT_MM,
+        )
+        _plot_post_slew_acceleration_box_from_csv(
+            self.out_dir,
+            threshold_mm_s2=POST_SLEW_ACCEL_LIMIT_MM_S2,
+        )
+        _plot_post_slew_pointing_factor_histograms_from_csv(self.out_dir)
+        _remove_legacy_correlation_outputs(self.out_dir)
         return summary
 
     def _compute_summary(self, runs: List[MonteCarloRun]) -> MonteCarloSummary:
@@ -3099,12 +3814,17 @@ def main():
                         help="Nominal gyro noise std dev (rad/s) for validation/MC")
     parser.add_argument("--disturbance-torque", type=float, default=1e-5,
                         help="Nominal disturbance torque bias (N*m) for validation/MC")
+    parser.add_argument(
+        "--post-slew-box-only",
+        action="store_true",
+        help="Generate post-slew box plots from existing monte_carlo_runs.csv",
+    )
     parser.add_argument("--legacy", action="store_true", help="Use legacy runner (not plan compliant)")
 
     args = parser.parse_args()
 
     # Default to all if nothing specified
-    if not (args.verification or args.validation or args.monte_carlo or args.all):
+    if not (args.verification or args.validation or args.monte_carlo or args.all or args.post_slew_box_only):
         args.all = True
 
     # Setup output directory
@@ -3117,6 +3837,25 @@ def main():
     print("=" * 60)
     print(f"\nOutput directory: {out_dir}")
     print(f"Timestamp: {datetime.now().isoformat()}")
+
+    if args.post_slew_box_only and not (args.verification or args.validation or args.monte_carlo or args.all):
+        pointing_plot_path = _plot_post_slew_pointing_box_from_csv(
+            out_dir,
+            threshold_arcsec=POST_SLEW_POINTING_LIMIT_ARCSEC,
+        )
+        vibration_plot_path = _plot_post_slew_vibration_box_from_csv(
+            out_dir,
+            threshold_mm=POST_SLEW_VIBRATION_LIMIT_MM,
+        )
+        acceleration_plot_path = _plot_post_slew_acceleration_box_from_csv(
+            out_dir,
+            threshold_mm_s2=POST_SLEW_ACCEL_LIMIT_MM_S2,
+        )
+        hist_paths = _plot_post_slew_pointing_factor_histograms_from_csv(out_dir)
+        _remove_legacy_correlation_outputs(out_dir)
+        if pointing_plot_path or vibration_plot_path or acceleration_plot_path or hist_paths:
+            return 0
+        return 1
 
     all_passed = True
 

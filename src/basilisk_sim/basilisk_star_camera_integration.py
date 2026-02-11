@@ -26,8 +26,8 @@ from .star_camera_simulator import StarCameraSimulator, generate_synthetic_vibra
 
 
 # Slew parameters (must match vizard_demo.py)
-SLEW_TIME = 30.0  # seconds - when the slew ends
-SETTLING_WINDOW = 30.0  # seconds of post-slew data to analyze
+SLEW_TIME = 30.0  # seconds when the slew ends
+SETTLING_WINDOW = 30.0  # seconds of post slew data to analyze
 METHODS = ["s_curve", "fourth"]
 
 
@@ -58,14 +58,14 @@ def extract_post_slew_vibration(method='s_curve', controller=None):
             time = data['time']
             dt = np.mean(np.diff(time)) if len(time) > 1 else 0.1
             
-            # Find post-slew indices (t > SLEW_TIME)
+            # Find post slew indices (t to SLEW_TIME)
             post_slew_mask = time >= SLEW_TIME
             
             if np.sum(post_slew_mask) < 10:
                 print(f"  Warning: Only {np.sum(post_slew_mask)} post-slew samples")
                 continue
             
-            # Extract post-slew data
+            # Extract post slew data
             t_post = time[post_slew_mask] - SLEW_TIME  # Reset to t=0 at slew end
             
             # Use REAL flex mode data from Basilisk
@@ -187,9 +187,9 @@ def analyze_settling_comparison():
 
     # Thresholds for different imaging requirements
     thresholds = {
-        'strict': 1.0,      # 1 urad - precision astrometry
-        'normal': 10.0,     # 10 urad - typical star tracker
-        'relaxed': 100.0    # 100 urad - coarse pointing
+        'strict': 1.0,      # 1 urad precision astrometry
+        'normal': 10.0,     # 10 urad typical star tracker
+        'relaxed': 100.0    # 100 urad coarse pointing
     }
 
     print("")
@@ -270,7 +270,7 @@ def generate_post_slew_video():
     print("")
     print("Generating post-slew star camera video...")
 
-    # Load post-slew data
+    # Load post slew data
     simulation_data = {}
     for method in METHODS:
         data = extract_post_slew_vibration(method)
@@ -287,7 +287,7 @@ def generate_post_slew_video():
         print("No data available for video generation")
         return
 
-    # Create camera for post-slew imaging
+    # Create camera for post slew imaging
     camera = StarCameraSimulator(
         fov_deg=15.0,
         resolution=(800, 800),
@@ -353,7 +353,7 @@ def synthesize_vibration(time, omega_y, method='s_curve', f1=0.4, f2=1.3, zeta=0
     omega1d = omega1 * np.sqrt(1 - zeta**2)
     omega2d = omega2 * np.sqrt(1 - zeta**2)
     
-    # Base excitation amplitude (rad/s) - calibrated to produce visible blur
+    # Base excitation amplitude (rad/s) calibrated to produce visible blur
     # In reality this depends on flex mode coupling, but we set it for visibility
     base_amplitude = 0.002  # 2 mrad/s gives good visual effect
     
@@ -361,7 +361,7 @@ def synthesize_vibration(time, omega_y, method='s_curve', f1=0.4, f2=1.3, zeta=0
     if method == 's_curve':
         amp1, amp2 = base_amplitude * 0.20, base_amplitude * 0.10
     elif method == 'fourth':
-        # Fourth-order spectral nulling - essentially zero excitation
+        # Fourth order spectral nulling essentially zero excitation
         amp1, amp2 = base_amplitude * 0.01, base_amplitude * 0.01
     else:
         amp1, amp2 = base_amplitude, base_amplitude * 0.6
@@ -430,8 +430,8 @@ def extract_basilisk_data(method='s_curve', controller=None):
                 'omega_x': omega_x,
                 'omega_y': omega_y,
                 'omega_z': omega_z,
-                'vibration_rate': vibration_rate,  # Synthesized flex-induced angular rate
-                'vibration_angle': vibration_angle,  # Flex-induced pointing error
+                'vibration_rate': vibration_rate,  # Synthesized flex induced angular rate
+                'vibration_angle': vibration_angle,  # Flex induced pointing error
                 'dt': dt
             }
             
@@ -473,12 +473,12 @@ def generate_all_videos():
     
     # Initialize camera simulator
     # Note: Data dt=0.1s, so exposure must be >= 0.1s to get samples
-    # Using 0.2s exposure (typical for star cameras) - blur from vibration only
+    # Using 0.2s exposure (typical for star cameras) blur from vibration only
     # since we extract vibration as deviation from smooth motion (not commanded slew)
     camera = StarCameraSimulator(
         fov_deg=15.0,
         resolution=(800, 800),
-        exposure_time=0.2,  # 200ms - at least 2 samples with dt=0.1s
+        exposure_time=0.2,  # 200ms at least 2 samples with dt=0.1s
         star_density=400,
         blur_amplification=500.0  # Increase from 50 to make blur visible
     )
