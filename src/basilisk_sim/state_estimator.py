@@ -11,10 +11,7 @@ This module implements a "phasor / lock-in" style modal estimator:
   "rigid-body" estimate with those modes removed (a notch-like effect),
   but you ALSO get a true *state* per mode (complex envelope) for monitoring/adaptation.
 
-Why this fits your repo:
-- Your spacecraft model explicitly calls out two dominant array modes at 0.4 Hz and 1.3 Hz,
-  and your shaping/controllers already tune in frequency space.
-- Your simulation and feedforward tooling standardize on dt=0.01 (100 Hz).
+
 
 Core math (per mode):
   u[k]      = y[k] * exp(-j*ω*k*dt)        # complex demodulation
