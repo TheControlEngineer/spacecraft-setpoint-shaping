@@ -1,3 +1,5 @@
+# Setpoint Shaping and Pointing Control for Satellite Repositioning
+>*Inspired by Mars Reconnaissance Orbiter's observation of comet 3I/ATLAS*
 # Setpoint Shaping and Pointing Control for Satellite Repositioning  
 
 https://github.com/user-attachments/assets/1fa069d6-fafc-4ed7-aaca-9640928969a5
@@ -34,7 +36,7 @@ The control architecture is designed to address the mission requirements as give
   <img src="Docs/plots/motion_profile_comparison.png" width="700">
   </p>
   </details>
-- **Feedback Control**: MRP based PD feedback loop tuned for 
+- **Feedback Control**: [MRP](https://ntrs.nasa.gov/api/citations/19960035754/downloads/19960035754.pdf) based PD feedback loop tuned for 
 instantaneous trajectory tracking and limited active damping capabilities.
 - **Validation Suite**:
   - Monte Carlo simulation framework.
