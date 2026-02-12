@@ -4,21 +4,18 @@ Basilisk to Star Camera Integration
 Extracts angular rate data from Basilisk simulations and generates
 star camera videos showing motion blur effects from flexible modes.
 
-Since the Basilisk LinearSpringMassDamper doesn't couple properly to slew
-dynamics, we synthesize realistic vibration based on the shaping method.
+Because the Basilisk LinearSpringMassDamper does not couple properly to slew
+dynamics, this module synthesizes realistic vibration based on the shaping
+method.
 
-Step and Stare Analysis:
-For realistic star field surveys, spacecraft use "step and stare":
-1. SLEW to target pointing  
-2. WAIT for vibrations to settle
-3. IMAGE when stable enough
+The analysis focuses on step and stare survey operations where the spacecraft:
+  1. Slews to a target pointing direction.
+  2. Waits for vibrations to settle.
+  3. Captures an image once the pointing stability requirement is met.
 
-This module analyzes POST-SLEW residual vibration to determine:
-- How long to wait before imaging (settling time)
-- Image quality achievable at different wait times
-- Input shaping effectiveness at reducing settling time
-
-Uses real flex mode data (rho1, rho2) from Basilisk when available.
+The module computes post slew settling time and image blur as a function
+of wait time, demonstrating how input shaping reduces the time budget
+needed before science quality imaging can begin.
 """
 
 import numpy as np
@@ -26,21 +23,30 @@ from .star_camera_simulator import StarCameraSimulator, generate_synthetic_vibra
 
 
 # Slew parameters (must match vizard_demo.py)
-SLEW_TIME = 30.0  # seconds when the slew ends
-SETTLING_WINDOW = 30.0  # seconds of post slew data to analyze
-METHODS = ["s_curve", "fourth"]
+SLEW_TIME = 30.0         # Time in seconds when the slew ends
+SETTLING_WINDOW = 30.0   # Duration of the post slew analysis window
+METHODS = ["s_curve", "fourth"]  # Shaping methods to compare
 
 
 def extract_post_slew_vibration(method='s_curve', controller=None):
     """
-    Extract POST-SLEW vibration data from Basilisk simulation.
-    
-    This is the key metric for step-and-stare surveys:
-    - Residual vibration after slew completion
-    - Settling time to reach imaging threshold
-    - Image blur vs wait time
-    
-    Returns dict with time, vibration data, and settling metrics.
+    Extract post slew vibration data from a Basilisk simulation NPZ file.
+
+    Searches for candidate NPZ files matching the given method and
+    controller name.  When found, the function extracts modal
+    displacement and rate data (rho1, rho2, rhoDot1, rhoDot2) for the
+    time window after the slew ends.
+
+    The modal displacement is converted to pointing jitter using the
+    lever arm distance to each panel attachment point.
+
+    Args:
+        method:     shaping method name ('s_curve', 'fourth', etc.).
+        controller: optional controller variant string for file lookup.
+
+    Returns:
+        Dictionary with post slew time, modal data, vibration angle/rate,
+        and the method name.  Returns None if no data file is found.
     """
     possible_files = []
     if controller:
@@ -58,25 +64,27 @@ def extract_post_slew_vibration(method='s_curve', controller=None):
             time = data['time']
             dt = np.mean(np.diff(time)) if len(time) > 1 else 0.1
             
-            # Find post slew indices (t to SLEW_TIME)
+            # Find post slew indices (t >= SLEW_TIME)
             post_slew_mask = time >= SLEW_TIME
             
             if np.sum(post_slew_mask) < 10:
-                print(f"  Warning: Only {np.sum(post_slew_mask)} post-slew samples")
+                print(f"  Warning: Only {np.sum(post_slew_mask)} post slew samples")
                 continue
             
-            # Extract post slew data
-            t_post = time[post_slew_mask] - SLEW_TIME  # Reset to t=0 at slew end
+            # Reset time origin to slew completion
+            t_post = time[post_slew_mask] - SLEW_TIME
             
-            # Use REAL flex mode data from Basilisk
+            # Extract real flex mode displacement and rate from Basilisk output.
+            # Fall back to zeros if the fields are absent.
             rho1 = data['rho1'][post_slew_mask] if 'rho1' in data.files else np.zeros(len(t_post))
             rho2 = data['rho2'][post_slew_mask] if 'rho2' in data.files else np.zeros(len(t_post))
             rhoDot1 = data['rhoDot1'][post_slew_mask] if 'rhoDot1' in data.files else np.zeros(len(t_post))
             rhoDot2 = data['rhoDot2'][post_slew_mask] if 'rhoDot2' in data.files else np.zeros(len(t_post))
             
-            # Convert modal displacement to pointing jitter (radians)
-            # Mode at distance r creates pointing error ~ rho/r
-            r_mode1, r_mode2 = 3.5, 4.5  # meters
+            # Convert modal displacement to pointing jitter (radians).
+            # Each mode displacement at distance r produces a pointing error
+            # of approximately rho / r radians.
+            r_mode1, r_mode2 = 3.5, 4.5  # Distance to panel attachment points (metres)
             vibration_angle = rho1 / r_mode1 + rho2 / r_mode2
             vibration_rate = rhoDot1 / r_mode1 + rhoDot2 / r_mode2
             
@@ -111,16 +119,25 @@ def extract_post_slew_vibration(method='s_curve', controller=None):
             print(f"  Error loading {filename}: {e}")
             continue
     
-    print(f"No post-slew data found for {method}")
+    print(f"No post slew data found for {method}")
     return None
 
 
 def calculate_settling_time(data, threshold_urad=10.0):
     """
-    Calculate time to settle below threshold.
-    
-    threshold_urad: pointing stability requirement in microradians
-    Returns: settling time in seconds (None if never settles)
+    Calculate time required for vibration to settle below a threshold.
+
+    A rolling window is used to reject false triggers: the vibration
+    must remain continuously below the threshold for all samples in
+    the window before settling is declared.
+
+    Args:
+        data:            dictionary returned by extract_post_slew_vibration.
+        threshold_urad:  pointing stability requirement in microradians.
+
+    Returns:
+        Settling time in seconds from slew end, or None if the vibration
+        never settles within the available data.
     """
     if data is None:
         return None
@@ -129,9 +146,9 @@ def calculate_settling_time(data, threshold_urad=10.0):
     vibration = np.abs(data['vibration_angle'])
     time = data['time']
     
-    # Find first time we're consistently below threshold
-    # (use rolling window to avoid false triggers)
-    window = 10  # samples
+    # Find first time the vibration stays below threshold for the
+    # entire rolling window (avoids false triggers from a single dip).
+    window = 10  # Number of consecutive samples required below threshold
     for i in range(len(vibration) - window):
         if np.all(vibration[i:i+window] < threshold_rad):
             return time[i]
@@ -141,13 +158,19 @@ def calculate_settling_time(data, threshold_urad=10.0):
 
 def calculate_image_blur(data, wait_time, exposure_time=0.2, plate_scale=0.5):
     """
-    Calculate image blur for exposure starting at wait_time after slew.
-    
-    wait_time: seconds after slew completion to start exposure
-    exposure_time: camera exposure duration (seconds)
-    plate_scale: arcsec/pixel
-    
-    Returns: blur in pixels
+    Calculate image blur for an exposure starting at a given wait time.
+
+    The RMS vibration angle during the exposure window is converted to
+    arcseconds and then to pixels using the plate scale.
+
+    Args:
+        data:          dictionary returned by extract_post_slew_vibration.
+        wait_time:     seconds after slew completion to start the exposure.
+        exposure_time: camera exposure duration in seconds.
+        plate_scale:   arcseconds per pixel.
+
+    Returns:
+        Blur magnitude in pixels.
     """
     if data is None:
         return np.inf
@@ -160,11 +183,11 @@ def calculate_image_blur(data, wait_time, exposure_time=0.2, plate_scale=0.5):
     if np.sum(mask) < 2:
         return np.inf
     
-    # RMS vibration during exposure
+    # RMS vibration during the exposure window
     vib_exposure = vibration[mask]
     rms_rad = np.sqrt(np.mean(vib_exposure**2))
     
-    # Convert to pixels
+    # Convert radians to arcseconds then to pixel blur
     rms_arcsec = np.degrees(rms_rad) * 3600
     blur_pixels = rms_arcsec / plate_scale
     
@@ -173,9 +196,12 @@ def calculate_image_blur(data, wait_time, exposure_time=0.2, plate_scale=0.5):
 
 def analyze_settling_comparison():
     """
-    Compare settling behavior across all shaping methods.
+    Compare settling behaviour across all shaping methods.
 
-    This is the key result for step-and-stare surveys!
+    For each method, computes the settling time to reach strict,
+    normal, and relaxed pointing stability thresholds.  Also records
+    the blur at a range of wait times so the user can evaluate the
+    trade off between survey cadence and image quality.
     """
     print("")
     print("="*60)
@@ -185,11 +211,11 @@ def analyze_settling_comparison():
     methods = METHODS
     results = {}
 
-    # Thresholds for different imaging requirements
+    # Thresholds for different imaging requirements (microradians)
     thresholds = {
-        'strict': 1.0,      # 1 urad precision astrometry
-        'normal': 10.0,     # 10 urad typical star tracker
-        'relaxed': 100.0    # 100 urad coarse pointing
+        'strict': 1.0,      # Precision astrometry
+        'normal': 10.0,     # Typical star tracker requirement
+        'relaxed': 100.0    # Coarse pointing sufficient
     }
 
     print("")
@@ -266,7 +292,12 @@ def analyze_settling_comparison():
 
 
 def generate_post_slew_video():
-    """Generate star camera video showing post-slew settling."""
+    """Generate a star camera video showing post slew settling.
+
+    Loads vibration data for each method, constructs the star camera
+    simulator with high blur amplification (needed because the residual
+    oscillations are small), and renders a side by side video.
+    """
     print("")
     print("Generating post-slew star camera video...")
 
@@ -287,13 +318,14 @@ def generate_post_slew_video():
         print("No data available for video generation")
         return
 
-    # Create camera for post slew imaging
+    # Create camera for post slew imaging with high blur amplification
+    # so that small residual vibrations produce visible star smear.
     camera = StarCameraSimulator(
         fov_deg=15.0,
         resolution=(800, 800),
         exposure_time=0.2,
         star_density=400,
-        blur_amplification=5000.0  # Higher amplification for small residual vibrations
+        blur_amplification=5000.0
     )
 
     print("Star camera: {} deg FOV, {}s exposure".format(camera.fov_deg, camera.exposure_time))
@@ -309,9 +341,9 @@ def generate_post_slew_video():
 
 
 def run_step_and_stare_analysis():
-    """Run step-and-stare settling analysis."""
+    """Run step and stare settling analysis and generate comparison video."""
     print("\nBasilisk Star Camera - Step and Stare Analysis")
-    print("Analyzing POST-SLEW residual vibration for star imaging")
+    print("Analyzing post slew residual vibration for star imaging")
     
     # Run settling analysis
     results = analyze_settling_comparison()
@@ -321,60 +353,60 @@ def run_step_and_stare_analysis():
         generate_post_slew_video()
     
     print("\n" + "="*60)
-    print("KEY INSIGHT: Input shaping reduces SETTLING TIME")
-    print("  - Unshaped: Large residual vibration → long wait before imaging")
-    print("  - Fourth-order: Minimal residual → image almost immediately")
+    print("KEY INSIGHT: Input shaping reduces settling time")
+    print("  Unshaped: Large residual vibration, long wait before imaging")
+    print("  Fourth order: Minimal residual, image almost immediately")
     print("="*60)
 
 
 def synthesize_vibration(time, omega_y, method='s_curve', f1=0.4, f2=1.3, zeta=0.02):
     """
-    Synthesize flexible vibration based on control method.
-    
-    For S-curve: reduced but non-zero excitation.
-    For fourth-order: near-minimum excitation.
-    
-    Parameters:
-        time: time array (s)
-        omega_y: commanded angular rate (rad/s) - used to find transitions
-        method: 's_curve' or 'fourth'
-        f1, f2: flexible mode frequencies (Hz)
-        zeta: damping ratio
-    
+    Synthesize flexible vibration based on the shaping method.
+
+    Generates a damped oscillatory vibration at the two modal frequencies.
+    The amplitude depends on the method: S curve excites the modes
+    moderately while fourth order spectral nulling suppresses them.
+
+    Args:
+        time:     time array in seconds.
+        omega_y:  commanded angular rate (used to find transitions).
+        method:   's_curve' or 'fourth'.
+        f1, f2:   flexible mode frequencies in Hz.
+        zeta:     structural damping ratio.
+
     Returns:
-        vibration_rate: angular rate from flexible mode oscillation (rad/s)
+        Synthesized vibration angular rate in rad/s.
     """
     n = len(time)
     dt = np.mean(np.diff(time)) if n > 1 else 0.1
     
     # Modal parameters
-    omega1 = 2 * np.pi * f1  # rad/s
-    omega2 = 2 * np.pi * f2
-    omega1d = omega1 * np.sqrt(1 - zeta**2)
-    omega2d = omega2 * np.sqrt(1 - zeta**2)
+    omega1 = 2 * np.pi * f1  # Natural frequency mode 1 (rad/s)
+    omega2 = 2 * np.pi * f2  # Natural frequency mode 2 (rad/s)
+    omega1d = omega1 * np.sqrt(1 - zeta**2)  # Damped frequency mode 1
+    omega2d = omega2 * np.sqrt(1 - zeta**2)  # Damped frequency mode 2
     
     # Base excitation amplitude (rad/s) calibrated to produce visible blur
-    # In reality this depends on flex mode coupling, but we set it for visibility
-    base_amplitude = 0.002  # 2 mrad/s gives good visual effect
+    base_amplitude = 0.002  # 2 mrad/s gives a noticeable visual effect
     
     # Scale based on shaping method effectiveness
     if method == 's_curve':
+        # S curve: moderate suppression of both modes
         amp1, amp2 = base_amplitude * 0.20, base_amplitude * 0.10
     elif method == 'fourth':
-        # Fourth order spectral nulling essentially zero excitation
+        # Fourth order spectral nulling: nearly eliminates both modes
         amp1, amp2 = base_amplitude * 0.01, base_amplitude * 0.01
     else:
+        # No shaping (unshaped reference)
         amp1, amp2 = base_amplitude, base_amplitude * 0.6
     
-    # Vibration is damped oscillation triggered at start and transitions
+    # Damped sinusoidal vibration starting from the initial impulse
     vibration = np.zeros(n)
-    
-    # Add vibration starting from t=0 (initial impulse)
     t = time - time[0]
-    vibration += amp1 * np.exp(-zeta * omega1 * t) * np.sin(omega1d * t)
-    vibration += amp2 * np.exp(-zeta * omega2 * t) * np.sin(omega2d * t)
+    vibration += amp1 * np.exp(-zeta * omega1 * t) * np.sin(omega1d * t)  # Mode 1
+    vibration += amp2 * np.exp(-zeta * omega2 * t) * np.sin(omega2d * t)  # Mode 2
     
-    # Add small noise for realism (use fixed seed for reproducibility)
+    # Small random noise for realism (fixed seed for repeatability)
     np.random.seed(hash(method) % 2**32)
     noise_level = base_amplitude * 0.02
     vibration += np.random.normal(0, noise_level, n)
@@ -385,11 +417,20 @@ def synthesize_vibration(time, omega_y, method='s_curve', f1=0.4, f2=1.3, zeta=0
 
 def extract_basilisk_data(method='s_curve', controller=None):
     """
-    Extract angular rates from Basilisk simulation output.
-    Returns dict with time, omega_x/y/z, vibration_rate, and dt.
-    
-    Since Basilisk does not model flex vibration properly, we synthesize
-    realistic vibration based on the shaping method used.
+    Extract angular rates from a Basilisk simulation output NPZ file.
+
+    Because the Basilisk LinearSpringMassDamper does not couple properly
+    to slew dynamics, realistic flexible vibration is synthesized from
+    the shaping method and the angular rate profile.
+
+    Args:
+        method:     shaping method name.
+        controller: optional controller variant for file lookup.
+
+    Returns:
+        Dictionary with time, omega_x/y/z, synthesized vibration_rate
+        and vibration_angle, and dt.  Falls back to fully synthetic
+        data if no NPZ file is found.
     """
     
     # Try to load from your simulation output
@@ -416,13 +457,14 @@ def extract_basilisk_data(method='s_curve', controller=None):
             omega_y = data['omega_y'] if 'omega_y' in data else np.zeros(len(time))
             omega_z = data['omega_z'] if 'omega_z' in data else np.zeros(len(time))
             
-            # Synthesize realistic vibration based on shaping method
-            # (The Basilisk LinearSpringMassDamper doesn't couple to slew dynamics)
+            # Synthesize realistic vibration based on the shaping method
+            # (Basilisk LinearSpringMassDamper does not couple to slew)
             vibration_rate = synthesize_vibration(time, omega_y, method)
             
             print(f"  Synthesized vibration for '{method}': RMS={np.sqrt(np.mean(vibration_rate**2))*1e6:.0f} urad/s")
             print(f"  Max omega_y: {np.max(np.abs(omega_y)):.4f} rad/s ({np.degrees(np.max(np.abs(omega_y))):.2f} deg/s)")
             
+            # Integrate rate to get pointing error angle
             vibration_angle = np.cumsum(vibration_rate) * dt
             
             return {
@@ -430,8 +472,8 @@ def extract_basilisk_data(method='s_curve', controller=None):
                 'omega_x': omega_x,
                 'omega_y': omega_y,
                 'omega_z': omega_z,
-                'vibration_rate': vibration_rate,  # Synthesized flex induced angular rate
-                'vibration_angle': vibration_angle,  # Flex induced pointing error
+                'vibration_rate': vibration_rate,   # Synthesized flex angular rate
+                'vibration_angle': vibration_angle,  # Integrated flex pointing error
                 'dt': dt
             }
             
@@ -453,7 +495,7 @@ def modify_vizard_demo_to_save_rates():
 
 
 def generate_all_videos():
-    """Generate star camera videos for all three shaping methods."""
+    """Generate star camera comparison and individual videos for all methods."""
     print("\nGenerating Star Camera Videos")
     
     # Check if we have Basilisk data
@@ -471,16 +513,16 @@ def generate_all_videos():
         print("\nNo Basilisk data found, using synthetic data...")
         modify_vizard_demo_to_save_rates()
     
-    # Initialize camera simulator
-    # Note: Data dt=0.1s, so exposure must be >= 0.1s to get samples
-    # Using 0.2s exposure (typical for star cameras) blur from vibration only
-    # since we extract vibration as deviation from smooth motion (not commanded slew)
+    # Initialize camera simulator.
+    # Data dt=0.1s, so exposure must be >= 0.1s to capture at least one sample.
+    # Using 0.2s exposure (typical for star cameras).  Blur comes from
+    # vibration rate only since the slew rate is removed.
     camera = StarCameraSimulator(
         fov_deg=15.0,
         resolution=(800, 800),
-        exposure_time=0.2,  # 200ms at least 2 samples with dt=0.1s
+        exposure_time=0.2,   # 200 ms yields at least 2 samples at dt=0.1
         star_density=400,
-        blur_amplification=500.0  # Increase from 50 to make blur visible
+        blur_amplification=500.0
     )
     
     # Load data for all methods

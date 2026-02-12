@@ -1,27 +1,27 @@
 """
 state_estimator.py
 
-Frequency-domain tunable, low-compute state estimator for narrowband flexible modes.
+Frequency domain tunable, low compute state estimator for narrowband flexible modes.
 
-This module implements a "phasor / lock-in" style modal estimator:
-- You pick one or more target mode frequencies (Hz).
-- For each frequency, the estimator keeps a complex envelope state (amplitude/phase)
+This module implements a phasor / lock in style modal estimator:
+  You pick one or more target mode frequencies (Hz).
+  For each frequency, the estimator keeps a complex envelope state (amplitude/phase)
   and reconstructs that narrowband component.
-- Subtracting the reconstructed component from the measurement yields a
-  "rigid-body" estimate with those modes removed (a notch-like effect),
-  but you ALSO get a true *state* per mode (complex envelope) for monitoring/adaptation.
+  Subtracting the reconstructed component from the measurement yields a
+  rigid body estimate with those modes removed (a notch like effect),
+  but you also get a true state per mode (complex envelope) for monitoring/adaptation.
 
 Why this fits your repo:
-- Your spacecraft model explicitly calls out two dominant array modes at 0.4 Hz and 1.3 Hz,
+  Your spacecraft model explicitly calls out two dominant array modes at 0.4 Hz and 1.3 Hz,
   and your shaping/controllers already tune in frequency space.
-- Your simulation and feedforward tooling standardize on dt=0.01 (100 Hz).
+  Your simulation and feedforward tooling standardize on dt=0.01 (100 Hz).
 
 Core math (per mode):
-  u[k]      = y[k] * exp(-j*ω*k*dt)        # complex demodulation
-  a[k+1]    = (1-α)*a[k] + α*u[k]          # complex 1st order LPF (envelope)
-  y_hat[k]  = 2*Re{ a[k] * exp(+j*ω*k*dt)} # reconstruct narrowband component
+  u[k]      = y[k] * exp(-j*omega*k*dt)        # complex demodulation
+  a[k+1]    = (1-alpha)*a[k] + alpha*u[k]       # complex 1st order LPF (envelope)
+  y_hat[k]  = 2*Re{ a[k] * exp(+j*omega*k*dt)}  # reconstruct narrowband component
 
-α is tuned directly by a bandwidth parameter (Hz) or time constant.
+alpha is tuned directly by a bandwidth parameter (Hz) or time constant.
 """
 
 from __future__ import annotations
@@ -34,12 +34,13 @@ import numpy as np
 
 def _alpha_from_bw_hz(dt: float, bw_hz: float) -> float:
     """
-    Map a desired envelope bandwidth (Hz) into a stable 1st-order IIR alpha.
+    Map a desired envelope bandwidth (Hz) into a stable 1st order IIR alpha.
 
-    We use the same "bilinear-ish" form you already use elsewhere:
-        alpha = dt / (tau + dt),   tau = 1/(2π*bw)
+    Uses the bilinear style discretization:
+        alpha = dt / (tau + dt),   tau = 1/(2*pi*bw)
 
-    bw_hz ~ bandwidth of the envelope tracking (smaller = narrower band / higher Q).
+    bw_hz controls the bandwidth of the envelope tracking.
+    Smaller values give narrower band / higher Q.
     """
     dt = float(dt)
     bw_hz = float(bw_hz)
@@ -63,22 +64,22 @@ class ModeState:
 
 class PhasorModeBankEstimator:
     """
-    Multi-axis, multi-mode phasor modal estimator.
+    Multi axis, multi mode phasor modal estimator.
 
     Inputs:
-      - y: measurement vector (n_axes,)
-      - dt: optional step size; if omitted uses the dt passed at construction
+      y:  measurement vector (n_axes,)
+      dt: optional step size; if omitted uses the dt passed at construction
 
     Outputs:
-      - y_rigid: measurement with estimated modal components removed (n_axes,)
-      - y_modes: estimated modal components per axis per mode (n_axes, n_modes)
-      - env: complex envelopes per axis per mode (n_axes, n_modes)
+      y_rigid: measurement with estimated modal components removed (n_axes,)
+      y_modes: estimated modal components per axis per mode (n_axes, n_modes)
+      env:     complex envelopes per axis per mode (n_axes, n_modes)
 
     Notes:
-      - For best results, y should contain the signal where the flex shows up
-        (often gyro rate or attitude error).
-      - The estimator is intentionally "model-light": it doesn't need accurate
-        modal masses/gains; it only needs approximate modal frequencies.
+      For best results, y should contain the signal where the flex shows up
+      (often gyro rate or attitude error).
+      The estimator is intentionally model light: it does not need accurate
+      modal masses/gains; it only needs approximate modal frequencies.
     """
 
     def __init__(
@@ -118,9 +119,9 @@ class PhasorModeBankEstimator:
         self._normalize_every = int(max(1, carrier_normalize_every))
 
     def _update_cached_coeffs(self, dt: float) -> None:
-        """(Re)compute alpha and one-step carrier rotation for a given dt."""
+        """Recompute alpha and one step carrier rotation for a given dt."""
         w = 2.0 * np.pi * self.mode_freqs_hz
-        self._rot = np.exp(1j * w * float(dt))  # (n_modes,)
+        self._rot = np.exp(1j * w * float(dt))  # One step carrier phasor advance
         self._alpha = np.array([_alpha_from_bw_hz(dt, bw) for bw in self.mode_bandwidths_hz], dtype=float)
 
     def reset(self) -> None:
@@ -152,22 +153,22 @@ class PhasorModeBankEstimator:
                 self.dt = dt
                 self._update_cached_coeffs(self.dt)
 
-        # Demodulate to DC: y * e^{ jωt}
+        # Demodulate to baseband: multiply by conjugate carrier
         demod = y[:, None] * np.conj(self._carrier)  # (axes, modes) complex
 
-        # Envelope LPF: env less than (1 α) env + α demod
+        # Low pass filter on the complex envelope
         self._env = (1.0 - self._alpha)[None, :] * self._env + self._alpha[None, :] * demod
 
-        # Reconstruct narrowband component: y_hat = 2*Re{ env * e^{jωt} }
+        # Reconstruct narrowband component via modulation back to passband
         y_modes = 2.0 * np.real(self._env * self._carrier)  # (axes, modes)
 
-        # Remove the estimated modes
+        # Subtract estimated flex to isolate the rigid body signal
         y_rigid = y - np.sum(y_modes, axis=1)
 
-        # Advance carrier phase: e^{jω(t+dt)} = e^{jωt} * e^{jωdt}
+        # Advance carrier phase for the next time step
         self._carrier *= self._rot[None, :]
 
-        # Renormalize occasionally to control numerical drift
+        # Renormalize carrier magnitude periodically to prevent numerical drift
         self._k += 1
         if (self._k % self._normalize_every) == 0:
             mag = np.abs(self._carrier)
@@ -180,11 +181,14 @@ class PhasorModeBankEstimator:
         """
         Return amplitude and phase estimates per axis/mode.
 
-        If y ≈ A cos(ωt + φ), the envelope tends to env ≈ (A/2) e^{jφ}.
+        If y = A cos(omega*t + phi), the envelope converges to
+        env = (A/2) * exp(j*phi).  The returned amplitude is the
+        full sinusoid amplitude A = 2*|env| and the phase is
+        phi = angle(env).
 
         Returns:
-            amplitude: (axes, modes)  -> estimated sinusoid amplitude A
-            phase:     (axes, modes)  -> phase φ in radians
+            amplitude: (n_axes, n_modes) estimated sinusoid amplitude.
+            phase:     (n_axes, n_modes) estimated phase in radians.
         """
         amp = 2.0 * np.abs(self._env)
         ph = np.angle(self._env)

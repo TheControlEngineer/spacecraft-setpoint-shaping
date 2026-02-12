@@ -1,7 +1,7 @@
 """
-Feedback Control Module.
+Feedback Control Module
 
-Provides MRP-based feedback attitude control for spacecraft pointing.
+Provides MRP based feedback attitude control for spacecraft pointing.
 This module encapsulates the feedback control logic used in vizard_demo.py
 for fine pointing after feedforward slews.
 
@@ -9,15 +9,21 @@ Control Law (MRP Feedback):
     tau = -K * sigma_error - P * omega_error + Ki * integral(sigma_error dt)
 
 Where:
-    - K: proportional gain on attitude error (MRP).
-    - P: derivative gain on rate error.
-    - Ki: integral gain for steady-state error correction.
-    - sigma_error: MRP attitude error vector.
-    - omega_error: angular velocity error vector.
+    K   proportional gain on attitude error (MRP).
+    P   derivative gain on rate error.
+    Ki  integral gain for steady state error correction.
+    sigma_error  MRP attitude error vector.
+    omega_error  angular velocity error vector.
 
 The gains are typically tuned based on the spacecraft inertia and the
-desired closed-loop bandwidth and damping.
+desired closed loop bandwidth and damping.
 
+Controller variants provided:
+    MRPFeedbackController       standard PD (or PID) on MRP error
+    FilteredDerivativeController PD with low pass filtered derivative
+    NotchFilterController        PD with notch filters at modal frequencies
+    TrajectoryTrackingController feedback that tracks a time varying reference
+    HybridController             combined feedforward plus feedback
 """
 
 from __future__ import annotations
@@ -31,7 +37,12 @@ from .spacecraft_properties import compute_modal_gains, FLEX_MODE_MASS
 
 
 def _mrp_shadow(sigma: np.ndarray) -> np.ndarray:
-    """Return the shadow MRP if |sigma| > 1 to ensure shortest rotation."""
+    """Return the shadow MRP set if the norm exceeds unity.
+
+    MRPs are singular at 360 degrees.  When |sigma| > 1 the shadow set
+    sigma_s = -sigma / |sigma|^2 represents the same rotation via the
+    shorter path, keeping the representation well conditioned.
+    """
     sigma = np.array(sigma, dtype=float).flatten()
     sigma_norm_sq = float(np.dot(sigma, sigma))
     if sigma_norm_sq > 1.0 + 1e-12:
@@ -67,7 +78,11 @@ def _mrp_subtract(sigma_body: np.ndarray, sigma_ref: np.ndarray) -> np.ndarray:
 
 
 def _tf_add(num1: np.ndarray, den1: np.ndarray, num2: np.ndarray, den2: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Add two transfer functions: num1/den1 + num2/den2."""
+    """Add two transfer functions: H(s) = N1/D1 + N2/D2.
+
+    The result numerator is N1*D2 + N2*D1 and the denominator is D1*D2.
+    Polynomial arrays are padded so that addition is element wise.
+    """
     num1 = np.atleast_1d(np.squeeze(num1))
     den1 = np.atleast_1d(np.squeeze(den1))
     num2 = np.atleast_1d(np.squeeze(num2))
@@ -93,10 +108,14 @@ def _build_flexible_plant_tf(inertia: np.ndarray,
                              modal_damping: List[float],
                              modal_gains: List[float]) -> signal.TransferFunction:
     """
-    Build a coupled rigid-flex plant (torque -> sigma) using a modal mass model.
+    Build a coupled rigid plus flexible plant transfer function (torque to sigma).
 
-    The state-space model includes the rigid angle and modal coordinates, avoiding
-    mixing rigid attitude output with modal displacement outputs.
+    The model uses a modal mass representation where each flexible mode
+    is coupled to the rigid body through a lever arm derived from the
+    modal gain.  The resulting state space captures the resonance and
+    anti resonance structure that feedback must handle.
+
+    The output is the rigid body attitude sigma = theta / 4 (small angle MRP).
     """
     I_axis = float(inertia[axis, axis])
     sigma_scale = 4.0
@@ -109,13 +128,17 @@ def _build_flexible_plant_tf(inertia: np.ndarray,
     if len(zetas) < n_modes:
         zetas.extend([zetas[-1]] * (n_modes - len(zetas)))
 
-    # Infer lever arms from modal gains: gain = r / I_axis to r = gain * I_axis
+    # Infer lever arms from modal gains: gain = r / I_axis implies r = gain * I_axis
     lever_arms = [float(g) * I_axis for g in modal_gains[:n_modes]]
     masses = [float(FLEX_MODE_MASS)] * n_modes
 
-    # Assemble mass, damping, stiffness matrices for coupled model
+    # Build mass, damping, and stiffness matrices for the coupled
+    # rigid body plus modal coordinate system.
+    # The (0,0) entry is the total inertia; off diagonal entries couple
+    # hub rotation to modal displacement through the lever arm.
     sum_mr2 = sum(m * r * r for m, r in zip(masses, lever_arms))
-    # Avoid double counting if inertia already includes modal masses.
+    # Subtract modal contribution if already included in I_axis to avoid
+    # double counting.
     base_inertia = I_axis - sum_mr2 if I_axis > sum_mr2 else I_axis
 
     m_mat = np.zeros((n_modes + 1, n_modes + 1))
@@ -132,21 +155,25 @@ def _build_flexible_plant_tf(inertia: np.ndarray,
         d_mat[idx, idx] = 2.0 * float(zeta) * omega * m_i
         k_mat[idx, idx] = omega**2 * m_i
 
+    # Invert mass matrix for second order ODE: M*x'' + D*x' + K*x = B*u
+    # Convert to first order state space: z = [x; x'], z' = A*z + B_ss*u
     m_inv = np.linalg.inv(m_mat)
     n_state = n_modes + 1
     a = np.zeros((2 * n_state, 2 * n_state))
-    a[:n_state, n_state:] = np.eye(n_state)
-    a[n_state:, :n_state] = -m_inv @ k_mat
-    a[n_state:, n_state:] = -m_inv @ d_mat
+    a[:n_state, n_state:] = np.eye(n_state)             # position dot = velocity
+    a[n_state:, :n_state] = -m_inv @ k_mat              # velocity dot (stiffness)
+    a[n_state:, n_state:] = -m_inv @ d_mat              # velocity dot (damping)
 
+    # Input matrix: torque applied only to the rigid body DOF
     b = np.zeros((2 * n_state, 1))
     b[n_state:, 0] = (m_inv @ np.array([1.0] + [0.0] * n_modes)).ravel()
 
-    # Output is sigma = theta / 4
+    # Output is the attitude angle divided by 4 (small angle MRP approximation)
     c_sigma = np.zeros((1, 2 * n_state))
     c_sigma[0, 0] = 1.0 / sigma_scale
     d = np.zeros((1, 1))
 
+    # Convert state space to transfer function form
     ss = signal.StateSpace(a, b, c_sigma, d)
     num, den = signal.ss2tf(ss.A, ss.B, ss.C, ss.D)
     return signal.TransferFunction(np.squeeze(num), np.squeeze(den))
@@ -154,17 +181,17 @@ def _build_flexible_plant_tf(inertia: np.ndarray,
 
 class MRPFeedbackController:
     """
-    MRP-based feedback attitude controller.
-    
-    Implements a PID-like controller using Modified Rodrigues Parameters (MRPs)
-    for attitude error representation. This is the same control law used in
+    MRP based feedback attitude controller.
+
+    Implements a PID like controller using Modified Rodrigues Parameters (MRPs)
+    for attitude error representation.  This is the same control law used in
     Basilisk's mrpFeedback module.
-    
+
     Attributes:
-        K: Proportional gain (attitude stiffness)
-        P: Derivative gain (rate damping)
-        Ki: Integral gain (steady-state correction)
-        inertia: Spacecraft inertia matrix (3x3)
+        K:  Proportional gain (attitude stiffness).
+        P:  Derivative gain (rate damping).
+        Ki: Integral gain (steady state correction).  Negative value disables.
+        inertia: Spacecraft inertia matrix (3x3) in [kg*m^2].
     """
     
     def __init__(self, 
@@ -277,26 +304,28 @@ class MRPFeedbackController:
     
     def get_closed_loop_params(self) -> Dict[str, float]:
         """
-        Compute approximate closed-loop parameters.
-        
+        Compute approximate closed loop parameters.
+
         For a linearized attitude system about small angles:
             (4I) * sigma_ddot + P * sigma_dot + K * sigma = 0
 
-        This gives natural frequency omega_n = sqrt(K/(4I)) and damping
-        zeta = P / (2 * sqrt(K * 4I)).
-        
+        This gives:
+            natural frequency   omega_n = sqrt(K / (4*I))
+            damping ratio       zeta    = P / (2 * sqrt(K * 4 * I))
+
         Returns:
-            Dictionary with natural frequency, damping ratio, and bandwidth
+            Dictionary with natural frequency, damping ratio, and bandwidth.
         """
-        # Use average principal inertia
+        # Use average principal inertia as a representative scalar
         I_avg = np.mean(np.diag(self.inertia))
-        
+
+        # MRP to angle scale factor: theta ~ 4 * sigma for small angles
         sigma_scale = 4.0
 
-        # Natural frequency [rad/s]
+        # Closed loop natural frequency [rad/s]
         omega_n = np.sqrt(self.K / (sigma_scale * I_avg))
 
-        # Damping ratio (sigma_dot ≈ 0.25 * omega)
+        # Effective damping ratio
         zeta = self.P / np.sqrt(self.K * I_avg)
         
         # Closed loop bandwidth (approximately)
@@ -440,17 +469,17 @@ class MRPFeedbackController:
 
 class FilteredDerivativeController:
     """
-    PD controller with low-pass filtered derivative term.
-    
+    PD controller with low pass filtered derivative term.
+
     Standard PD control has infinite gain at high frequencies due to the
-    derivative term. This excites high-frequency structural modes.
-    
+    derivative term.  This excites high frequency structural modes.
+
     Filtered PD uses:
-        C(s) = K + P*s / (tau*s + 1)
-    
+        C(s) = K + P * s / (tau * s + 1)
+
     The filter time constant tau sets the rolloff frequency:
-        f_rolloff = 1 / (2*pi*tau)
-    
+        f_rolloff = 1 / (2 * pi * tau)
+
     Choose f_rolloff below the first structural mode for best vibration
     suppression, but above the desired bandwidth for good tracking.
     """
@@ -532,15 +561,16 @@ class FilteredDerivativeController:
         sigma_error = self.compute_mrp_error(sigma_current)
         omega_error = omega_current - self.omega_target
         
-        # Update filtered rate (first order low pass filter)
+        # Update filtered rate using a first order low pass IIR filter.
+        # The bilinear (Tustin) approximation maps the continuous time
+        # filter tau*y' + y = u to the discrete recursion below.
         if self.last_time is not None:
             dt = current_time - self.last_time
             if dt > 0:
-                # Low pass filter: tau*omega_f' + omega_f = omega
-                # Discrete form updates omega_f with the difference between omega and omega_f
                 alpha = dt / (self.tau + dt)  # Bilinear approximation
                 self.filtered_rate = (1 - alpha) * self.filtered_rate + alpha * omega_error
         else:
+            # First call: initialize filter state to the current error
             self.filtered_rate = omega_error
         
         self.last_time = current_time
@@ -638,21 +668,22 @@ class NotchFilterController:
     PD controller with notch filters at modal frequencies.
 
     Notch filters provide sharp attenuation at specific frequencies, preventing
-    the controller from exciting structural modes. This is an alternative to
-    low-pass filtering the derivative term.
+    the controller from exciting structural modes.  This is an alternative to
+    low pass filtering the derivative term.
 
     Transfer function for each notch:
-        H_notch(s) = (s^2 + 2*zeta_z*omega_n*s + omega_n^2) / (s^2 + 2*zeta_p*omega_n*s + omega_n^2)
+        H_notch(s) = (s^2 + 2*zeta_z*omega_n*s + omega_n^2)
+                   / (s^2 + 2*zeta_p*omega_n*s + omega_n^2)
 
     Where:
-        - zeta_z: Zero damping (typically small, ~0.01-0.05 for deep notch)
-        - zeta_p: Pole damping (typically larger, ~0.1-0.5 for wider notch)
-        - omega_n: Notch center frequency
+        zeta_z  zero damping (small value gives a deep notch)
+        zeta_p  pole damping (larger value gives a wider notch)
+        omega_n notch center frequency
 
-    Robustness consideration: Notch filters are sensitive to frequency uncertainty.
-    If the actual modal frequency differs from the design frequency, the notch
-    may miss the resonance entirely. Use wider notches (larger zeta_p) for
-    better robustness at the cost of phase margin.
+    Robustness note: notch filters are sensitive to frequency uncertainty.
+    If the actual modal frequency shifts from the design value the notch
+    may miss the resonance entirely.  Use wider notches (larger zeta_p)
+    for better robustness at the cost of reduced phase margin.
     """
 
     def __init__(self,
@@ -701,13 +732,17 @@ class NotchFilterController:
         print(f"  Inertia diagonal: [{inertia[0,0]:.0f}, {inertia[1,1]:.0f}, {inertia[2,2]:.0f}] kg*m^2")
 
     def _compute_notch_coefficients(self):
-        """Compute discrete notch filter coefficients using bilinear transform."""
+        """Compute continuous time notch filter parameters.
+
+        The depth factor controls how much attenuation the notch provides.
+        A 20 dB depth gives 10x attenuation at the notch center.
+        """
         self.notch_coeffs = []
 
-        # Depth factor: 10^( depth_dB/20) for zero damping
+        # Convert depth from dB to a linear zero damping factor
         depth_factor = 10 ** (-self.notch_depth_db / 20.0)
-        zeta_z = depth_factor * 0.5  # Zero damping for depth
-        zeta_p = self.notch_width  # Pole damping for width
+        zeta_z = depth_factor * 0.5  # Zero damping sets the notch depth
+        zeta_p = self.notch_width     # Pole damping sets the notch width
 
         for f_notch in self.notch_freqs_hz:
             omega_n = 2 * np.pi * f_notch
@@ -732,12 +767,15 @@ class NotchFilterController:
 
     def _apply_notch_filter(self, input_signal: np.ndarray, notch_idx: int, dt: float) -> np.ndarray:
         """
-        Apply notch filter to 3-axis signal using state-space form.
+        Apply one notch filter to a 3 axis signal using state space form.
+
+        The continuous time notch transfer function is discretized with a
+        semi implicit Euler step for guaranteed numerical stability.
 
         Transfer function:
-            H(s) = (s^2 + 2*zeta_z*omega_n*s + omega_n^2) / (s^2 + 2*zeta_p*omega_n*s + omega_n^2)
+            H(s) = (s^2 + 2*zeta_z*wn*s + wn^2) / (s^2 + 2*zeta_p*wn*s + wn^2)
 
-        Controllable canonical form:
+        State space (controllable canonical form):
             x' = A*x + B*u
             y  = C*x + D*u
         """
@@ -873,27 +911,22 @@ class NotchFilterController:
 
 class TrajectoryTrackingController:
     """
-    Feedback controller that tracks instantaneous feedforward trajectory.
+    Feedback controller that tracks an instantaneous feedforward trajectory.
 
-    This is the CORRECT way to combine feedforward and feedback control.
-    The feedback controller receives time-varying reference signals from
-    the feedforward trajectory, so it only corrects for:
-    1. Model mismatch (actual vs. designed inertia)
-    2. External disturbances (gravity gradient, etc.)
-    3. Unmodeled dynamics
+    This is the correct way to combine feedforward and feedback control.
+    The feedback controller receives time varying reference signals from
+    the feedforward trajectory, so it only needs to correct for:
+      1. Model mismatch (actual vs designed inertia)
+      2. External disturbances (gravity gradient, drag, etc.)
+      3. Unmodeled dynamics (slosh, deployment, etc.)
 
     The feedback does NOT fight the feedforward trajectory motion.
 
     Architecture:
-        sigma_ref(t) ──┐
-                       ├──> [sigma_error] ──> [-K] ──┐
-        sigma_meas ────┘                             ├──> tau_fb
-                                                     │
-        omega_ref(t) ──┐                             │
-                       ├──> [omega_error] ──> [-P] ──┘
-        omega_meas ────┘
-
-    Where sigma_ref(t) and omega_ref(t) come from the feedforward trajectory.
+        sigma_ref(t) and omega_ref(t) come from the feedforward trajectory.
+        The controller computes errors relative to these time varying
+        references, so the feedback torque is zero when the spacecraft
+        follows the planned path exactly.
     """
 
     def __init__(self,
@@ -1046,15 +1079,15 @@ class TrajectoryTrackingController:
 
 class HybridController:
     """
-    Hybrid feedforward + feedback controller.
-    
-    Combines open-loop feedforward trajectory tracking with closed-loop
+    Hybrid feedforward plus feedback controller.
+
+    Combines open loop feedforward trajectory tracking with closed loop
     feedback for disturbance rejection and fine pointing.
-    
+
     Control modes:
-        1. Feedforward only (during slew)
-        2. Feedback only (fine pointing)
-        3. Combined FF + FB
+        feedforward   pure open loop during slew
+        feedback      pure closed loop for fine pointing
+        hybrid        smooth blend of both with a linear transition ramp
     """
     
     def __init__(self,
@@ -1148,27 +1181,30 @@ def design_gains_from_bandwidth(inertia: np.ndarray,
                                  bandwidth_hz: float,
                                  damping_ratio: float = 0.7) -> Tuple[float, float]:
     """
-    Design feedback gains to achieve desired closed-loop bandwidth.
-    
-    For a double-integrator plant in sigma (1/(4I s^2)) with PD control on omega:
-        omegan = sqrt(K/(4I))
-        zeta = P / sqrt(K*I)
-        
+    Design PD feedback gains to achieve a desired closed loop bandwidth.
+
+    For a double integrator plant in sigma, 1/(4*I*s^2), with PD control:
+        omega_n = sqrt(K / (4*I))
+        zeta    = P / (2 * sqrt(K * 4 * I))
+
+    The gains K and P are solved from these two equations given the
+    desired omega_n (from bandwidth_hz) and zeta (from damping_ratio).
+
     Args:
-        inertia: Spacecraft inertia matrix
-        bandwidth_hz: Desired closed-loop bandwidth [Hz]
-        damping_ratio: Desired damping ratio (default: 0.7 for good transient)
-        
+        inertia: 3x3 spacecraft inertia matrix.
+        bandwidth_hz: desired closed loop bandwidth in Hz.
+        damping_ratio: desired damping ratio (0.7 gives good transient response).
+
     Returns:
-        Tuple of (K, P) gains
+        Tuple of (K, P) gains.
     """
     I_avg = np.mean(np.diag(inertia))
     omega_n = 2 * np.pi * bandwidth_hz
-    
-    # From omegan = sqrt(K/(4I))
+
+    # Proportional gain from omega_n = sqrt(K / (4*I))
     K = 4.0 * omega_n**2 * I_avg
 
-    # From zeta = P / sqrt(K*I) (sigma_dot ≈ 0.25*omega)
+    # Derivative gain from zeta = P / (2 * sqrt(K * 4 * I))
     P = 2.0 * damping_ratio * omega_n * I_avg
     
     print(f"Gain design for {bandwidth_hz:.2f} Hz bandwidth, zeta={damping_ratio}:")

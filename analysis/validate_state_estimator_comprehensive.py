@@ -4,22 +4,19 @@ validate_state_estimator_comprehensive.py
 
 Comprehensive validation suite for PhasorModeBankEstimator.
 
-This script validates the estimator across multiple dimensions:
+Validates the estimator across multiple dimensions:
   1. CORRECTNESS: Pure sinusoid tracking (amplitude, phase, frequency)
   2. CONVERGENCE: Transient settling time characterization
   3. ROBUSTNESS: Frequency mismatch, noise, parameter sensitivity
-  4. NUMERICAL: Long-run stability, edge cases
+  4. NUMERICAL: Long run stability, edge cases
   5. STATISTICAL: Monte Carlo validation with randomized parameters
   6. THEORETICAL: Comparison to analytical predictions
 
 Outputs:
   - Console summary with PASS/FAIL for each test category
   - Detailed metrics CSV
-  - Publication-quality plots
+  - Publication quality plots
   - JSON report for CI integration
-
-Author: [Your Name]
-License: [Your License]
 """
 
 from __future__ import annotations
@@ -42,7 +39,7 @@ DEFAULT_OUT_DIR = SCRIPT_DIR / "plots"
 # Optional imports
 try:
     import matplotlib
-    matplotlib.use('Agg')  # Non-interactive backend for server environments
+    matplotlib.use('Agg')  # Non interactive backend for server environments
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
     HAS_MATPLOTLIB = True
@@ -63,7 +60,7 @@ except ImportError:
 # ==============================================================================
 
 def _alpha_from_bw_hz(dt: float, bw_hz: float) -> float:
-    """Map envelope bandwidth (Hz) into stable 1st-order IIR alpha."""
+    """Map envelope bandwidth (Hz) into stable 1st order IIR alpha."""
     dt = float(dt)
     bw_hz = float(bw_hz)
     if dt <= 0:
@@ -76,10 +73,10 @@ def _alpha_from_bw_hz(dt: float, bw_hz: float) -> float:
 
 class PhasorModeBankEstimator:
     """
-    Multi-axis, multi-mode phasor modal estimator.
+    Multi axis, multi mode phasor modal estimator.
     
-    Inline copy for standalone validation - keeps the validation script
-    self-contained for reproducibility.
+    Inline copy for standalone validation. Keeps the validation script
+    self contained for reproducibility.
     """
 
     def __init__(
@@ -115,6 +112,7 @@ class PhasorModeBankEstimator:
         self._normalize_every = int(max(1, carrier_normalize_every))
 
     def _update_cached_coeffs(self, dt: float) -> None:
+        """Recompute per sample rotation phasors and IIR smoothing coefficients."""
         w = 2.0 * np.pi * self.mode_freqs_hz
         self._rot = np.exp(1j * w * float(dt))
         self._alpha = np.array(
@@ -122,11 +120,13 @@ class PhasorModeBankEstimator:
         )
 
     def reset(self) -> None:
+        """Zero all envelopes and reinitialize carriers to unit magnitude."""
         self._carrier[:] = 1.0 + 0j
         self._env[:] = 0.0 + 0j
         self._k = 0
 
     def step(self, y: np.ndarray, dt: Optional[float] = None):
+        """Advance one sample: demodulate, filter, remodulate, return rigid + modal."""
         y = np.asarray(y, dtype=float).reshape(self.n_axes)
 
         if dt is not None:
@@ -135,13 +135,19 @@ class PhasorModeBankEstimator:
                 self.dt = dt
                 self._update_cached_coeffs(self.dt)
 
+        # Demodulate: shift signal to baseband for each mode
         demod = y[:, None] * np.conj(self._carrier)
+        # IIR low pass: extract slowly varying complex envelope
         self._env = (1.0 - self._alpha)[None, :] * self._env + self._alpha[None, :] * demod
+        # Remodulate: reconstruct narrowband modal signals
         y_modes = 2.0 * np.real(self._env * self._carrier)
+        # Rigid body residual: input minus all modal contributions
         y_rigid = y - np.sum(y_modes, axis=1)
 
+        # Advance carrier phasors by one sample rotation
         self._carrier *= self._rot[None, :]
         self._k += 1
+        # Periodic normalization prevents carrier magnitude drift
         if (self._k % self._normalize_every) == 0:
             mag = np.abs(self._carrier)
             mag[mag == 0] = 1.0
@@ -150,6 +156,7 @@ class PhasorModeBankEstimator:
         return y_rigid, y_modes, self._env.copy()
 
     def get_mode_amplitude_phase(self):
+        """Return current amplitude and phase (rad) arrays, shape (n_axes, n_modes)."""
         amp = 2.0 * np.abs(self._env)
         ph = np.angle(self._env)
         return amp, ph
@@ -203,6 +210,7 @@ class ValidationReport:
         self.tests.append(result)
     
     def compute_summary(self) -> None:
+        """Aggregate pass/fail counts by category and overall."""
         total = len(self.tests)
         passed = sum(1 for t in self.tests if t.passed)
         by_category = {}
@@ -250,7 +258,7 @@ def compute_nrmse_for_params(
     dt: float,
     duration: float,
 ) -> Tuple[float, float]:
-    """Run a single sine test and return steady-state NRMSE and phase error (deg)."""
+    """Run a single sine test and return steady state NRMSE and phase error (deg)."""
     t = np.arange(0, duration, dt)
     y_true = generate_sinusoid(t, freq_hz, amplitude, phase_rad)
 
@@ -287,7 +295,7 @@ def theoretical_time_constant(bw_hz: float) -> float:
 
 def theoretical_settling_time(bw_hz: float, settling_fraction: float = 0.95) -> float:
     """
-    Theoretical settling time for first-order system.
+    Theoretical settling time for first order system.
     Time to reach settling_fraction of final value.
     """
     tau = theoretical_time_constant(bw_hz)
@@ -389,7 +397,7 @@ def test_pure_sinusoid_tracking(
     phase_estimates = np.array(phase_estimates)
     y_modes_all = np.array(y_modes_all)
     
-    # Use second half for steady-state analysis
+    # Use second half for steady state analysis
     half_idx = len(t) // 2
     amp_steady = np.mean(amp_estimates[half_idx:])
     phase_steady = np.angle(np.mean(np.exp(1j * phase_estimates[half_idx:])))
@@ -445,10 +453,10 @@ def test_multi_mode_separation(
     separation_tolerance: float = 0.10,
 ) -> Tuple[TestResult, Dict[str, np.ndarray]]:
     """
-    Test 2: Multi-mode separation accuracy.
+    Test 2: Multi mode separation accuracy.
     
     Verifies that the estimator correctly separates multiple modes
-    without cross-contamination.
+    without cross contamination.
     """
     t = np.arange(0, duration, dt)
     
@@ -472,7 +480,7 @@ def test_multi_mode_separation(
         _, y_modes, _ = estimator.step(np.array([y_combined[k]]))
         y_modes_est[k, :] = y_modes[0, :]
     
-    # Steady-state error (second half)
+    # Steady state error (second half)
     half_idx = len(t) // 2
     
     separation_errors = []
@@ -520,10 +528,10 @@ def test_rigid_body_extraction(
     extraction_tolerance: float = 0.10,
 ) -> Tuple[TestResult, Dict[str, np.ndarray]]:
     """
-    Test 3: Rigid-body signal extraction.
+    Test 3: Rigid body signal extraction.
     
     Verifies that the estimator correctly removes modal content
-    and preserves the underlying rigid-body signal.
+    and preserves the underlying rigid body signal.
     """
     t = np.arange(0, duration, dt)
     
@@ -544,7 +552,7 @@ def test_rigid_body_extraction(
         y_r, _, _ = estimator.step(np.array([y_combined[k]]))
         y_rigid_est[k] = y_r[0]
     
-    # Steady-state error
+    # Steady state error
     half_idx = len(t) // 2
     nrmse = normalized_rms_error(y_rigid_est[half_idx:], rigid_true[half_idx:])
     
@@ -584,7 +592,7 @@ def test_settling_time(
     Test 4: Settling time characterization.
     
     Verifies that actual settling time is within expected range
-    based on theoretical first-order filter response.
+    based on theoretical first order filter response.
     """
     t = np.arange(0, duration, dt)
     y_true = generate_sinusoid(t, freq_hz, amplitude)
@@ -611,7 +619,7 @@ def test_settling_time(
     # Theoretical settling time
     theoretical_settling = theoretical_settling_time(bw_hz, settling_fraction=0.95)
     
-    # Allow some margin for discrete-time effects
+    # Allow some margin for discrete time effects
     settling_ratio = actual_settling / theoretical_settling if theoretical_settling > 0 else float('inf')
     
     result = TestResult(
@@ -897,7 +905,7 @@ def test_bandwidth_sensitivity(
         
         amp_trace = np.array(amp_trace)
         
-        # Steady-state amplitude error
+        # Steady state amplitude error
         half_idx = len(t) // 2
         amp_steady = np.mean(amp_trace[half_idx:])
         amp_error = abs(amp_steady - amplitude) / amplitude
@@ -941,10 +949,10 @@ def test_long_run_stability(
     bw_hz: float = 0.03,
     dt: float = 0.01,
     duration: float = 3600.0,  # 1 hour
-    stability_tolerance: float = 0.03,  # 3% CV is excellent for long-run stability
+    stability_tolerance: float = 0.03,  # 3% CV is excellent for long run stability
 ) -> Tuple[TestResult, Dict[str, np.ndarray]]:
     """
-    Test 9: Long-run numerical stability.
+    Test 9: Long run numerical stability.
     
     Verifies no numerical drift or instability over extended operation.
     """
@@ -1047,7 +1055,7 @@ def test_dt_variation(
     
     y_modes_est = np.array(y_modes_est)
     
-    # Steady-state reconstruction quality
+    # Steady state reconstruction quality
     half_idx = len(t) // 2
     nrmse = normalized_rms_error(y_modes_est[half_idx:], y_true[half_idx:])
     
@@ -1085,7 +1093,7 @@ def test_multi_axis_independence(
     tolerance: float = 0.05,
 ) -> Tuple[TestResult, Dict[str, np.ndarray]]:
     """
-    Test 11: Multi-axis independence verification.
+    Test 11: Multi axis independence verification.
     
     Verifies that processing on one axis doesn't affect others.
     """
@@ -1192,7 +1200,7 @@ def test_monte_carlo_validation(
         
         y_modes_est = np.array(y_modes_est)
         
-        # Measure steady-state performance
+        # Measure steady state performance
         half_idx = len(t) // 2
         nrmse = normalized_rms_error(y_modes_est[half_idx:], y_true[half_idx:])
         
@@ -1252,7 +1260,7 @@ def test_frequency_sweep(
     duration: float = 60.0,
     tolerance: float = 0.10,
 ) -> Tuple[TestResult, Dict[str, np.ndarray]]:
-    """Single-parameter sweep: frequency vs NRMSE."""
+    """Single parameter sweep: frequency vs NRMSE."""
     freqs = np.linspace(freq_range[0], freq_range[1], n_points)
     nrmses = []
     phase_errs = []
@@ -1294,7 +1302,7 @@ def test_amplitude_sweep(
     duration: float = 60.0,
     tolerance: float = 0.10,
 ) -> Tuple[TestResult, Dict[str, np.ndarray]]:
-    """Single-parameter sweep: amplitude vs NRMSE."""
+    """Single parameter sweep: amplitude vs NRMSE."""
     amps = np.linspace(amp_range[0], amp_range[1], n_points)
     nrmses = []
     phase_errs = []
@@ -1335,7 +1343,7 @@ def test_phase_sweep(
     duration: float = 60.0,
     tolerance: float = 0.10,
 ) -> Tuple[TestResult, Dict[str, np.ndarray]]:
-    """Single-parameter sweep: phase vs NRMSE."""
+    """Single parameter sweep: phase vs NRMSE."""
     phases = np.linspace(0.0, 2.0 * np.pi, n_points, endpoint=False)
     nrmses = []
     phase_errs = []
@@ -1376,7 +1384,7 @@ def test_bandwidth_sweep_nrmse(
     duration: float = 60.0,
     tolerance: float = 0.10,
 ) -> Tuple[TestResult, Dict[str, np.ndarray]]:
-    """Single-parameter sweep: bandwidth vs NRMSE."""
+    """Single parameter sweep: bandwidth vs NRMSE."""
     bws = np.linspace(bw_range[0], bw_range[1], n_points)
     nrmses = []
     phase_errs = []
@@ -1421,7 +1429,7 @@ def test_frequency_settling_sweep(
     duration: float = 60.0,
 ) -> Dict[str, np.ndarray]:
     """
-    Single-parameter sweep: estimation (settling) time vs frequency.
+    Single parameter sweep: estimation (settling) time vs frequency.
 
     Uses bandwidth proportional to frequency (constant Q) and clamps to [bw_min, bw_max].
     """
@@ -1462,7 +1470,7 @@ def test_decaying_mode_tracking(
     bw_hz: float = 0.03,
     dt: float = 0.01,
     duration: float = 60.0,
-    tracking_tolerance: float = 0.35,  # Relaxed: first-order filter has inherent lag for decaying signals
+    tracking_tolerance: float = 0.35,  # Relaxed: first order filter has inherent lag for decaying signals
 ) -> Tuple[TestResult, Dict[str, np.ndarray]]:
     """
     Test 13: Decaying mode tracking (realistic scenario).
@@ -1547,7 +1555,7 @@ def test_spectral_rejection(
     """
     Test 14: Spectral rejection at mode frequency.
     
-    Verifies that the rigid-body output shows significant
+    Verifies that the rigid body output shows significant
     attenuation at the modal frequency.
     """
     t = np.arange(0, duration, dt)
@@ -1847,7 +1855,7 @@ def plot_pure_sinusoid_test(traces: Dict, out_dir: Path) -> None:
 
 
 def plot_multi_mode_test(traces: Dict, out_dir: Path) -> None:
-    """Plot results from multi-mode separation test."""
+    """Plot results from multi mode separation test."""
     if not HAS_MATPLOTLIB:
         return
     
@@ -2085,7 +2093,7 @@ def plot_settling_sweep(
 
 
 def plot_long_run_test(traces: Dict, out_dir: Path) -> None:
-    """Plot results from long-run stability test."""
+    """Plot results from long run stability test."""
     if not HAS_MATPLOTLIB:
         return
     
@@ -2366,7 +2374,7 @@ def run_all_tests(
     if plot:
         plot_pure_sinusoid_test(traces, out_dir)
     
-    # Test 2: Multi-mode separation
+    # Test 2: Multi mode separation
     result, traces = test_multi_mode_separation()
     report.add_test(result)
     if verbose:
@@ -2380,7 +2388,7 @@ def run_all_tests(
     if verbose:
         print(result)
     
-    # Test 11: Multi-axis independence
+    # Test 11: Multi axis independence
     result, traces = test_multi_axis_independence()
     report.add_test(result)
     if verbose:
@@ -2475,7 +2483,7 @@ def run_all_tests(
         print("CATEGORY: NUMERICAL")
         print("-" * 40)
     
-    # Test 9: Long-run stability
+    # Test 9: Long run stability
     result, traces = test_long_run_stability(duration=600.0)  # 10 minutes
     report.add_test(result)
     if verbose:
@@ -2536,7 +2544,7 @@ def run_all_tests(
         print()
 
     # -------------------------------------------------------------------------
-    # 7. SINGLE-PARAMETER SWEEPS (same N as Monte Carlo)
+    # 7. SINGLE PARAMETER SWEEPS (same N as Monte Carlo)
     # -------------------------------------------------------------------------
     if verbose:
         print("CATEGORY: SWEEP")
@@ -2766,6 +2774,7 @@ def save_report(report: ValidationReport, out_dir: Path) -> None:
 
 
 def main() -> None:
+    """CLI entry point: parse arguments, run the validation suite, and save reports."""
     parser = argparse.ArgumentParser(
         description="Comprehensive validation suite for PhasorModeBankEstimator"
     )

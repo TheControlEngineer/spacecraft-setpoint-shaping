@@ -1,18 +1,18 @@
 """
-Star Field Survey Scenario - Step and Stare
+Star Field Survey Scenario: Step and Stare
 
-Real spacecraft star surveys use "step and stare":
-1. SLEW to target pointing (fast)
-2. WAIT for vibrations to settle (settling time)
-3. CAPTURE image when stable enough
+Spacecraft star surveys use step and stare operations:
+  1. Slew to target pointing (fast rotation).
+  2. Wait for vibrations to settle (settling time).
+  3. Capture image when stable enough.
 
-Input shaping reduces the SETTLING TIME, not mid-slew blur.
-This is because no sane mission images during active slew!
+Input shaping reduces the settling time rather than mid slew blur
+because no mission images during an active slew.
 
 Key metrics:
-- Settling time: How long after slew to wait before imaging
-- Residual vibration: The oscillation amplitude after slew completes
-- Throughput: More targets per orbit if settling is faster
+  Settling time:       how long after the slew to wait before imaging.
+  Residual vibration:  oscillation amplitude after the slew completes.
+  Throughput:          number of targets per orbit (faster settling = more).
 """
 
 import numpy as np
@@ -20,17 +20,23 @@ from Basilisk.utilities import macros
 
 
 class StepAndStareSurveyScenario:
-    """Star field survey with step-and-stare imaging strategy."""
+    """Star field survey with step and stare imaging strategy.
+
+    Encapsulates the timeline parameters (slew duration, exposure time,
+    settling budget) and provides methods to compute throughput and
+    print the mission timeline for a single target.
+    """
     
     def __init__(self, slew_angle=180.0, slew_duration=30.0, 
                  exposure_duration=0.2, settling_budget=10.0):
         """
-        Initialize step-and-stare survey parameters.
-        
-        slew_angle: rotation angle in degrees (180 deg yaw)
-        slew_duration: time for the slew maneuver (30s)
-        exposure_duration: camera exposure time (0.2s typical)
-        settling_budget: max time allowed for settling before imaging (10s)
+        Initialize step and stare survey parameters.
+
+        Args:
+            slew_angle:        rotation angle in degrees (e.g. 180 deg yaw).
+            slew_duration:     time for the slew manoeuvre in seconds.
+            exposure_duration:  camera exposure time in seconds.
+            settling_budget:   maximum time allowed for settling before imaging.
         """
         self.slew_angle = slew_angle
         self.slew_duration = slew_duration
@@ -39,29 +45,31 @@ class StepAndStareSurveyScenario:
         
         # Step and stare timeline
         self.slew_end = slew_duration
-        self.earliest_image = slew_duration  # Can't image before slew ends!
+        self.earliest_image = slew_duration     # Cannot image before slew ends
         self.latest_image = slew_duration + settling_budget
         
         # Image quality thresholds (pointing stability in microradians)
-        self.threshold_strict = 1.0    # Precision astrometry
-        self.threshold_normal = 10.0   # Standard star tracker
-        self.threshold_relaxed = 100.0 # Coarse pointing
+        self.threshold_strict = 1.0    # Precision astrometry requirement
+        self.threshold_normal = 10.0   # Standard star tracker requirement
+        self.threshold_relaxed = 100.0 # Coarse pointing sufficient
         
-        print(f"\nStep-and-Stare Survey:")
+        print(f"\nStep and Stare Survey:")
         print(f"  Slew: {slew_angle} deg yaw in {slew_duration}s")
         print(f"  Exposure: {exposure_duration}s")
         print(f"  Settling budget: {settling_budget}s")
-        print(f"  Key metric: Settling time to reach imaging threshold")
+        print(f"  Key metric: settling time to reach imaging threshold")
     
     def calculate_throughput(self, settling_time):
         """
-        Calculate survey throughput (targets per orbit).
-        
-        More settling time = fewer targets per orbit.
+        Calculate survey throughput in targets per orbit.
+
+        The total time per target includes slew, settling, and exposure.
+        More settling time directly reduces the number of targets that
+        can be observed in one orbit.
         """
         total_time_per_target = self.slew_duration + settling_time + self.exposure_duration
-        orbit_period = 90 * 60  # 90 minute orbit (seconds)
-        observation_fraction = 0.5  # Half the orbit in eclipse or SAA
+        orbit_period = 90 * 60       # 90 minute LEO orbit in seconds
+        observation_fraction = 0.5   # Half the orbit usable (eclipse, SAA excluded)
         
         available_time = orbit_period * observation_fraction
         targets_per_orbit = available_time / total_time_per_target
@@ -85,26 +93,37 @@ class StarFieldSurveyScenario(StepAndStareSurveyScenario):
 
 
 class SurveyCamera:
-    """Survey camera model for star field imaging after slew settles."""
+    """Survey camera model for star field imaging after slew settles.
+
+    Provides plate scale, field of view, and image quality assessment
+    based on pointing jitter during the exposure window.
+    """
     
     def __init__(self, focal_length=2.0, pixel_size=5e-6, 
                  resolution=2048, array_length=10.0):
-        """Initialize camera optics and quality thresholds."""
+        """Initialize camera optics and quality thresholds.
+
+        Args:
+            focal_length:  effective focal length in metres.
+            pixel_size:    detector pixel pitch in metres.
+            resolution:    detector side length in pixels.
+            array_length:  solar array length used for lever arm computation.
+        """
         self.focal_length = focal_length
         self.pixel_size = pixel_size
         self.resolution = resolution
         self.array_length = array_length
         
-        # Plate scale and FOV
+        # Plate scale and field of view derived from optics
         self.plate_scale_rad = pixel_size / focal_length
         self.plate_scale_arcsec = np.degrees(self.plate_scale_rad) * 3600
         self.fov_rad = 2 * np.arctan(resolution * pixel_size / (2 * focal_length))
         self.fov_deg = np.degrees(self.fov_rad)
         
-        # Quality thresholds for point sources
-        self.threshold_sharp = 0.5       # < 0.5 px = diffraction limited
-        self.threshold_acceptable = 1.0  # < 1 px = acceptable
-        self.threshold_usable = 2.0      # < 2 px = usable for astrometry
+        # Image quality thresholds for point sources (pixels of blur)
+        self.threshold_sharp = 0.5       # Diffraction limited
+        self.threshold_acceptable = 1.0  # Photometry quality
+        self.threshold_usable = 2.0      # Astrometry quality
         
         print(f"Survey camera: {focal_length}m f.l., {self.plate_scale_arcsec:.3f} arcsec/px, {self.fov_deg:.2f} deg FOV")
     
@@ -115,34 +134,25 @@ class SurveyCamera:
     def calculate_image_quality(self, time, attitude, attitude_ref, vibration,
                                 exposure_start, exposure_duration):
         """
-        Calculate image quality during exposure.
-        
-        For star field survey, blur comes entirely from vibration-induced
-        jitter around the commanded trajectory. We measure:
-        
-        1. Attitude tracking error (how well we follow the reference)
-        2. Vibration-induced jitter (flexible mode oscillation)
-        3. Total pointing stability
-        
-        Parameters:
-        -----------
-        time : array
-            Time vector (seconds)
-        attitude : array
-            Actual spacecraft attitude (radians)
-        attitude_ref : array
-            Commanded/reference attitude (radians)
-        vibration : array
-            Solar array tip displacement (meters)
-        exposure_start : float
-            Start of exposure window (seconds)
-        exposure_duration : float
-            Duration of exposure (seconds)
-        
+        Calculate image quality during an exposure window.
+
+        Blur comes from two sources:
+          1. Attitude tracking error (deviation from the reference trajectory).
+          2. Vibration induced jitter (flexible mode oscillation).
+
+        The DC tracking offset is removed so only the oscillatory
+        component contributes to blur.
+
+        Args:
+            time:              time vector in seconds.
+            attitude:          actual spacecraft attitude in radians.
+            attitude_ref:      commanded reference attitude in radians.
+            vibration:         solar array tip displacement in metres.
+            exposure_start:    start of the exposure window in seconds.
+            exposure_duration:  duration of the exposure in seconds.
+
         Returns:
-        --------
-        results : dict
-            Image quality metrics
+            Dictionary of image quality metrics including blur in pixels.
         """
         exposure_end = exposure_start + exposure_duration
         idx = (time >= exposure_start) & (time <= exposure_end)
@@ -154,13 +164,13 @@ class SurveyCamera:
                 'status': "ERROR"
             }
         
-        # Attitude tracking error (deviation from reference trajectory)
-        # This should be small for good feedforward control
+        # Attitude tracking error (deviation from reference trajectory).
+        # Should be small when feedforward control is effective.
         attitude_error = attitude[idx] - attitude_ref[idx]
         rms_attitude_error = np.sqrt(np.mean(attitude_error**2))
         peak_attitude_error = np.max(np.abs(attitude_error))
         
-        # Vibration induced jitter. This is what input shaping suppresses
+        # Vibration induced jitter: this is what input shaping suppresses.
         vibration_exposure = vibration[idx]
         rms_vibration = np.sqrt(np.mean(vibration_exposure**2))
         peak_vibration = np.max(np.abs(vibration_exposure))
@@ -168,35 +178,35 @@ class SurveyCamera:
         pointing_jitter = self.vibration_to_jitter(vibration_exposure)
         rms_jitter = np.sqrt(np.mean(pointing_jitter**2))
         
-        # Total pointing error
-        # Blur comes from jitter (variation), not DC tracking offset
+        # Remove DC offset from tracking error so only the oscillatory
+        # component contributes to motion blur.
         attitude_error_variation = attitude_error - np.mean(attitude_error)
         rms_attitude_variation = np.sqrt(np.mean(attitude_error_variation**2))
         
-        # Total blur = RSS of jitter and tracking variation
+        # Total blur is the RSS of tracking variation and jitter
         total_jitter = np.sqrt(rms_attitude_variation**2 + rms_jitter**2)
         
-        # Convert to image blur (pixels)
+        # Convert angular blur to pixels via the plate scale
         blur_arcsec = np.degrees(total_jitter) * 3600
         blur_pixels = blur_arcsec / self.plate_scale_arcsec
         
-        # Also report jitter only blur (pure input shaping metric)
+        # Pure jitter blur (the input shaping metric)
         jitter_blur_arcsec = np.degrees(rms_jitter) * 3600
         jitter_blur_pixels = jitter_blur_arcsec / self.plate_scale_arcsec
         
-        # Assess quality
+        # Assess quality against thresholds
         if blur_pixels < self.threshold_sharp:
             quality = "Sharp"
-            status = "★ EXCELLENT - Diffraction limited!"
+            status = "EXCELLENT: diffraction limited"
         elif blur_pixels < self.threshold_acceptable:
             quality = "Acceptable" 
-            status = "GOOD - Suitable for photometry"
+            status = "GOOD: suitable for photometry"
         elif blur_pixels < self.threshold_usable:
             quality = "Usable"
-            status = "~ MARGINAL - Usable for astrometry"
+            status = "MARGINAL: usable for astrometry"
         else:
             quality = "Blurred"
-            status = "✗ POOR - Stars are smeared"
+            status = "POOR: stars are smeared"
         
         results = {
             'blur_pixels': blur_pixels,

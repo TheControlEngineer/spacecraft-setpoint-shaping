@@ -1,13 +1,14 @@
 """
-Comet Camera Simulator - Visualizes Vibration-Induced Blur in Long Exposures.
+Comet Camera Simulator
 
-This module renders synthetic comet images using attitude jitter from simulation
-outputs. It is designed to pair with vizard_demo.py and show the practical
-impact of input shaping on image quality.
+Renders synthetic comet images using attitude jitter from simulation outputs.
+Designed to pair with vizard_demo.py and show the practical impact of input
+shaping on image quality during long exposures.
 
-Key idea:
-- Small attitude jitter maps to large pixel blur for narrow field-of-view (FOV)
-  telescopes at long range.
+Small attitude jitter maps to large pixel blur for narrow field of view
+telescopes at long range.  The module renders a comet (nucleus, coma, tail)
+with Gaussian PSF broadening and optional motion blur trails derived from
+modal displacement histories.
 """
 
 from __future__ import annotations
@@ -27,21 +28,16 @@ class CometCameraSimulator:
     """
     Simulate comet images with optional motion blur from attitude jitter.
 
-    Inputs:
-    - fov_deg: camera field of view in degrees (assumes square FOV).
-    - resolution: image resolution as (width_px, height_px).
-    - pixel_scale: arcsec/pixel. If None, computed from fov_deg and resolution.
-    - exposure_time: exposure duration in seconds.
-    - noise_level: additive Gaussian noise standard deviation in [0, 1].
+    Creates synthetic telescope frames containing a comet (nucleus, coma,
+    tail) and background stars.  When attitude data is supplied, jitter
+    is converted to pixel offsets and applied as a motion blur trail.
 
-    Outputs:
-    - generate_image returns a synthetic image and blur statistics.
-
-    Process:
-    - Convert attitude jitter (MRP) into angular displacements in arcsec.
-    - Convert angular jitter into pixel offsets.
-    - Render a comet nucleus/coma/tail at multiple offsets to emulate blur.
-    - Add background stars and noise, then clip to [0, 1].
+    Attributes:
+        fov_deg:       camera field of view in degrees (square sensor).
+        resolution:    image size as (width, height) in pixels.
+        pixel_scale:   plate scale in arcseconds per pixel.
+        exposure_time: exposure duration in seconds.
+        noise_level:   additive Gaussian noise sigma in [0, 1].
     """
 
     def __init__(
@@ -58,7 +54,8 @@ class CometCameraSimulator:
         self.exposure_time = float(exposure_time)
         self.noise_level = float(noise_level)
 
-        # Pixel scale (arcsec per pixel). Use horizontal resolution for square FOV.
+        # Plate scale in arcseconds per pixel.  Derived from the horizontal
+        # extent of the FOV unless an explicit value is provided.
         if pixel_scale is None:
             self.pixel_scale = (self.fov_deg * 3600.0) / self.resolution[0]
         else:
@@ -72,12 +69,12 @@ class CometCameraSimulator:
 
         # Comet geometry parameters (in pixels).
         self.comet_center = (self.resolution[0] // 2, self.resolution[1] // 2)
-        self.comet_nucleus_radius = 8
-        self.comet_coma_radius = 40
-        self.comet_tail_length = 150
-        self.comet_tail_angle = np.radians(45.0)
+        self.comet_nucleus_radius = 8   # Bright core radius
+        self.comet_coma_radius = 40     # Diffuse halo radius
+        self.comet_tail_length = 150    # Dust tail extent
+        self.comet_tail_angle = np.radians(45.0)  # Tail direction
 
-        # Background star field (fixed for repeatability).
+        # Background star field with fixed seed for frame to frame consistency.
         rng = np.random.default_rng(42)
         self.num_stars = 20
         self.star_positions = rng.random((self.num_stars, 2)) * np.array(
@@ -98,18 +95,18 @@ class CometCameraSimulator:
         """
         Extract attitude jitter during the exposure window.
 
-        Inputs:
-        - exposure_start: start time of the exposure in seconds.
-        - sigma_history: attitude history as MRPs (N x 3).
-        - time_history: corresponding time stamps (N,).
+        Selects samples within [exposure_start, exposure_start + exposure_time],
+        subtracts the mean attitude to isolate jitter about the average pointing,
+        then converts the small angle MRP deviations to arcseconds using the
+        approximation angle = 4 * sigma.
 
-        Output:
-        - Array of (dx_arcsec, dy_arcsec) offsets for each sample.
+        Args:
+            exposure_start: start time of the exposure in seconds.
+            sigma_history:  attitude history as MRPs, shape (N, 3).
+            time_history:   corresponding time stamps, shape (N,).
 
-        Process:
-        - Select samples within [exposure_start, exposure_start + exposure_time].
-        - Subtract mean MRPs to isolate jitter about the mean pointing.
-        - Convert small-angle MRP deviations to arcsec using angle ~= 4*sigma.
+        Returns:
+            Array of (dx_arcsec, dy_arcsec) offsets for each sample.
         """
         exposure_mask = (time_history >= exposure_start) & (
             time_history <= exposure_start + self.exposure_time
@@ -121,12 +118,13 @@ class CometCameraSimulator:
         sigma_exposure = sigma_history[exposure_mask]
         sigma_mean = np.mean(sigma_exposure, axis=0)
 
-        # Convert small angle MRPs to arcsec in the image plane.
+        # Convert small angle MRP deviation to arcseconds in the image plane.
+        # For MRPs near zero the rotation angle is approximately 4 * |sigma|.
         angular_disp = []
         for sigma in sigma_exposure:
             delta_sigma = sigma - sigma_mean
-            angle_x = 4.0 * delta_sigma[0] * ARCSEC_PER_RAD
-            angle_y = 4.0 * delta_sigma[1] * ARCSEC_PER_RAD
+            angle_x = 4.0 * delta_sigma[0] * ARCSEC_PER_RAD  # Cross boresight X
+            angle_y = 4.0 * delta_sigma[1] * ARCSEC_PER_RAD  # Cross boresight Y
             angular_disp.append([angle_x, angle_y])
 
         return np.array(angular_disp)
@@ -137,12 +135,16 @@ class CometCameraSimulator:
         """
         Render comet nucleus, coma, and tail into an image.
 
-        Inputs:
-        - image: target image buffer (modified in-place).
-        - blur_trail: list of (dx_px, dy_px) offsets. If None, render sharp.
+        When blur_trail is provided, the comet is rendered at each offset
+        with equal weight (1/N_samples) so the summed image simulates a
+        long exposure motion blur.
 
-        Output:
-        - The same image array with comet features added.
+        Args:
+            image:      target image buffer (modified in place).
+            blur_trail: pixel offsets as (dx, dy) per sample, or None for sharp.
+
+        Returns:
+            The same image array with comet features added.
         """
         h, w = image.shape
         cx, cy = self.comet_center
@@ -152,14 +154,14 @@ class CometCameraSimulator:
         def add_comet_at(center_x: float, center_y: float, weight: float) -> None:
             r_nucleus = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
 
-            # Bright nucleus core.
+            # Gaussian nucleus core (brightest feature)
             nucleus = weight * 1.0 * np.exp(
                 -r_nucleus**2 / (2 * self.comet_nucleus_radius**2)
             )
-            # Diffuse coma.
+            # Exponential coma (diffuse envelope around the nucleus)
             coma = weight * 0.4 * np.exp(-r_nucleus / self.comet_coma_radius)
 
-            # Tail in rotated coordinates.
+            # Rotate coordinates into the tail reference frame.
             tail_dx = x - center_x
             tail_dy = y - center_y
             tail_x = tail_dx * np.cos(self.comet_tail_angle) + tail_dy * np.sin(
@@ -169,9 +171,11 @@ class CometCameraSimulator:
                 self.comet_tail_angle
             )
 
+            # Tail points in the negative tail_x direction (away from the sun),
+            # with a width that fans out with distance.
             tail_mask = tail_x < 0
             tail_distance = np.abs(tail_x)
-            tail_width = 20 + 0.3 * tail_distance
+            tail_width = 20 + 0.3 * tail_distance  # Linear spreading
 
             tail = np.zeros_like(image)
             tail[tail_mask] = (
@@ -198,9 +202,13 @@ class CometCameraSimulator:
         """
         Render background stars with optional motion blur streaks.
 
-        Inputs:
-        - image: target image buffer (modified in-place).
-        - blur_trail: list of (dx_px, dy_px) offsets. If None, render points.
+        Each star is placed as a compact Gaussian point spread function.
+        When blur_trail is provided, each star is rendered at subsampled
+        trail offsets to create elongated streaks.
+
+        Args:
+            image:      target image buffer (modified in place).
+            blur_trail: pixel offsets (dx, dy) per sample, or None for points.
         """
         h, w = image.shape
 
@@ -209,7 +217,7 @@ class CometCameraSimulator:
             brightness = self.star_brightness[i]
 
             if blur_trail is None or len(blur_trail) < 2:
-                # Point source PSF.
+                # Point source: compact Gaussian PSF
                 sigma_psf = 1.2
                 y_grid, x_grid = np.ogrid[
                     max(0, int(y_star) - 8) : min(h, int(y_star) + 8),
@@ -226,7 +234,7 @@ class CometCameraSimulator:
                         max(0, int(x_star) - 8) : min(w, int(x_star) + 8),
                     ] += brightness * psf
             else:
-                # Motion blurred streaks (subsample for efficiency).
+                # Motion blurred streaks: subsample the trail for efficiency.
                 n_samples = min(len(blur_trail), 50)
                 step = max(1, len(blur_trail) // n_samples)
 
@@ -263,16 +271,19 @@ class CometCameraSimulator:
         """
         Render a comet image with optional motion blur from attitude data.
 
-        Inputs:
-        - sigma_history: MRP history (N x 3). If None, render a sharp image.
-        - time_history: time stamps (N,). Required if sigma_history is provided.
-        - exposure_start: start time of the exposure.
-        - jitter_arcsec_history: optional (N x 2) angular jitter directly in arcsec.
-          If provided, this takes precedence over sigma/time conversion.
+        If jitter_arcsec_history is provided, it is used directly as the
+        angular trail (takes precedence over sigma/time conversion).
+        Otherwise, sigma_history and time_history are used to compute the
+        jitter via MRP small angle conversion.
 
-        Outputs:
-        - image: (H x W) float array in [0, 1].
-        - stats: dictionary with RMS/peak jitter and blur in pixels.
+        Args:
+            sigma_history:         MRP history (N, 3), or None for a sharp image.
+            time_history:          time stamps (N,), required with sigma_history.
+            exposure_start:        start time of the exposure window.
+            jitter_arcsec_history: angular jitter directly in arcseconds (N, 2).
+
+        Returns:
+            Tuple of (image array in [0, 1], blur statistics dictionary).
         """
         image = np.zeros(self.resolution)
 
@@ -303,18 +314,22 @@ class CometCameraSimulator:
                     self._angular_to_pixels(blur_stats["rms_arcsec"])
                 )
 
-        # Render comet and stars, then add noise.
+        # Render comet and stars, then add sensor noise.
         image = self._render_comet(image, blur_trail)
         image = self._render_background_stars(image, blur_trail)
 
-        image += np.random.normal(0.0, self.noise_level, self.resolution)
+        image += np.random.normal(0.0, self.noise_level, self.resolution)  # Read noise
         image = np.clip(image, 0.0, 1.0)
 
         return image, blur_stats
 
 
 def load_simulation_data(filename: str) -> Dict[str, Optional[np.ndarray]]:
-    """Load simulation results stored in an NPZ file."""
+    """Load simulation results stored in an NPZ file.
+
+    Returns a dictionary with time, sigma (MRP), optional modal
+    displacement arrays (mode1, mode2), and the shaping method name.
+    """
     data = np.load(filename, allow_pickle=True)
     return {
         "time": data["time"],
@@ -337,8 +352,22 @@ def _extract_modal_jitter_arcsec(
     """
     Convert modal displacements to angular jitter over one exposure window.
 
-    Mean offsets inside the window are removed so static bias is not treated
-    as motion blur.
+    The lever arm converts linear displacement (metres) to rotation angle
+    (radians) via theta = displacement / lever_arm.  The result is then
+    converted to arcseconds.  The mean over the window is removed so that
+    only the oscillatory component contributes to motion blur.
+
+    Args:
+        time_history:           simulation time vector.
+        mode1:                  first mode displacement history.
+        mode2:                  second mode displacement history.
+        exposure_start:         window start time in seconds.
+        exposure_time:          window duration in seconds.
+        lever_arm_m:            moment arm from panel tip to hub CG.
+        modal_to_pointing_gain: optional scaling factor.
+
+    Returns:
+        (N, 2) array of (dx, dy) jitter in arcseconds.
     """
     mask = (time_history >= exposure_start) & (time_history <= exposure_start + exposure_time)
     if not np.any(mask):
@@ -349,8 +378,9 @@ def _extract_modal_jitter_arcsec(
     if mode1_exp.size < 2 or mode2_exp.size < 2:
         return np.zeros((1, 2))
 
-    mode1_centered = mode1_exp - np.mean(mode1_exp)
+    mode1_centered = mode1_exp - np.mean(mode1_exp)  # Remove static bias
     mode2_centered = mode2_exp - np.mean(mode2_exp)
+    # Scale: displacement -> radians -> arcseconds
     scale = float(modal_to_pointing_gain) * ARCSEC_PER_RAD / max(float(lever_arm_m), 1e-9)
     return np.column_stack((mode1_centered * scale, mode2_centered * scale))
 
@@ -374,11 +404,30 @@ def render_camera_sidecar_frames_from_npz(
     """
     Render a synchronized camera sidecar frame sequence from mission NPZ data.
 
-    This does not modify Vizard's internal camera rendering. It produces
-    frame-accurate synthetic sensor images aligned to the saved attitude history.
+    Produces frame accurate synthetic sensor images aligned to the saved
+    attitude history.  Each frame covers one exposure_time window ending
+    at the frame timestamp.  A metadata CSV records blur statistics per
+    frame.
+
+    This does not modify Vizard internal camera rendering.
+
+    Args:
+        npz_file:               path to the NPZ file with attitude/modal data.
+        output_dir:             directory for rendered frames and CSV.
+        fps:                    frames per second for the output sequence.
+        exposure_time:          per frame exposure duration in seconds.
+        fov_deg:                camera field of view in degrees.
+        resolution:             frame size as (width, height).
+        noise_level:            additive Gaussian noise sigma.
+        start_time:             optional start of the rendering window.
+        end_time:               optional end of the rendering window.
+        prefix:                 naming prefix for frame files.
+        prefer_modal_jitter:    if True, use mode1/mode2 arrays over MRP jitter.
+        lever_arm_m:            arm length for modal to angular conversion.
+        modal_to_pointing_gain: optional scaling on modal jitter.
 
     Returns:
-    - Dict containing paths to frame directory and metadata CSV.
+        Dictionary with paths to frame directory and metadata CSV.
     """
     data = np.load(npz_file, allow_pickle=True)
     time_history = np.asarray(data["time"], dtype=float)
@@ -389,6 +438,7 @@ def render_camera_sidecar_frames_from_npz(
     if len(time_history) < 2:
         raise ValueError(f"Not enough time samples in {npz_file} to render frames.")
 
+    # Determine whether modal displacement arrays are available and valid.
     mode1 = np.asarray(data["mode1"], dtype=float) if "mode1" in data.files else None
     mode2 = np.asarray(data["mode2"], dtype=float) if "mode2" in data.files else None
     use_modal = (
@@ -408,6 +458,8 @@ def render_camera_sidecar_frames_from_npz(
     if tf <= t0:
         raise ValueError(f"Invalid frame window [{t0}, {tf}] from {npz_file}")
 
+    # Build the frame timeline.  The first frame is delayed by one
+    # exposure_time so that a full window of data is available.
     fps = max(float(fps), 0.1)
     exposure_time = max(float(exposure_time), 1e-3)
     frame_period = 1.0 / fps
@@ -496,15 +548,19 @@ def create_comet_comparison_figure(
     output_filename: str = "comet_blur_comparison.png",
 ) -> Tuple[Dict[str, float], Dict[str, float]]:
     """
-    Create a side-by-side comparison of S-curve vs fourth-order comet images.
+    Create a side by side comparison of S curve vs fourth order comet images.
 
-    Inputs:
-    - s_curve_data: dict containing time and sigma arrays.
-    - fourth_data: dict containing time and sigma arrays.
-    - output_filename: output path for the PNG figure.
+    Renders three panels (reference, S curve, fourth order) using the
+    same camera configuration.  The exposure window starts just after
+    the slew ends so that residual vibration is the dominant blur source.
 
-    Outputs:
-    - Tuple of (S-curve blur stats, fourth-order blur stats).
+    Args:
+        s_curve_data:    dictionary containing time and sigma arrays.
+        fourth_data:     dictionary containing time and sigma arrays.
+        output_filename: output path for the PNG figure.
+
+    Returns:
+        Tuple of (S curve blur stats, fourth order blur stats).
     """
     camera = CometCameraSimulator(
         fov_deg=0.5,
@@ -513,7 +569,7 @@ def create_comet_comparison_figure(
         noise_level=0.01,
     )
 
-    # Expose after the slew completes.
+    # Expose shortly after the slew completes so residual vibration dominates.
     slew_end_time = 30.0
     exposure_start = slew_end_time + 1.0
 
@@ -526,7 +582,7 @@ def create_comet_comparison_figure(
         fourth_data["sigma"], fourth_data["time"], exposure_start
     )
 
-    # Reference image without jitter.
+    # Reference image without any jitter (perfect pointing baseline).
     img_perfect, _ = camera.generate_image()
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 6))
@@ -641,12 +697,16 @@ def create_blur_demo_from_modal_data(
     output_filename: str = "comet_blur_comparison.png",
 ) -> None:
     """
-    Load modal displacement data and render a blur comparison.
+    Load modal displacement data and render a blur comparison figure.
 
-    Inputs:
-    - s_curve_file: NPZ with modal displacement data for S-curve case.
-    - fourth_file: NPZ with modal displacement data for fourth-order case.
-    - output_filename: output PNG file name.
+    Produces a multi panel plot: angular jitter time histories, jitter
+    power spectrum, and rendered comet images for S curve and fourth
+    order cases.
+
+    Args:
+        s_curve_file:   NPZ with modal displacement data for the S curve case.
+        fourth_file:    NPZ with modal displacement data for the fourth order case.
+        output_filename: output PNG file name.
     """
     s_curve = np.load(s_curve_file, allow_pickle=True)
     fourth = np.load(fourth_file, allow_pickle=True)
@@ -659,15 +719,19 @@ def create_blur_demo_from_modal_data(
     mode1_s = np.asarray(fourth["mode1"], dtype=float) if "mode1" in fourth else np.zeros_like(time_s)
     mode2_s = np.asarray(fourth["mode2"], dtype=float) if "mode2" in fourth else np.zeros_like(time_s)
 
-    arm_length = 4.0
+    # Convert modal displacement to angular jitter in arcseconds.
+    # theta = displacement / lever_arm  ->  converted to arcsec.
+    arm_length = 4.0  # Moment arm from solar panel tip to hub CG (metres)
     jitter_x_u_arcsec = (mode1_u / arm_length) * ARCSEC_PER_RAD
     jitter_y_u_arcsec = (mode2_u / arm_length) * ARCSEC_PER_RAD
     jitter_x_s_arcsec = (mode1_s / arm_length) * ARCSEC_PER_RAD
     jitter_y_s_arcsec = (mode2_s / arm_length) * ARCSEC_PER_RAD
+    # RSS magnitude of the two axis jitter for each sample.
     jitter_u_arcsec = np.sqrt(jitter_x_u_arcsec**2 + jitter_y_u_arcsec**2)
     jitter_s_arcsec = np.sqrt(jitter_x_s_arcsec**2 + jitter_y_s_arcsec**2)
-    pixel_scale = (0.5 * 3600.0) / 512.0
+    pixel_scale = (0.5 * 3600.0) / 512.0  # Arcseconds per pixel for 0.5 deg FOV on 512 px
 
+    # Compute post slew statistics (after t = 30 s).
     slew_end = 30.0
     post_mask_u = time_u >= slew_end
     post_mask_s = time_s >= slew_end
@@ -680,9 +744,9 @@ def create_blur_demo_from_modal_data(
     blur_px_u = rms_u / pixel_scale
     blur_px_s = rms_s / pixel_scale
 
-    # Deterministic exposure window rendering from modal trails.
-    exposure_start = 31.0
-    exposure_time = 2.0
+    # Deterministic exposure window rendering from modal trail data.
+    exposure_start = 31.0   # 1 second after slew ends
+    exposure_time = 2.0     # Matches telescope integration time
     jitter_exp_u = _extract_modal_jitter_arcsec(
         time_history=time_u,
         mode1=mode1_u,
@@ -766,18 +830,21 @@ def create_blur_demo_from_modal_data(
     data_sx = jitter_x_s_arcsec[post_mask_s]
     data_sy = jitter_y_s_arcsec[post_mask_s]
     if min(len(data_ux), len(data_uy), len(data_sx), len(data_sy)) > 256:
-        # Keep signed components; summing axis PSDs avoids magnitude rectification artifacts.
-        data_ux = data_ux - np.mean(data_ux)
+        # Keep signed components so that axis PSDs can be summed without
+        # magnitude rectification artifacts.
+        data_ux = data_ux - np.mean(data_ux)  # Remove DC offset
         data_uy = data_uy - np.mean(data_uy)
         data_sx = data_sx - np.mean(data_sx)
         data_sy = data_sy - np.mean(data_sy)
 
+        # Median sample rate (constant dt assumed)
         dt_u = float(np.median(np.diff(time_u)))
         dt_s = float(np.median(np.diff(time_s)))
         fs_u = 1.0 / dt_u
         fs_s = 1.0 / dt_s
 
-        # Use dense zero padding so narrow modal peaks are visually resolved.
+        # Dense zero padding ensures narrow modal peaks are visually resolved
+        # in the periodogram without excessive spectral leakage.
         base_u = 1 << int(np.ceil(np.log2(len(data_ux))))
         base_s = 1 << int(np.ceil(np.log2(len(data_sx))))
         nfft_u = min(1 << 20, max(65536, 16 * base_u))
@@ -795,6 +862,7 @@ def create_blur_demo_from_modal_data(
         _, psd_sy = sig.periodogram(
             data_sy, fs_s, window="hann", detrend=False, scaling="density", nfft=nfft_s
         )
+        # Sum per axis PSDs: total PSD = PSD_x + PSD_y
         psd_u = psd_ux + psd_uy
         psd_s = psd_sx + psd_sy
 
@@ -939,22 +1007,22 @@ if __name__ == "__main__":
 
         t = np.linspace(0.0, 60.0, 6000)
 
-        # S curve: larger residual oscillation after slew.
+        # S curve: larger residual oscillation after the slew.
         mode1_u = np.zeros_like(t)
         mode1_u[t >= 30] = (
             0.004
-            * np.exp(-0.02 * (t[t >= 30] - 30))
-            * np.sin(2 * np.pi * 0.4 * (t[t >= 30] - 30))
+            * np.exp(-0.02 * (t[t >= 30] - 30))  # Damped envelope
+            * np.sin(2 * np.pi * 0.4 * (t[t >= 30] - 30))  # 0.4 Hz mode
         )
 
         mode2_u = np.zeros_like(t)
         mode2_u[t >= 30] = (
             0.002
-            * np.exp(-0.015 * (t[t >= 30] - 30))
-            * np.sin(2 * np.pi * 1.3 * (t[t >= 30] - 30))
+            * np.exp(-0.015 * (t[t >= 30] - 30))  # Slower damping
+            * np.sin(2 * np.pi * 1.3 * (t[t >= 30] - 30))  # 1.3 Hz mode
         )
 
-        # Shaped: much smaller oscillation.
+        # Fourth order shaped: vibration suppressed by ~50x.
         mode1_s = mode1_u * 0.02
         mode2_s = mode2_u * 0.02
 

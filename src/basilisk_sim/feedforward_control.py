@@ -1,16 +1,19 @@
 """
-Feedforward Control Module.
+Feedforward Control Module
 
 Provides pure feedforward torque profiles for attitude slew maneuvers.
 No feedback is used, which isolates the effect of input shaping on
 flexible mode excitation.
 
-For yaw (Z-axis) maneuvers on this spacecraft:
-- rotation_axis = [0, 0, 1]
-- This excites Y-positioned solar arrays bending in Z.
-- Input shaping reduces post-slew residual vibration.
+For yaw (Z axis) maneuvers on this spacecraft:
+    rotation_axis = [0, 0, 1]
+    This excites Y positioned solar arrays bending in Z.
+    Input shaping reduces post slew residual vibration.
 
-Simplified Euler equation: torque = J * alpha (principal axis rotation).
+The fundamental relationship used throughout this module:
+    torque = J * alpha
+where J is the moment of inertia about the rotation axis and alpha
+is the angular acceleration, valid for principal axis rotation.
 """
 
 from __future__ import annotations
@@ -18,7 +21,9 @@ from __future__ import annotations
 import numpy as np
 from scipy import interpolate
 
-DEFAULT_SAMPLE_DT = 0.01  # 100 Hz to match Basilisk simulation
+# Sampling period that matches the Basilisk simulation integration step.
+# All trajectory profiles are discretized at this rate.
+DEFAULT_SAMPLE_DT = 0.01  # 100 Hz
 
 
 def compute_bang_bang_trajectory(theta_final, duration, dt=DEFAULT_SAMPLE_DT):
@@ -40,29 +45,30 @@ def compute_bang_bang_trajectory(theta_final, duration, dt=DEFAULT_SAMPLE_DT):
     t = np.arange(0, duration + dt, dt)
     n = len(t)
     t_half = duration / 2
-    
-    # Maximum acceleration for bang bang: alpha_max = 4 * theta_final / T^2
+
+    # For a bang bang profile the peak acceleration is derived from
+    # theta_final = 0.5 * alpha_max * (T/2)^2 * 2, giving:
     alpha_max = 4 * theta_final / duration**2
-    
+
     theta = np.zeros(n)
     omega = np.zeros(n)
     alpha = np.zeros(n)
-    
+
     for i, ti in enumerate(t):
         if ti <= t_half:
-            # Acceleration phase
+            # First half: constant positive acceleration
             alpha[i] = alpha_max
             omega[i] = alpha_max * ti
             theta[i] = 0.5 * alpha_max * ti**2
         else:
-            # Deceleration phase
+            # Second half: constant negative acceleration to brake
             t_dec = ti - t_half
             alpha[i] = -alpha_max
             omega[i] = alpha_max * t_half - alpha_max * t_dec
-            theta[i] = (0.5 * alpha_max * t_half**2 + 
-                       alpha_max * t_half * t_dec - 
+            theta[i] = (0.5 * alpha_max * t_half**2 +
+                       alpha_max * t_half * t_dec -
                        0.5 * alpha_max * t_dec**2)
-    
+
     return t, theta, omega, alpha
 
 
@@ -82,12 +88,15 @@ def compute_smooth_trajectory(theta_final, duration, dt=DEFAULT_SAMPLE_DT, smoot
     t = np.arange(0, duration + dt, dt)
     n = len(t)
     
-    # Acceleration is symmetric: accelerate for half the maneuver, then decelerate.
+    # Symmetric profile: accelerate for half the maneuver, then decelerate.
+    # The ramp duration limits how fast the acceleration transitions
+    # from zero to its peak, using a cosine taper for smooth onset.
     t_acc = duration / 2.0
     t_ramp = smooth_fraction * duration
     max_ramp = 0.5 * t_acc
     if t_ramp > max_ramp:
         t_ramp = max_ramp
+    # Constant acceleration plateau between the two ramps
     t_const = max(t_acc - 2 * t_ramp, 0.0)
 
     theta = np.zeros(n)
@@ -113,14 +122,15 @@ def compute_smooth_trajectory(theta_final, duration, dt=DEFAULT_SAMPLE_DT, smoot
             t_mirror = duration - ti
             alpha[i] = -accel_profile(t_mirror)
 
-    # Integrate to get omega and theta, then scale to hit target angle.
+    # Numerical integration via cumulative sum, then rescale all
+    # kinematic quantities so the final position matches theta_final exactly.
     omega = np.cumsum(alpha) * dt
     theta = np.cumsum(omega) * dt
     scale = theta_final / (theta[-1] + 1e-12)
     alpha *= scale
     omega *= scale
     theta *= scale
-    
+
     return t, theta, omega, alpha
 
 
@@ -141,8 +151,11 @@ def compute_trapezoidal_trajectory(theta_final, duration, dt=DEFAULT_SAMPLE_DT, 
     t = np.arange(0, duration + dt, dt)
     n = len(t)
 
+    # Acceleration phase duration, clamped so it never exceeds half the maneuver
     t_acc = float(np.clip(accel_fraction * duration, dt, 0.5 * duration))
+    # Remaining time at constant (peak) velocity
     t_const = max(duration - 2.0 * t_acc, 0.0)
+    # Peak acceleration derived from the kinematic constraint theta = integral(omega dt)
     denom = t_acc * (t_acc + t_const)
     alpha_max = theta_final / denom if denom > 0 else 0.0
 
@@ -195,7 +208,11 @@ def compute_s_curve_trajectory(theta_final, duration, dt=DEFAULT_SAMPLE_DT):
     if duration <= 0:
         return t, np.zeros_like(t), np.zeros_like(t), np.zeros_like(t)
 
+    # Normalized time on [0, 1]
     s = np.clip(t / duration, 0.0, 1.0)
+
+    # Fifth order (minimum jerk) polynomial: s(t) = 10s^3 - 15s^4 + 6s^5
+    # Guarantees zero velocity, zero acceleration, and zero jerk at both endpoints.
     theta = theta_final * (10 * s**3 - 15 * s**4 + 6 * s**5)
     omega = (theta_final / duration) * (30 * s**2 - 60 * s**3 + 30 * s**4)
     alpha = (theta_final / duration**2) * (60 * s - 180 * s**2 + 120 * s**3)
@@ -229,17 +246,18 @@ def compute_step_command_torque(theta_final, axis, inertia, duration, dt=DEFAULT
     else:
         raise ValueError(f"Unknown trajectory_type: {trajectory_type}")
     
-    # Body torque: tau = J * alpha * axis
-    # For single axis rotation about body axis
+    # For single axis rotation the scalar Euler equation gives:
+    #   tau_scalar = I_axis * alpha
+    # where I_axis is the projection of the inertia tensor onto the rotation axis.
     axis = np.array(axis) / np.linalg.norm(axis)
-    
-    # Get moment of inertia about rotation axis: I_axis = axis^T * J * axis
+
+    # Scalar moment of inertia about rotation axis: I_axis = e^T J e
     I_axis = axis @ inertia @ axis
-    
-    # Torque magnitude about axis
+
+    # Scalar torque at each time step
     torque_mag = I_axis * alpha
-    
-    # Torque vector
+
+    # Expand to 3 component body torque vector along the rotation axis
     torque = np.outer(torque_mag, axis)
     
     trajectory = {
@@ -268,19 +286,21 @@ def apply_input_shaper_to_torque(t, torque, shaper_amplitudes, shaper_times, tra
     - (t_shaped, torque_shaped, trajectory_shaped).
     """
     dt = t[1] - t[0]
-    
-    # Extended time to account for shaper duration
+
+    # The shaped signal is longer than the original because the shaper
+    # introduces a time delay equal to the last impulse time.
     shaper_duration = shaper_times[-1]
     t_shaped = np.arange(0, t[-1] + shaper_duration + dt, dt)
     n_shaped = len(t_shaped)
-    
+
     torque_shaped = np.zeros((n_shaped, 3))
-    
-    # Convolution applies each impulse amplitude to a time shifted copy of the base torque
+
+    # Discrete convolution: each shaper impulse produces a time shifted,
+    # amplitude scaled copy of the original torque. The superposition of
+    # all copies cancels vibration at the target modal frequencies.
     for amp, t_imp in zip(shaper_amplitudes, shaper_times):
-        # Shift original torque by t_imp
         shift_idx = int(round(t_imp / dt))
-        
+
         for i in range(len(torque)):
             idx_shaped = i + shift_idx
             if idx_shaped < n_shaped:
@@ -331,11 +351,13 @@ def body_torque_to_rw_torque(body_torque, Gs_matrix):
     Output:
     - rw_torque: array of wheel torques (NxNw).
     """
+    # Pseudo inverse maps the desired body torque to individual wheel commands.
     Gs_pinv = np.linalg.pinv(Gs_matrix)
-    
-    # Motor torque follows the opposite sign convention of body torque from reaction physics
+
+    # Negative sign from Newtons third law: the wheels must spin up in the
+    # opposite direction to produce the desired body torque.
     rw_torque = -body_torque @ Gs_pinv.T
-    
+
     return rw_torque
 
 
@@ -354,33 +376,27 @@ def compute_minimum_duration(theta_final, rotation_axis, inertia, Gs_matrix, max
     - Minimum feasible duration [s] for a bang-bang profile.
     """
     axis = np.array(rotation_axis) / np.linalg.norm(rotation_axis)
-    
-    # Moment of inertia about rotation axis
+
+    # Scalar inertia about the commanded rotation axis
     I_axis = axis @ inertia @ axis
-    
-    # Maximum body torque we can command
-    # For 3 RWs in pyramid config, effective torque is approximately:
-    # tau_body_max ~= sqrt(2) * max_rw_torque for axes in the plane
-    # For single axis (z), it's just max_rw_torque
-    # Conservative estimate: use worst case
-    
-    # Compute using pseudo inverse to find what body torque we can achieve
+
+    # Determine the maximum body torque the wheel array can deliver along
+    # this axis.  Apply a unit body torque along the rotation axis, compute
+    # the wheel torque allocation, then rescale so no wheel exceeds its limit.
     Gs_pinv = np.linalg.pinv(Gs_matrix)
-    # Test with unit body torque along axis to find scaling
-    # For a unit body torque command, compute the required wheel torque allocation
     unit_body_torque = axis
-    rw_for_unit = -unit_body_torque @ Gs_pinv.T  # Negative for reaction physics
+    rw_for_unit = -unit_body_torque @ Gs_pinv.T
     max_rw_needed = np.max(np.abs(rw_for_unit))
-    
-    # Scale factor to keep within limits
+
+    # Scale factor keeps the worst case wheel within the torque budget
     torque_scale = max_rw_torque / max_rw_needed if max_rw_needed > 0 else max_rw_torque
-    
-    # Maximum body torque achievable
-    tau_body_max = torque_scale  # Since we computed for unit torque
-    
-    # For bang bang: T_min = sqrt(4 * I * theta / tau_max)
+
+    # Maximum achievable body torque along the rotation axis
+    tau_body_max = torque_scale
+
+    # Minimum duration for a bang bang maneuver: T_min = sqrt(4 * I * theta / tau_max)
     T_min = np.sqrt(4 * I_axis * abs(theta_final) / tau_body_max)
-    
+
     return T_min
 
 
@@ -438,17 +454,14 @@ class FeedforwardController:
     """
     Feedforward controller for Basilisk simulation.
 
-    Inputs:
-    - inertia: spacecraft inertia matrix (3x3).
-    - Gs_matrix: RW spin-axis matrix (3 x N).
-    - max_torque: per-wheel torque limit [Nm].
+    Pre computes a complete torque profile for a requested slew maneuver
+    and stores spline interpolators so that individual wheel torque
+    commands can be queried at arbitrary simulation times.
 
-    Output:
-    - Provides interpolated RW torque commands via get_torque().
-
-    Process:
-    - Pre-compute a torque profile for the requested maneuver and build
-      interpolators for use in a time-stepped simulation.
+    Attributes:
+        inertia: spacecraft inertia matrix (3x3) in [kg*m^2].
+        Gs_matrix: reaction wheel spin axis matrix (3 x n_wheels).
+        max_torque: per wheel torque limit in [Nm].
     """
     
     def __init__(self, inertia, Gs_matrix, max_torque=0.2):
@@ -463,7 +476,8 @@ class FeedforwardController:
         self.inertia = np.array(inertia).reshape(3, 3)
         self.Gs_matrix = np.array(Gs_matrix).reshape(3, -1)
         self.max_torque = max_torque
-        
+
+        # These are populated by design_maneuver or load_fourth_order_trajectory
         self.t_profile = None
         self.rw_torque_profile = None
         self.torque_interp = None
@@ -513,15 +527,16 @@ class FeedforwardController:
         self.trajectory = traj
         self.is_shaped = shaper_amplitudes is not None
         
-        # Create interpolators for each wheel
+        # Build per wheel linear interpolators so get_torque() can return
+        # the torque command at any arbitrary time during the simulation.
         n_wheels = rw_torque.shape[1]
         self.torque_interp = []
         for i in range(n_wheels):
             interp = interpolate.interp1d(
-                t, rw_torque[:, i], 
-                kind='linear', 
-                bounds_error=False, 
-                fill_value=0.0
+                t, rw_torque[:, i],
+                kind='linear',
+                bounds_error=False,
+                fill_value=0.0  # zero torque outside the profile window
             )
             self.torque_interp.append(interp)
         
@@ -547,14 +562,15 @@ class FeedforwardController:
     
     def load_fourth_order_trajectory(self, trajectory_file, rotation_axis):
         """
-        Load a precomputed fourth-order trajectory from file.
+        Load a precomputed fourth order trajectory from an NPZ file.
 
-        Inputs:
-        - trajectory_file: NPZ file with time/theta/omega/alpha arrays.
-        - rotation_axis: unit rotation axis (3,).
+        The file must contain arrays named 'time', 'theta', 'omega', and
+        'alpha'.  If the stored sample rate differs from DEFAULT_SAMPLE_DT
+        the data is resampled via linear interpolation.
 
-        Output:
-        - Populates internal torque profile and interpolators.
+        Args:
+            trajectory_file: path to the .npz file.
+            rotation_axis: unit rotation axis for torque direction (3,).
         """
         # Load trajectory
         traj_data = np.load(trajectory_file, allow_pickle=True)

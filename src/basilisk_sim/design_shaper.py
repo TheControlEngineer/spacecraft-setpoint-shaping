@@ -1,18 +1,24 @@
 """
-Multi-Mode Input Shaper Design.
+Multi Mode Input Shaper Design
 
-Designs a fourth-order shaper (jerk/snap window convolution) for dual-mode vibration suppression.
-Target modes: 0.4 Hz and 1.3 Hz flexible bending modes.
+Designs a fourth order shaper (jerk/snap window convolution) for dual mode
+vibration suppression on a flexible spacecraft.
 
-Maneuver: 180 deg yaw rotation in 30 seconds.
-- Yaw rotation excites solar arrays extending along Y-axis.
-- Arrays bend in Z direction, creating base excitation coupling.
-- Input shaping reduces post-slew residual vibration.
-- Key benefit: Faster settling time -> higher imaging throughput.
+Target modes:
+    0.4 Hz  first bending mode of the solar array
+    1.3 Hz  second bending mode of the solar array
 
-UPDATED: Fixed fourth-order implementation to use spectral nulling (window
-convolution) instead of spline interpolation, eliminating high-frequency
-discretization noise.
+Maneuver:
+    180 degree yaw rotation in 30 seconds.
+    Yaw rotation excites solar arrays extending along the Y axis.
+    Arrays bend in the Z direction, creating base excitation coupling.
+    Input shaping reduces post slew residual vibration.
+    Key benefit: faster settling time leads to higher imaging throughput.
+
+The fourth order implementation uses spectral nulling (window convolution)
+instead of spline interpolation, eliminating high frequency discretization
+noise.  Each window of duration T = 1/f places a spectral zero at
+frequency f, so two windows suppress both target modes simultaneously.
 """
 
 from __future__ import annotations
@@ -52,45 +58,47 @@ def _damped_frequency(omega_n: float, zeta: float) -> float:
 def compute_residual_vibration_continuous(t, accel, freq, zeta):
     """
     Compute residual vibration amplitude for a continuous acceleration profile.
-    
-    This implements the continuous-time analog of the ZVD residual vibration formula.
-    For a damped oscillator excited by acceleration a(t), the residual vibration at
-    the end of the maneuver (t=T) is:
-    
-    V = sqrt(C^2 + S^2) where:
-    C = integral_0^T a(t) * exp(-zeta*omega*(T-t)) * cos(omega_d*(T-t)) dt
-    S = integral_0^T a(t) * exp(-zeta*omega*(T-t)) * sin(omega_d*(T-t)) dt
-    
+
+    Uses the continuous time convolution integral for a damped harmonic
+    oscillator excited by an arbitrary acceleration signal a(t):
+
+        C = integral_0^T  a(t) * exp(-zeta*wn*(T-t)) * cos(wd*(T-t)) dt
+        S = integral_0^T  a(t) * exp(-zeta*wn*(T-t)) * sin(wd*(T-t)) dt
+        V = sqrt(C^2 + S^2)
+
+    A value of V near zero indicates that the acceleration profile does
+    not excite the oscillator at the given frequency.
+
     Args:
-        t: Time array
-        accel: Acceleration profile (angular acceleration in rad/s^2)
-        freq: Modal frequency in Hz
-        zeta: Damping ratio
-        
+        t:     time array.
+        accel: angular acceleration profile [rad/s^2].
+        freq:  modal frequency [Hz].
+        zeta:  damping ratio (must be < 1).
+
     Returns:
-        V: Residual vibration amplitude (normalized)
+        V: residual vibration amplitude (normalized).
     """
     _validate_underdamped(zeta, "compute_residual_vibration_continuous")
     omega = 2 * np.pi * freq
     omega_d = _damped_frequency(omega, zeta)
     T = t[-1]
     dt = t[1] - t[0]
-    
-    # Time from end of maneuver
-    tau = T - t  # tau goes from T to 0
-    
-    # Exponential decay and oscillation terms
+
+    # Time measured backwards from end of maneuver
+    tau = T - t
+
+    # Kernel functions evaluated at each sample
     exp_term = np.exp(-zeta * omega * tau)
     cos_term = np.cos(omega_d * tau)
     sin_term = np.sin(omega_d * tau)
-    
-    # Integrate using trapezoidal rule
+
+    # Numerical integration with the trapezoidal rule
     C = np.trapz(accel * exp_term * cos_term, t)
     S = np.trapz(accel * exp_term * sin_term, t)
-    
-    # Residual vibration amplitude
+
+    # Residual vibration is the magnitude of the complex phasor (C, S)
     V = np.sqrt(C**2 + S**2)
-    
+
     return V
 
 
@@ -140,12 +148,13 @@ def design_spacecraft_shaper(plot=True):
     print("\\nDesigning multi-mode ZVD shaper...")
     
     # Spacecraft modal parameters (solar array bending modes)
-    mode_frequencies = [0.4, 1.3]  # Hz first and second bending
-    damping_ratios = [0.02, 0.015]  # Low damping = long settling without shaping
-    
+    mode_frequencies = [0.4, 1.3]  # Hz, first and second bending
+    damping_ratios = [0.02, 0.015]  # Low damping implies long settling without shaping
+
     print(f"  Modes: {mode_frequencies[0]} Hz (zeta={damping_ratios[0]}), {mode_frequencies[1]} Hz (zeta={damping_ratios[1]})")
-    
-    # Design cascaded ZVD shaper
+
+    # Build a cascaded multi mode ZVD shaper by convolving individual
+    # single mode ZVD shapers together.
     amplitudes, times = design_multimode_cascaded(
         mode_frequencies=mode_frequencies,
         damping_ratios=damping_ratios,
@@ -688,9 +697,11 @@ def design_fourth_order_trajectory_fixed(theta_final, mode_frequencies,
     f1, f2 = sorted(mode_frequencies)
     print(f"  Target modes: {f1} Hz, {f2} Hz")
     
-    # Spectral nulling window widths
-    T_jerk = 1.0 / f1  # e.g., 2.500s for f1=0.4 Hz
-    T_snap = 1.0 / f2  # e.g., 0.769s for f2=1.3 Hz
+    # Spectral nulling window widths.
+    # A rectangular window of duration T = 1/f places a spectral zero at
+    # frequency f in the convolved signal.  Two windows target both modes.
+    T_jerk = 1.0 / f1  # e.g. 2.500 s for f1 = 0.4 Hz
+    T_snap = 1.0 / f2  # e.g. 0.769 s for f2 = 1.3 Hz
     
     print(f"  Windows: T_jerk={T_jerk:.3f}s (null at {f1}Hz), T_snap={T_snap:.3f}s (null at {f2}Hz)")
     
@@ -702,18 +713,19 @@ def design_fourth_order_trajectory_fixed(theta_final, mode_frequencies,
         print(f"  Auto dt = {dt:.6f}s (100.0 Hz sample rate)")
     
     # ========================================================================
-    # Discretize windows and base pulse duration
+    # Discretize windows and base pulse duration.
+    # Using round() instead of int() to minimize truncation error.
+    # For a perfect spectral null at frequency f the window duration
+    # must be exactly 1/f.
     # ========================================================================
-    # CRITICAL: Use round() not int() to minimize truncation error
-    # For perfect null at frequency f, window duration must be EXACTLY 1/f
     n_jerk = max(1, int(round(T_jerk / dt)))
     n_snap = max(1, int(round(T_snap / dt)))
 
-    # Verify actual durations match target
+    # Verify the actual discrete durations against the target frequencies.
+    # sinc(f * T) should be zero at each target frequency.
     T_jerk_actual = n_jerk * dt
     T_snap_actual = n_snap * dt
 
-    # Check residual at target frequencies
     sinc_f1 = np.abs(np.sinc(mode_frequencies[0] * T_jerk_actual))
     sinc_f2 = np.abs(np.sinc(mode_frequencies[1] * T_snap_actual))
 
@@ -752,20 +764,24 @@ def design_fourth_order_trajectory_fixed(theta_final, mode_frequencies,
         print(f"  Base pulse: T={T_base:.2f}s, A={A_lim:.6f} rad/s^2")
 
     # ========================================================================
-    # Build via convolution
+    # Build the trajectory via successive convolution.
     # ========================================================================
 
-    # Step 1: Create rectangular base pulse (ACCELERATION)
+    # Step 1: Rectangular base pulse defines the core acceleration level.
     pulse_base = np.ones(n_base) * A_lim
 
-    # Step 2: Create smoothing windows
-    window_jerk = np.ones(n_jerk) / n_jerk  # Normalized to sum to 1
-    window_snap = np.ones(n_snap) / n_snap  # Normalized to sum to 1
-    
-    # Step 3: Convolve acceleration with jerk window
+    # Step 2: Smoothing windows, each normalized to unit area so that
+    # convolution preserves the total impulse.
+    window_jerk = np.ones(n_jerk) / n_jerk
+    window_snap = np.ones(n_snap) / n_snap
+
+    # Step 3: Convolve acceleration with the jerk window.
+    # This smooths the rectangular edges and places a spectral null at f1.
     accel_jerk = np.convolve(pulse_base, window_jerk, mode='full')
-    
-    # Step 4: Convolve with snap window
+
+    # Step 4: Convolve with the snap window.
+    # This further smooths the profile (C^3 continuous) and places a
+    # spectral null at f2.
     accel_final = np.convolve(accel_jerk, window_snap, mode='full')
     
     # Optional: Plot window formation process
@@ -775,21 +791,21 @@ def design_fourth_order_trajectory_fixed(theta_final, mode_frequencies,
                             {'T_jerk': T_jerk, 'T_snap': T_snap,
                              'mode_frequencies': [f1, f2]})
     
-    # Step 5: Create symmetric profile (accelerate, coast, decelerate)
-    # Flip and negate for deceleration phase
+    # Step 5: Mirror and negate to form the deceleration phase.
+    # The full profile is: accel phase | zero crossing | decel phase.
     accel_decel = -accel_final[::-1]
 
-    # Insert a center sample at zero acceleration for continuity
+    # Insert a single zero sample at the symmetry point for continuity.
     alpha = np.concatenate([accel_final, np.zeros(1), accel_decel])
-    
-    # Step 6: Create time vector
+
+    # Step 6: Build the corresponding time vector
     t = np.arange(len(alpha)) * dt
-    
-    # Step 7: Integrate to get velocity and position
+
+    # Step 7: Integrate acceleration to velocity, then velocity to position.
     omega = np.cumsum(alpha) * dt
     theta = np.cumsum(omega) * dt
-    
-    # Step 8: Scale to hit target angle
+
+    # Step 8: Scale all kinematic quantities so the final angle is exact.
     scale = theta_final / (theta[-1] + 1e-10)
     
     print(f"\nScaling factor: {scale:.6f}")
@@ -798,20 +814,20 @@ def design_fourth_order_trajectory_fixed(theta_final, mode_frequencies,
     omega *= scale
     alpha *= scale
     
-    # Step 9: Calculate derivatives properly from convolution
-    # Jerk is derivative of acceleration
+    # Step 9: Compute higher derivatives via central finite differences.
+    # Jerk is the time derivative of acceleration.
     jerk = np.zeros_like(alpha)
     jerk[1:-1] = (alpha[2:] - alpha[:-2]) / (2*dt)  # Central difference
-    jerk[0] = (alpha[1] - alpha[0]) / dt  # Forward at start
-    jerk[-1] = (alpha[-1] - alpha[-2]) / dt  # Backward at end
-    
-    # Snap = d(jerk)/dt
+    jerk[0] = (alpha[1] - alpha[0]) / dt             # Forward at start
+    jerk[-1] = (alpha[-1] - alpha[-2]) / dt           # Backward at end
+
+    # Snap is the time derivative of jerk.
     snap = np.zeros_like(jerk)
     snap[1:-1] = (jerk[2:] - jerk[:-2]) / (2*dt)
     snap[0] = (jerk[1] - jerk[0]) / dt
     snap[-1] = (jerk[-1] - jerk[-2]) / dt
-    
-    # Calculate torque
+
+    # Required torque profile
     torque = I_axis * alpha
     torque_peak = np.max(np.abs(torque))
 
@@ -820,10 +836,10 @@ def design_fourth_order_trajectory_fixed(theta_final, mode_frequencies,
 
     print(f"  Result: {t[-1]:.2f}s duration, {np.degrees(theta[-1]):.2f} deg, peak torque={torque_peak:.4f} Nm")
     
-    # Verify spectral nulls
+    # Verify spectral nulls using the FFT of the acceleration profile.
+    # The PSD at each target frequency should be negligibly small.
     print("  Spectral verification:")
-    
-    # FFT of acceleration (this is what excites the modes)
+
     alpha_fft = np.fft.fft(alpha)
     freq = np.fft.fftfreq(len(alpha), dt)
     psd = np.abs(alpha_fft)**2
@@ -1019,15 +1035,19 @@ OK Convolution-based approach
 
 def _sort_and_combine_impulses(times, amplitudes, tol=1e-12):
     """
-    Sort impulse times and combine amplitudes at identical times.
+    Sort impulse times in ascending order and merge duplicates.
 
-    Inputs:
-    - times: array-like impulse times.
-    - amplitudes: array-like impulse amplitudes.
-    - tol: absolute tolerance used to treat times as identical.
+    When cascading multiple shapers, some impulse times may coincide.
+    This function combines their amplitudes so the result contains
+    a single entry per unique time.
 
-    Output:
-    - (times_sorted, amplitudes_sorted) with duplicates merged.
+    Args:
+        times: array of impulse times.
+        amplitudes: array of impulse amplitudes.
+        tol: absolute tolerance for treating two times as identical.
+
+    Returns:
+        (times_sorted, amplitudes_sorted) with duplicates merged.
     """
     times = np.asarray(times, dtype=float)
     amplitudes = np.asarray(amplitudes, dtype=float)
@@ -1078,17 +1098,16 @@ def design_spacecraft_shaper_with_duration(target_duration=30.0, theta_final=np.
     
     print(f"\nDesigning ZVD shaper for {target_duration}s duration...")
     
-    # Step 1: Design the shaper (this determines the overhead)
-    # Design individual ZVD shapers for each mode
+    # Design individual ZVD shapers for each mode then convolve them.
     shapers = []
     for i, (freq, zeta) in enumerate(zip(mode_frequencies, damping_ratios)):
         _validate_underdamped(zeta, f"mode {i + 1} (freq={freq} Hz)")
-        omega_n = 2 * np.pi * freq  # Natural frequency
-        omega_d = _damped_frequency(omega_n, zeta)  # Damped frequency
-        period_d = 2 * np.pi / omega_d
-        
-        # ZVD shaper (3 impulses)
-        # K = exp( zeta * pi / sqrt(1 zeta^2)) is the standard formula
+        omega_n = 2 * np.pi * freq       # Natural frequency [rad/s]
+        omega_d = _damped_frequency(omega_n, zeta)  # Damped frequency [rad/s]
+        period_d = 2 * np.pi / omega_d    # Damped period [s]
+
+        # Standard ZVD impulse amplitudes and times.
+        # K is the exponential decay factor over one half period.
         K = np.exp(-zeta * omega_n * period_d / 2)
         A1 = 1 / (1 + 2*K + K**2)
         A2 = 2*K / (1 + 2*K + K**2)
@@ -1105,11 +1124,13 @@ def design_spacecraft_shaper_with_duration(target_duration=30.0, theta_final=np.
             'damping': zeta
         })
     
-    # Convolve shapers to get multi mode shaper
+    # Convolve shapers: the cascaded impulse sequence suppresses all modes.
     result_amps = shapers[0]['amplitudes']
     result_times = shapers[0]['times']
-    
+
     for shaper in shapers[1:]:
+        # Outer product of amplitudes and sum of times gives the combined
+        # impulse train.
         new_amps = []
         new_times = []
         

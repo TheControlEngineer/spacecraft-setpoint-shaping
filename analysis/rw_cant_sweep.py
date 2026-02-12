@@ -1,17 +1,17 @@
 """
-Sweep reaction wheel cant angle for the 3-wheel pyramid used in spacecraft_model.py.
+Sweep reaction wheel cant angle for the 3 wheel pyramid used in spacecraft_model.py.
 
 Generates:
-1) Condition number of Gs (allocation matrix)
-2) Worst-case wheel torque amplification for unit body torque
-3) Axis-wise max body torque (for unit wheel torque limit)
+  1. Condition number of Gs (allocation matrix)
+  2. Worst case wheel torque amplification for unit body torque
+  3. Axis wise max body torque (for unit wheel torque limit)
 
-This uses the same wheel geometry as spacecraft_model.py:
+Wheel geometry (same as spacecraft_model.py):
     w1 = [ sin(a),  cos(a), 0 ]
     w2 = [-sin(a),  cos(a), 0 ]
     w3 = [ 0,       0,      1 ]
 
-At a = 45 deg, this matches the model's gsHat_B definitions.
+At a = 45 deg the definitions match the model's gsHat_B vectors.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 
 
 def _gs_matrix(alpha_rad: float) -> np.ndarray:
-    """Return 3x3 Gs matrix with wheel axes as columns."""
+    """Build the 3x3 Gs allocation matrix with each wheel spin axis as a column."""
     s = math.sin(alpha_rad)
     c = math.cos(alpha_rad)
     w1 = np.array([s, c, 0.0])
@@ -36,7 +36,7 @@ def _gs_matrix(alpha_rad: float) -> np.ndarray:
 
 
 def _sphere_samples(n: int) -> np.ndarray:
-    """Fibonacci sphere sampling for approximately uniform directions."""
+    """Generate *n* approximately uniform unit direction vectors via Fibonacci sphere sampling."""
     i = np.arange(n)
     phi = (1 + 5 ** 0.5) / 2  # golden ratio
     theta = 2 * np.pi * i / phi
@@ -48,6 +48,7 @@ def _sphere_samples(n: int) -> np.ndarray:
 
 
 def sweep(alpha_deg_min: float, alpha_deg_max: float, alpha_deg_step: float, n_dirs: int) -> dict[str, np.ndarray]:
+    """Sweep cant angle over the given range and return condition, amplification, and authority arrays."""
     alphas_deg = np.arange(alpha_deg_min, alpha_deg_max + 1e-9, alpha_deg_step)
     alphas_rad = np.deg2rad(alphas_deg)
 
@@ -61,17 +62,17 @@ def sweep(alpha_deg_min: float, alpha_deg_max: float, alpha_deg_step: float, n_d
 
     for idx, a in enumerate(alphas_rad):
         gs = _gs_matrix(a)
-        # 1) Condition number of allocation matrix
+        # Condition number of the allocation matrix
         cond_vals[idx] = np.linalg.cond(gs)
 
-        # 2) Worst-case wheel torque amplification for unit body torque
+        # Worst case wheel torque amplification for unit body torque
         gs_pinv = np.linalg.pinv(gs)
         # u = -Gs^+ * tau ; amplification = ||u|| / ||tau||, but ||tau|| = 1
         u = -(gs_pinv @ directions.T).T
         amp = np.linalg.norm(u, axis=1)
         worst_amp[idx] = np.max(amp)
 
-        # 3) Axis-wise max body torque with |u_i| <= 1
+        # Axis wise max body torque with |u_i| <= 1
         # tau = -Gs u; for a single axis, max is sum of abs of row entries
         row_x = gs[0, :]
         row_y = gs[1, :]
@@ -91,6 +92,7 @@ def sweep(alpha_deg_min: float, alpha_deg_max: float, alpha_deg_step: float, n_d
 
 
 def _style_axes(ax, xlabel: str, ylabel: str, title: str) -> None:
+    """Apply consistent axis labels, title, and grid to a matplotlib Axes."""
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title, fontweight="bold")
@@ -98,6 +100,7 @@ def _style_axes(ax, xlabel: str, ylabel: str, title: str) -> None:
 
 
 def main() -> None:
+    """CLI entry point: parse arguments, run the cant angle sweep, and save plots."""
     parser = argparse.ArgumentParser(description="Sweep reaction wheel cant angle.")
     parser.add_argument("--alpha-min", type=float, default=10.0, help="Min cant angle (deg)")
     parser.add_argument("--alpha-max", type=float, default=80.0, help="Max cant angle (deg)")
@@ -120,7 +123,7 @@ def main() -> None:
     fig1.tight_layout()
     fig1.savefig(out_dir / "rw_cant_conditioning.png", dpi=200)
 
-    # Plot 2: Worst-case torque amplification
+    # Plot 2: Worst case torque amplification
     fig2, ax2 = plt.subplots(figsize=(7.2, 4.5))
     ax2.plot(alpha, results["worst_amp"], color="tab:red", linewidth=2)
     ax2.axvline(45.0, color="tab:blue", linestyle="--", linewidth=1)
@@ -128,7 +131,7 @@ def main() -> None:
     fig2.tight_layout()
     fig2.savefig(out_dir / "rw_cant_worst_case_amplification.png", dpi=200)
 
-    # Plot 3: Axis-wise max body torque (unit wheel torque limit)
+    # Plot 3: Axis wise max body torque (unit wheel torque limit)
     fig3, ax3 = plt.subplots(figsize=(7.2, 4.5))
     ax3.plot(alpha, results["max_tau_x"], label="Max |tau_x|", linewidth=2)
     ax3.plot(alpha, results["max_tau_y"], label="Max |tau_y|", linewidth=2)
@@ -139,7 +142,7 @@ def main() -> None:
     fig3.tight_layout()
     fig3.savefig(out_dir / "rw_cant_axis_authority.png", dpi=200)
 
-    # Plot 4: Axis-wise authority normalized to max possible (u_max=1)
+    # Plot 4: Axis wise authority normalized to max possible (u_max=1)
     # X and Y each use two wheels -> max possible is 2; Z uses one wheel -> max is 1.
     fig4, ax4 = plt.subplots(figsize=(7.2, 4.5))
     ax4.plot(alpha, results["max_tau_x"] / 2.0, label="normalised tau_x", linewidth=2)

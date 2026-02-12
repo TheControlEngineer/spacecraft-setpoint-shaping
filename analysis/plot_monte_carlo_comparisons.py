@@ -1,9 +1,9 @@
 """
 Plot Monte Carlo comparison charts for all controller/method combinations.
 
-Reads monte_carlo_runs.csv and generates summary comparison plots for:
-  - S-curve + Standard/Filtered PD
-  - Fourth-order + Standard/Filtered PD
+Reads monte_carlo_runs.csv and generates box plot summary comparisons for:
+  - S curve + Standard / Filtered PD
+  - Fourth order + Standard / Filtered PD
 """
 
 from __future__ import annotations
@@ -35,12 +35,14 @@ METRICS = [
 
 
 def _load_rows(path: str) -> List[Dict[str, str]]:
+    """Read a CSV file and return all rows as a list of dicts."""
     with open(path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         return [row for row in reader]
 
 
 def _get_metric_values(rows: List[Dict[str, str]], column: str) -> np.ndarray:
+    """Extract finite float values for *column* from the loaded CSV rows."""
     values: List[float] = []
     for row in rows:
         raw = row.get(column, "")
@@ -54,6 +56,7 @@ def _get_metric_values(rows: List[Dict[str, str]], column: str) -> np.ndarray:
 
 
 def _plot_box_comparisons(rows: List[Dict[str, str]], out_path: str) -> None:
+    """Create a 2x3 box plot figure comparing key metrics across all combos."""
     fig, axes = plt.subplots(2, 3, figsize=(16, 9))
     axes = axes.flatten()
 
@@ -109,6 +112,7 @@ def _plot_box_comparisons(rows: List[Dict[str, str]], out_path: str) -> None:
 
 
 def main() -> int:
+    """CLI entry point: load Monte Carlo CSV and produce comparison box plots."""
     parser = argparse.ArgumentParser(description="Plot Monte Carlo comparison charts.")
     parser.add_argument(
         "--csv",
