@@ -1,6 +1,6 @@
 # Setpoint Shaping and Pointing Control for Satellite Repositioning
 >*Inspired by Mars Reconnaissance Orbiter's observation of comet 3I/ATLAS*
-# Setpoint Shaping and Pointing Control for Satellite Repositioning  
+
 
 https://github.com/user-attachments/assets/1fa069d6-fafc-4ed7-aaca-9640928969a5
 
