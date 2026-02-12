@@ -140,10 +140,7 @@ basilisk_simulation/
 | **Vizard** *(optional)* | For interactive 3-D mission visualisation |
 
 </div>
-| **Python 3.10+** | |
-| **[Basilisk](https://hanspeterschaub.info/basilisk/)** | Spacecraft dynamics simulation framework |
-| NumPy, SciPy, Matplotlib | Installed automatically via `pip` |
-| **Vizard** *(optional)* | For interactive 3-D mission visualisation |
+
 
 ### 1. Clone the repository
 
