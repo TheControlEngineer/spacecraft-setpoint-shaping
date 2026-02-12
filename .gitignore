@@ -56,3 +56,7 @@ Thumbs.db
 *.tmp
 *.temp
 nul
+
+# state estiamtor 
+
+src/basilisk_sim/state_estimator.py

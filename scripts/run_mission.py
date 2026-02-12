@@ -1,4 +1,18 @@
-"""Unified mission simulation analysis for feedforward shaping and feedback control."""
+"""Unified mission simulation analysis for spacecraft slew maneuvers.
+
+Evaluates feedforward torque shaping profiles (S Curve and fourth order)
+alongside closed loop PD feedback control on a flexible spacecraft model.
+
+Generates:
+    - Torque profiles and residual vibration comparisons across shaping methods
+    - Closed loop stability margins, sensitivity, and Nyquist analysis
+    - Pointing error from combined rigid body and flexible mode response
+    - PSD diagnostics for torque commands, vibration, and tracking error
+    - CSV exports and publication quality plots for all computed metrics
+
+The flexible dynamics use a coupled rigid flex state space model with
+reaction wheel torque input and MRP attitude / camera pointing outputs.
+"""
 
 from __future__ import annotations
 
@@ -45,7 +59,28 @@ from basilisk_sim.design_shaper import (
 
 @dataclass
 class MissionConfig:
-    """Configuration for mission simulation."""
+    """Parameters defining a spacecraft slew mission and its flexible dynamics.
+
+    Attributes:
+        inertia: 3x3 spacecraft inertia tensor (kg m^2).
+        rotation_axis: Unit vector for the single axis slew.
+        modal_freqs_hz: Natural frequencies of flexible appendage modes (Hz).
+        modal_damping: Damping ratios for each flexible mode.
+        modal_gains: Torque to modal acceleration coupling gains (rad/s^2 per N m).
+        slew_angle_deg: Total slew angle (degrees).
+        slew_duration_s: Nominal duration of the slew maneuver (seconds).
+        feedforward_inertia: Inertia used to size feedforward torque (defaults to inertia).
+        control_modal_gains: Modal gains used in the controller plant model.
+        control_filter_cutoff_hz: Derivative filter cutoff frequency (Hz).
+        control_filter_phase_lag_deg: Allowable phase lag from the derivative filter.
+        vibration_highpass_hz: High pass cutoff for isolating flex vibration (Hz).
+        pointing_error_spec_asd_deg: Pointing error ASD specification (deg/sqrt(Hz)).
+        pointing_error_spec_label: Label for specification line in plots.
+        feedback_method: Feedforward method used in combined feedback runs.
+        camera_lever_arm_m: Camera offset from spacecraft center of mass (m).
+        modal_mass_kg: Effective mass per flexible mode (kg).
+        rw_max_torque_nm: Maximum reaction wheel torque capacity (N m).
+    """
 
     inertia: np.ndarray
     rotation_axis: np.ndarray
@@ -199,7 +234,7 @@ def _get_feedforward_inertia(config: MissionConfig) -> np.ndarray:
 
 
 def _highpass_filter(data: np.ndarray, time: np.ndarray, cutoff_hz: float) -> np.ndarray:
-    """Apply a simple high-pass filter to remove slow trends."""
+    """Apply a second order Butterworth high pass filter to remove slow trends."""
     if len(data) < 10 or cutoff_hz <= 0:
         return data
     dt = np.median(np.diff(time))
@@ -212,7 +247,7 @@ def _highpass_filter(data: np.ndarray, time: np.ndarray, cutoff_hz: float) -> np
 
 
 def _get_vibration_highpass_hz(config: MissionConfig) -> float:
-    """Select a high-pass cutoff to isolate flexible vibration."""
+    """Select a high pass cutoff frequency to isolate flexible vibration."""
     if config.vibration_highpass_hz is not None:
         return float(config.vibration_highpass_hz)
     duration = float(config.slew_duration_s)
@@ -247,10 +282,10 @@ def _extract_vibration_signals(
     config: MissionConfig,
     acceleration: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """High-pass filter displacement and derive vibration acceleration.
+    """High pass filter displacement and derive vibration acceleration.
 
-    If acceleration is provided, it is filtered/detrended directly (no numerical
-    differentiation of displacement).
+    If acceleration is provided, it is filtered and detrended directly without
+    numerical differentiation of displacement.
     """
     if len(time) == 0 or len(displacement) == 0:
         return np.array([]), np.array([])
@@ -347,7 +382,7 @@ def _compute_psd_high_resolution(
     window: object = "hann",
     detrend: object = "constant",
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Compute a high-resolution PSD for visual diagnostics."""
+    """Compute a high resolution PSD using zero padded periodogram for visual diagnostics."""
     n = len(signal_data)
     if n < 16:
         return np.array([]), np.array([])
@@ -425,6 +460,7 @@ def _detect_mode_lines_from_flexible_plant(
             antiresonances.append(float(f[best_dip]))
 
     def _dedupe(values: List[float], rel_tol: float = 0.03) -> List[float]:
+        """Remove nearly duplicate values within relative tolerance."""
         out: List[float] = []
         for val in sorted(values):
             if not out:
@@ -464,7 +500,7 @@ def _draw_mode_lines_on_axis(
 
 
 def _compute_band_rms(freq: np.ndarray, psd: np.ndarray, fmin: float, fmax: float) -> float:
-    """Compute band-limited RMS from a PSD."""
+    """Compute band limited RMS by integrating a PSD between fmin and fmax."""
     if len(freq) == 0 or len(psd) == 0:
         return float("nan")
     mask = (freq >= fmin) & (freq <= fmax) & np.isfinite(psd) & (psd >= 0)
@@ -683,6 +719,7 @@ def _infer_maneuver_end(
 def _npz_matches_config(npz_data: Dict[str, object], config: MissionConfig) -> bool:
     """Check whether NPZ metadata matches the current configuration."""
     def _match_array(key: str, ref: Optional[Iterable[float]], rtol: float = 0.1) -> bool:
+        """Return True if the NPZ array for key matches ref within rtol."""
         value = npz_data.get(key)
         if key not in npz_data or ref is None or value is None:
             return True
@@ -696,6 +733,7 @@ def _npz_matches_config(npz_data: Dict[str, object], config: MissionConfig) -> b
             return True
 
     def _match_scalar(key: str, ref: Optional[float], tol: float) -> bool:
+        """Return True if the NPZ scalar for key matches ref within tol."""
         value = npz_data.get(key)
         if key not in npz_data or ref is None or value is None:
             return True
@@ -880,7 +918,13 @@ def _simulate_modal_response(
     torque: np.ndarray,
     config: MissionConfig,
 ) -> Dict[str, np.ndarray]:
-    """Simulate modal response using coupled rigid-flex state-space dynamics."""
+    """Simulate modal response using coupled rigid flex state space dynamics.
+
+    Builds a multi degree of freedom state space model coupling the rigid body
+    rotation with flexible appendage modes, then runs a linear simulation
+    driven by the feedforward torque profile. Returns per mode and combined
+    displacement and acceleration time histories.
+    """
     time = np.array(time, dtype=float)
     torque = np.array(torque, dtype=float)
     dt = time[1] - time[0] if len(time) > 1 else 0.01
@@ -1298,7 +1342,11 @@ def _build_flexible_plant_tf(
     modal_gains: List[float],
     output_scale: float = 1.0,
 ) -> signal.TransferFunction:
-    """Build flexible plant transfer function using coupled rigid-flex state-space."""
+    """Build flexible plant transfer function from a coupled rigid flex state space model.
+
+    Constructs a MIMO state space for the rigid body plus all flexible modes,
+    then extracts the SISO body angle transfer function via ss2tf conversion.
+    """
     axis_vec = np.zeros(3)
     axis_vec[axis] = 1.0
     inertia_axis = float(axis_vec @ inertia @ axis_vec)
@@ -1334,7 +1382,14 @@ def _build_coupled_flex_state_space(
     sigma_scale: float,
     camera_lever_arm_m: float,
 ) -> Dict[str, object]:
-    """Build coupled rigid-flex state-space models for body and camera outputs."""
+    """Build coupled rigid flex state space models for body and camera outputs.
+
+    Assembles mass, damping, and stiffness matrices for the rigid angle
+    plus N flexible modes, inverts the mass matrix, and forms a 2*(N+1)
+    state vector [positions; velocities]. Three output variants are returned:
+    body (rigid angle only), camera (rigid plus flex contribution scaled by
+    lever arm), and full position states for per mode extraction.
+    """
     axis = _normalize_axis(axis)
     inertia_axis = float(axis @ np.array(inertia, dtype=float) @ axis)
     hub_axis = float(axis @ HUB_INERTIA @ axis)
@@ -1359,36 +1414,44 @@ def _build_coupled_flex_state_space(
     arms = _pad_list(lever_arms, n_modes, 0.0)
 
     m_mat = np.zeros((n_modes + 1, n_modes + 1))
-    # Use hub inertia for the rigid coordinate to avoid double counting appendage inertia.
+    # Rigid body element: hub inertia plus rotational inertia of each appendage mass.
     m_mat[0, 0] = base_inertia + sum(m * r * r for m, r in zip(masses, arms))
     for idx, (m_i, r_i) in enumerate(zip(masses, arms), start=1):
+        # Off diagonal coupling: appendage mass times lever arm links rigid and flex DOFs.
         m_mat[0, idx] = m_i * r_i
         m_mat[idx, 0] = m_i * r_i
         m_mat[idx, idx] = m_i
 
+    # Damping and stiffness are diagonal (no cross coupling between modes).
     d_mat = np.zeros_like(m_mat)
     k_mat = np.zeros_like(m_mat)
     for idx, (freq_hz, zeta, m_i) in enumerate(zip(modal_freqs_hz, zetas, masses), start=1):
         omega = 2.0 * np.pi * float(freq_hz)
-        d_mat[idx, idx] = 2.0 * float(zeta) * omega * m_i
-        k_mat[idx, idx] = omega**2 * m_i
+        d_mat[idx, idx] = 2.0 * float(zeta) * omega * m_i  # viscous damping coefficient
+        k_mat[idx, idx] = omega**2 * m_i  # modal stiffness
 
+    # Invert mass matrix to convert M*qddot + D*qdot + K*q = F into first order form.
     m_inv = np.linalg.inv(m_mat)
     n_state = n_modes + 1
+    # State vector x = [q0, q1, ..., qN, q0dot, q1dot, ..., qNdot]
     a = np.zeros((2 * n_state, 2 * n_state))
-    a[:n_state, n_state:] = np.eye(n_state)
-    a[n_state:, :n_state] = -m_inv @ k_mat
-    a[n_state:, n_state:] = -m_inv @ d_mat
+    a[:n_state, n_state:] = np.eye(n_state)            # qdot = velocity states
+    a[n_state:, :n_state] = -m_inv @ k_mat             # acceleration from stiffness
+    a[n_state:, n_state:] = -m_inv @ d_mat             # acceleration from damping
 
+    # Input: external torque applied to the rigid body DOF only.
     b = np.zeros((2 * n_state, 1))
     b[n_state:, 0] = (m_inv @ np.array([1.0] + [0.0] * n_modes)).ravel()
 
+    # Position output extracts all generalized coordinates (rigid + modal).
     c_pos = np.zeros((n_state, 2 * n_state))
     c_pos[:, :n_state] = np.eye(n_state)
 
+    # Body output: rigid body angle scaled from MRP to radians.
     c_body = np.zeros((1, 2 * n_state))
     c_body[0, 0] = 1.0 / sigma_scale
 
+    # Camera output: rigid angle plus flex displacement projected through lever arm.
     c_camera = np.zeros((1, 2 * n_state))
     c_camera[0, 0] = 1.0 / sigma_scale
     if camera_lever_arm_m > 0:
@@ -1434,16 +1497,18 @@ def _compute_stability_margins(L: np.ndarray, freqs: np.ndarray) -> Dict[str, fl
     gm_db = np.inf
     pm_deg = np.inf
 
-    # Phase crossover (for gain margin)
+    # Phase crossover: find where phase crosses -180 deg (gain margin frequency).
     idx = np.where((phase_deg[:-1] > -180.0) & (phase_deg[1:] <= -180.0))[0]
     if len(idx) > 0:
         i = idx[0]
         f1, f2 = freqs[i], freqs[i + 1]
         ph1, ph2 = phase_deg[i], phase_deg[i + 1]
+        # Linear interpolation to find exact phase crossover frequency.
         if ph2 != ph1:
             f_pc = f1 + (f2 - f1) * (-180.0 - ph1) / (ph2 - ph1)
         else:
             f_pc = f1
+        # Log interpolation of magnitude at the phase crossover frequency.
         if mag[i] > 0 and mag[i + 1] > 0 and f_pc > 0:
             logm1, logm2 = np.log10(mag[i]), np.log10(mag[i + 1])
             logf1, logf2 = np.log10(f1), np.log10(f2)
@@ -1457,12 +1522,13 @@ def _compute_stability_margins(L: np.ndarray, freqs: np.ndarray) -> Dict[str, fl
             mag_pc = mag[i]
         gm_db = -20 * np.log10(mag_pc + 1e-12)
 
-    # Gain crossover (for phase margin)
+    # Gain crossover: find where magnitude crosses 0 dB (phase margin frequency).
     idx = np.where((mag[:-1] > 1.0) & (mag[1:] <= 1.0))[0]
     if len(idx) > 0:
         i = idx[0]
         f1, f2 = freqs[i], freqs[i + 1]
         mag1, mag2 = mag[i], mag[i + 1]
+        # Log interpolation to find exact gain crossover frequency.
         if mag1 > 0 and mag2 > 0:
             logm1, logm2 = np.log10(mag1), np.log10(mag2)
             logf1, logf2 = np.log10(f1), np.log10(f2)
@@ -1477,6 +1543,7 @@ def _compute_stability_margins(L: np.ndarray, freqs: np.ndarray) -> Dict[str, fl
         if f_gc > 0 and f1 > 0 and f2 > 0:
             logf1, logf2 = np.log10(f1), np.log10(f2)
             logf_gc = np.log10(f_gc)
+            # Log interpolation of phase at the gain crossover frequency.
             if logf2 != logf1:
                 phase_gc = phase_deg[i] + (phase_deg[i + 1] - phase_deg[i]) * (logf_gc - logf1) / (logf2 - logf1)
             else:
@@ -1489,18 +1556,18 @@ def _compute_stability_margins(L: np.ndarray, freqs: np.ndarray) -> Dict[str, fl
 
 
 def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
-    """Compute control system analysis (sensitivity, stability).
+    """Compute control system analysis including sensitivity and stability margins.
 
     Controller Design Philosophy:
-    ----------------------------
-    For flexible spacecraft, the key is placing the control bandwidth
-    well below the first structural mode to avoid exciting vibrations.
+        For flexible spacecraft, the control bandwidth must be placed well
+        below the first structural mode to avoid exciting vibrations.
 
-    Analysis computes rigid-body S/T for reference and flexible-loop
-    margins (Nyquist/S/T) for the actual sigma-feedback plant:
-    - Rigid-loop S/T for nominal pointing dynamics
-    - Flexible-loop margins for stability assessment
-    - Modal excitation transfer: q(s) = G_q(s) * C(s) / (1 + L(s))
+    Analysis computes rigid body S/T for reference and flexible loop
+    margins (Nyquist, sensitivity, complementary sensitivity) for the
+    actual sigma feedback plant:
+        - Rigid body S/T for nominal pointing dynamics
+        - Flexible loop margins for stability assessment
+        - Modal excitation transfer: q(s) = G_q(s) * C(s) / (1 + L(s))
 
     This mission analysis uses standard PD only.
     """
@@ -1548,6 +1615,7 @@ def _compute_control_analysis(config: MissionConfig) -> Dict[str, object]:
     # Controller in sigma domain: K + 4*P*s
     controller_std_tf = signal.TransferFunction([4.0 * p_std, k_std], [1.0])
     def _open_loop_tf(plant: signal.TransferFunction, controller: signal.TransferFunction) -> signal.TransferFunction:
+        """Multiply plant and controller transfer functions to form the open loop."""
         plant_num = np.atleast_1d(np.squeeze(plant.num))
         plant_den = np.atleast_1d(np.squeeze(plant.den))
         ctrl_num = np.atleast_1d(np.squeeze(controller.num))
@@ -1964,7 +2032,7 @@ def _load_all_pointing_data(
 
 
 def _compute_pointing_error(sigma: np.ndarray, target_sigma: np.ndarray) -> np.ndarray:
-    """Compute pointing error from MRP."""
+    """Compute scalar pointing error in degrees from MRP attitude vectors."""
     if sigma is None or len(sigma) == 0:
         return np.array([])
     sigma = np.atleast_2d(np.array(sigma, dtype=float))
@@ -1980,7 +2048,7 @@ def _extract_pointing_error(
     data: Dict[str, object],
     config: Optional[MissionConfig] = None,
 ) -> np.ndarray:
-    """Return pointing error time series, optionally including flex-induced jitter.
+    """Return pointing error time series, optionally including flex induced jitter.
 
     Uses linear combination (base + flex) instead of RSS to match the transfer
     function formulation: y_camera = theta + q/L. This preserves resonance peaks
@@ -2204,7 +2272,7 @@ def _plot_vibration_comparison(
         signal_arr: np.ndarray,
         maneuver_end_time: Optional[float],
     ) -> Tuple[float, float]:
-        """Return RMS over full timeline and post-slew timeline."""
+        """Return RMS over the full timeline and the post slew timeline."""
         if len(signal_arr) == 0:
             return 0.0, 0.0
         rms_total = float(np.sqrt(np.mean(signal_arr**2)))
@@ -2405,7 +2473,7 @@ def _plot_modal_acceleration_psd(
     config: MissionConfig,
     out_dir: str,
 ) -> Optional[str]:
-    """Plot high-resolution PSD of combined modal acceleration."""
+    """Plot high resolution PSD of combined modal acceleration."""
     if not feedback_vibration:
         return None
 
@@ -2557,6 +2625,7 @@ def _plot_sensitivity_functions(
     line_styles = {"standard_pd": "-", "filtered_pd": "--"}
 
     def _plot_set(ax_left, ax_right, s_vals, t_vals) -> None:
+        """Plot sensitivity and complementary sensitivity on two axes."""
         for name in CONTROLLERS:
             ls = line_styles.get(name, "-")
             s_mag_db = 20 * np.log10(np.abs(s_vals[name]) + 1e-12)
@@ -2673,7 +2742,7 @@ def _plot_modal_excitation(
     config: MissionConfig,
     out_dir: str,
 ) -> Optional[str]:
-    """Plot closed-loop modal excitation magnitude."""
+    """Plot closed loop modal excitation magnitude."""
     freqs = control_data["freqs"]
     modal_response = control_data.get("modal_response", {})
     if not modal_response or not config.modal_freqs_hz:
@@ -2738,7 +2807,7 @@ def _plot_pointing_error(
     out_dir: str,
     config: Optional[MissionConfig] = None,
 ) -> Optional[str]:
-    """Plot mission pointing error with full and post-slew subplots."""
+    """Plot mission pointing error with full and post slew subplots."""
     if not pointing_errors:
         return None
 
@@ -3095,7 +3164,7 @@ def _plot_torque_command_psd(
     config: MissionConfig,
     out_dir: str,
 ) -> Optional[str]:
-    """Plot commanded torque PSD for combined FF+FB runs with high-frequency detail."""
+    """Plot commanded torque PSD for combined FF+FB runs with high frequency detail."""
     if not feedback_vibration:
         return None
 
@@ -3307,7 +3376,7 @@ def _plot_tracking_error_psd(
     config: MissionConfig,
     out_dir: str,
 ) -> Optional[str]:
-    """Plot high-resolution PSD of feedback tracking error."""
+    """Plot high resolution PSD of feedback tracking error."""
     if not pointing_data:
         return None
 
@@ -3485,7 +3554,7 @@ def _plot_disturbance_to_torque(
     control_data: Dict[str, object],
     out_dir: str,
 ) -> Optional[str]:
-    """Plot disturbance torque -> commanded torque transfer (|T|)."""
+    """Plot disturbance torque to commanded torque transfer magnitude."""
     freqs = control_data.get("freqs")
     t_data = control_data.get("T_flex") or control_data.get("T")
     if freqs is None or t_data is None:
@@ -3548,6 +3617,7 @@ def _plot_torque_psd_split(
         linestyle: str,
         color: str,
     ) -> Optional[Dict[str, object]]:
+        """Compute high resolution PSD and package it for plotting."""
         if len(time) == 0 or len(torque) == 0:
             return None
         time, aligned = _align_series(time, torque)
@@ -3571,6 +3641,7 @@ def _plot_torque_psd_split(
         }
 
     def _plot_psd_lines(ax, entries):
+        """Draw PSD curves on the given axes from a list of entry dicts."""
         for entry in entries:
             color = entry.get("color", "#555555")
             ax.semilogx(
@@ -3584,6 +3655,7 @@ def _plot_torque_psd_split(
             )
 
     def _set_psd_limits(ax, entries):
+        """Set y axis limits from the 1st and 99th percentile of PSD values."""
         if not entries:
             return
         vals = np.concatenate([entry["psd_db"] for entry in entries if len(entry["psd_db"]) > 0])
@@ -3706,7 +3778,7 @@ def _plot_torque_psd_coherence(
     feedback_vibration: Dict[str, Dict[str, object]],
     out_dir: str,
 ) -> Optional[str]:
-    """Plot magnitude-squared coherence between FF and FB torque commands."""
+    """Plot magnitude squared coherence between FF and FB torque commands."""
     if not feedforward_torque or not feedback_vibration:
         return None
 
@@ -3724,6 +3796,7 @@ def _plot_torque_psd_coherence(
     def _common_time_series(
         time_a: np.ndarray, sig_a: np.ndarray, time_b: np.ndarray, sig_b: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Resample two signals onto a common uniform time grid."""
         if len(time_a) == 0 or len(time_b) == 0:
             return np.array([]), np.array([]), np.array([])
         t0 = max(float(time_a[0]), float(time_b[0]))
@@ -3820,7 +3893,7 @@ def _export_torque_psd_rms(
     fmin: float = 0.0,
     fmax: float = 10.0,
 ) -> Optional[str]:
-    """Export band-limited RMS torque from PSDs for FF, FB, and total."""
+    """Export band limited RMS torque from PSDs for feedforward, feedback, and total."""
     rows: List[List[str]] = []
 
     for method in METHODS:
@@ -3885,11 +3958,12 @@ def _export_torque_command_metrics(
     fmin: float = 0.0,
     fmax: float = 10.0,
 ) -> Optional[str]:
-    """Export time-domain actuator metrics for torque commands."""
+    """Export time domain actuator metrics for torque commands."""
     rows: List[List[str]] = []
     rw_limit = config.rw_max_torque_nm
 
     def _metrics_from_signal(time: np.ndarray, torque: np.ndarray) -> Tuple[float, float, float, float]:
+        """Return peak, RMS, band limited RMS, and max rate for a torque signal."""
         if len(time) == 0 or len(torque) == 0:
             return float("nan"), float("nan"), float("nan"), float("nan")
         torque = np.array(torque, dtype=float)
@@ -4198,7 +4272,7 @@ def _plot_noise_to_pointing(
     config: MissionConfig,
     out_dir: str,
 ) -> Optional[str]:
-    """Plot rate-gyro noise to pointing error transfer: P * C_omega / (1 + P*C)."""
+    """Plot rate gyro noise to pointing error transfer: P * C_omega / (1 + P*C)."""
     freqs = control_data.get("freqs")
     plant = control_data.get("plant_flex_body")
     loop = control_data.get("L_flex") or control_data.get("L")
@@ -4273,6 +4347,7 @@ def _plot_loop_components(
     })
 
     def _plot_one(ctrl_key: str, title: str, filename: str) -> Optional[str]:
+        """Plot plant, controller, and loop magnitude for one controller."""
         c_resp = controller_resp.get(ctrl_key)
         if c_resp is None or ctrl_key not in loop:
             return None
@@ -4532,7 +4607,13 @@ def run_mission_simulation(
     export_csv: bool = True,
     generate_pointing: bool = False,
 ) -> Dict[str, object]:
-    """Run complete mission simulation analysis."""
+    """Run complete mission simulation analysis.
+
+    Executes feedforward comparison, control stability analysis, and pointing
+    error evaluation. Optionally generates plots and CSV exports for all
+    computed metrics. Returns a dictionary containing feedforward, control,
+    and pointing results along with saved plot paths.
+    """
     script_dir = os.path.dirname(__file__)
     out_dir = out_dir or os.path.join(script_dir, "..", "output")
     data_dir = data_dir or os.path.join(script_dir, "..", "data", "trajectories")
@@ -4670,7 +4751,7 @@ def run_mission_simulation(
 
 
 def main() -> None:
-    """Command line interface."""
+    """Parse command line arguments and run the mission simulation."""
     parser = argparse.ArgumentParser(description="Mission simulation analysis")
     parser.add_argument("--out-dir", default=None, help="Output directory (default: ../output)")
     parser.add_argument("--data-dir", default=None, help="Data directory for NPZ files")

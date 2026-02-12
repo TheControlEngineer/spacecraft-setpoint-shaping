@@ -1,8 +1,8 @@
 """
-Replot factor sweep CSVs (no simulation) with semilogy scales.
+Replot factor sweep CSVs (no simulation required) with semilogy scales.
 
 Reads the existing mc_sweep_*.csv files and produces plots using
-log-y for non-dB metrics.
+log y axes for non dB metrics.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ FREQ_METRICS = [
 
 
 def _load_csv(path: str) -> Dict[str, Dict[str, List[Tuple[float, float]]]]:
-    """Return {combo: {metric: [(x, y), ...]}}."""
+    """Parse a factor sweep CSV into {combo: {metric: [(x, y), ...]}} for plotting."""
     data: Dict[str, Dict[str, List[Tuple[float, float]]]] = defaultdict(lambda: defaultdict(list))
     with open(path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -75,6 +75,7 @@ def _plot_from_data(
     metrics: List[Tuple[str, str]],
     bins: int = 10,
 ) -> None:
+    """Render a 2x2 scatter + binned median figure from pre loaded CSV data."""
     fig, axes = plt.subplots(2, 2, figsize=(14, 9))
     axes = axes.flatten()
 
@@ -153,6 +154,7 @@ def _plot_from_data(
 
 
 def main() -> int:
+    """CLI entry point: load CSVs from disk and regenerate semilogy sweep plots."""
     parser = argparse.ArgumentParser(description="Replot factor sweep CSVs.")
     parser.add_argument("--dir", default=os.path.dirname(__file__), help="Directory containing mc_sweep_*.csv")
     parser.add_argument("--bins", type=int, default=10, help="Bins for percentile trend lines")

@@ -1,16 +1,20 @@
 """
-Run one-factor-at-a-time Monte Carlo sweeps and plot comparisons.
+One factor at a time Monte Carlo sweeps with comparison plots.
 
-Each figure varies ONE factor only (Monte Carlo sampling) and compares:
-  - S-curve + Standard PD
-  - Fourth-order + Standard PD
+Each figure varies a single uncertainty factor via Monte Carlo sampling
+and compares trajectory/controller combinations:
+  - S curve + Standard PD
+  - Fourth order + Standard PD
 
-Outputs:
-  - mc_sweep_inertia.png
-  - mc_sweep_modal_frequency.png
-  - mc_sweep_modal_damping.png
-  - mc_sweep_disturbance_frequency.png
-  - mc_sweep_noise_level.png
+Sweep factors:
+  1. Inertia scaling
+  2. Modal frequency scaling
+  3. Modal damping scaling
+  4. Disturbance frequency (sinusoidal torque)
+  5. Sensor noise frequency (sinusoidal)
+
+Outputs per factor: a PNG scatter + binned median plot and a CSV of
+raw per sample metrics.
 """
 
 from __future__ import annotations
@@ -63,10 +67,12 @@ FREQ_METRICS = [
 
 
 def _combo_key(method: str, controller: str) -> str:
+    """Build a unique key from method and controller names."""
     return f"{method}_{controller}"
 
 
 def _format_eta(seconds: float) -> str:
+    """Format remaining seconds as a human readable H:MM:SS string."""
     if not np.isfinite(seconds) or seconds < 0:
         return "?"
     secs = int(round(seconds))
@@ -86,6 +92,7 @@ def _update_progress(
     min_interval_s: float = 0.5,
     width: int = 32,
 ) -> float:
+    """Print a single line progress bar with ETA. Returns the timestamp of last update."""
     now = time.time()
     if current < total and (now - last_update) < min_interval_s:
         return last_update
@@ -105,10 +112,12 @@ def _update_progress(
 
 
 def _sample_uniform(rng: np.random.Generator, vmin: float, vmax: float, n: int) -> np.ndarray:
+    """Draw *n* samples uniformly between *vmin* and *vmax*."""
     return rng.uniform(vmin, vmax, size=n)
 
 
 def _sample_log_uniform(rng: np.random.Generator, vmin: float, vmax: float, n: int) -> np.ndarray:
+    """Draw *n* samples from a log uniform distribution over [vmin, vmax]."""
     return np.exp(rng.uniform(np.log(vmin), np.log(vmax), size=n))
 
 
@@ -144,7 +153,7 @@ def _sample_log_uniform_stratified(
     n_samples: int,
     n_bins: int,
 ) -> np.ndarray:
-    """Sample log-uniformly while guaranteeing log-space bin coverage."""
+    """Sample log uniformly while guaranteeing log space bin coverage."""
     if vmin <= 0 or vmax <= 0:
         raise ValueError("Log-uniform bounds must be positive")
     log_vals = _sample_uniform_stratified(
@@ -158,10 +167,12 @@ def _sample_log_uniform_stratified(
 
 
 def _filter_cutoff(cfg: ms.MissionConfig) -> float:
+    """Return the configured low pass filter cutoff, defaulting to 8 Hz."""
     return float(cfg.control_filter_cutoff_hz) if cfg.control_filter_cutoff_hz is not None else 8.0
 
 
 def _run_vizard_demo_batch(overrides: Dict[str, object], output_dir: str) -> None:
+    """Launch run_vizard_demo.py for every method/controller combo with the given config overrides."""
     output_dir_abs = os.path.abspath(output_dir)
     os.makedirs(output_dir_abs, exist_ok=True)
     cfg_path = os.path.join(output_dir_abs, "sweep_config.json")
@@ -193,6 +204,7 @@ def _estimate_total_runtime(
     work_dir: str,
     total_samples: int,
 ) -> float:
+    """Run a single sample batch and extrapolate total wall clock time."""
     start = time.time()
     _run_vizard_demo_batch(sample_overrides, work_dir)
     elapsed = time.time() - start
@@ -202,6 +214,7 @@ def _estimate_total_runtime(
 def _compute_post_slew_stats(
     time: np.ndarray, values: np.ndarray, slew_duration_s: float
 ) -> Tuple[float, float]:
+    """Return (RMS, peak) of *values* in the post slew window."""
     if len(time) == 0 or len(values) == 0:
         return float("nan"), float("nan")
     mask = time >= slew_duration_s
@@ -217,7 +230,7 @@ def _compute_band_metrics(
     target_freq: float,
     band_half_hz: float,
 ) -> Tuple[float, float]:
-    """Return band-limited RMS and PSD at target frequency."""
+    """Return band limited RMS and PSD (dB) at *target_freq*."""
     if len(time) == 0 or len(series) == 0 or not np.isfinite(target_freq):
         return float("nan"), float("nan")
     freq, psd = ms._compute_psd(time, series)
@@ -241,6 +254,7 @@ def _build_config(
     freq_scale: float = 1.0,
     damping_scale: float = 1.0,
 ) -> ms.MissionConfig:
+    """Create a perturbed MissionConfig by scaling inertia, modal frequency, and damping."""
     cfg = ms.MissionConfig(**asdict(base))
     cfg.inertia = compute_effective_inertia(hub_inertia=HUB_INERTIA.copy() * inertia_scale)
     cfg.modal_freqs_hz = [f * freq_scale for f in cfg.modal_freqs_hz]
@@ -255,6 +269,7 @@ def _collect_metrics(
     data_dir: str,
     target_freq: float | None = None,
 ) -> Dict[str, Dict[str, float]]:
+    """Load pointing and vibration data from *data_dir* and compute per combo performance metrics."""
     metrics: Dict[str, Dict[str, float]] = {}
     pointing_data = ms._load_all_pointing_data(data_dir, config=config, generate_if_missing=False)
     feedback_data = ms._collect_feedback_data(config, data_dir=data_dir, prefer_npz=True)
@@ -292,8 +307,8 @@ def _collect_metrics(
         fb_data = feedback_data.get(fb_key)
         if fb_data:
             time = np.array(fb_data.get("time", []), dtype=float)
-            # Use raw modal displacement when available to preserve sensitivity
-            # to parameter variations (filtering can flatten trends).
+            # Prefer raw modal displacement to preserve sensitivity to parameter
+            # variations; filtered data can flatten subtle trends.
             disp = np.array(
                 fb_data.get("displacement_modal_raw", fb_data.get("displacement", [])),
                 dtype=float,
@@ -330,6 +345,7 @@ def _plot_sweep(
     metrics: List[Tuple[str, str]] | None = None,
     log_y: bool = True,
 ) -> None:
+    """Generate a 2x2 scatter + binned median figure for the given sweep results."""
     metric_list = metrics or METRICS
     fig, axes = plt.subplots(2, 2, figsize=(14, 9))
     axes = axes.flatten()
@@ -421,6 +437,7 @@ def _write_raw_csv(
     results: Dict[str, Dict[str, List[float]]],
     metrics: List[Tuple[str, str]] | None = None,
 ) -> None:
+    """Persist per sample sweep results to a CSV for later replotting."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     metric_list = metrics or METRICS
     headers = ["factor", "sample_index", "factor_value", "combo"] + [m for m, _ in metric_list]
@@ -445,7 +462,7 @@ def _read_raw_csv(
     path: str,
     metrics: List[Tuple[str, str]] | None = None,
 ) -> Tuple[np.ndarray, Dict[str, Dict[str, List[float]]]]:
-    """Load one factor-sweep CSV and reconstruct values/results for plotting."""
+    """Load one factor sweep CSV and reconstruct values/results for plotting."""
     metric_list = metrics or METRICS
     metric_keys = [k for k, _ in metric_list]
     combo_keys = [_combo_key(method, controller) for method, controller, _, _ in COMBOS]
@@ -500,7 +517,7 @@ def _replot_from_metrics_csvs(
     bins: int,
     log_y: bool,
 ) -> None:
-    """Regenerate all factor-sweep plots from existing CSV metrics."""
+    """Regenerate all factor sweep plots from previously saved CSV metrics."""
     specs = [
         (
             "mc_sweep_inertia.csv",
@@ -598,6 +615,7 @@ def _run_sweep(
     metric_keys: List[Tuple[str, str]],
     target_freq_func=None,
 ) -> Tuple[Dict[str, Dict[str, List[float]]], int, float]:
+    """Iterate over *values*, run simulations, and collect metrics for each combo."""
     results: Dict[str, Dict[str, List[float]]] = {}
     for method, controller, _, _ in COMBOS:
         combo_key = _combo_key(method, controller)
@@ -619,6 +637,7 @@ def _run_sweep(
 
 
 def main() -> int:
+    """CLI entry point: parse arguments, run sweeps or replot from CSVs."""
     parser = argparse.ArgumentParser(description="One-factor Monte Carlo sweep plots.")
     parser.add_argument("--out-dir", default=os.path.join(os.path.dirname(__file__), "..", "output"), help="Output directory for plots")
     parser.add_argument("--work-dir", default=None, help="Working directory for temporary NPZs")

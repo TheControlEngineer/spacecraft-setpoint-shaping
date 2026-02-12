@@ -133,7 +133,7 @@ basilisk_simulation/
 <div align="center">
 
 | Dependency | Notes |
-|---|---|
+|------------|-------|
 | **Python 3.10+** | |
 | **[Basilisk](https://hanspeterschaub.info/basilisk/)** | Spacecraft dynamics simulation framework |
 | NumPy, SciPy, Matplotlib | Installed automatically via `pip` |

@@ -12,8 +12,6 @@ Sections:
 Usage:
     python validation_mc_runner.py [--verification] [--validation] [--monte-carlo N]
     python validation_mc_runner.py --all  # Run everything
-
-Author: Generated for spacecraft input shaping project
 """
 
 from __future__ import annotations
@@ -46,11 +44,11 @@ for path in (_src_dir, _scripts_dir):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-# Backward-compatible string aliases used throughout this script.
+# Backward compatible string aliases used throughout this script.
 analysis_dir = str(_analysis_dir)
 basilisk_dir = str(_basilisk_dir)
 
-# Import run_mission (formerly mission_simulation) for plan-compliant analysis
+# Import run_mission (formerly mission_simulation) for plan compliant analysis
 import run_mission as ms
 
 from basilisk_sim.spacecraft_properties import (
@@ -251,7 +249,7 @@ def _compute_rms(data: np.ndarray) -> float:
 
 
 def _compute_band_rms(freq: np.ndarray, psd: np.ndarray, fmin: float, fmax: float) -> float:
-    """Compute band-limited RMS from PSD."""
+    """Compute band limited RMS from PSD."""
     if len(freq) == 0 or len(psd) == 0:
         return float("nan")
     mask = (freq >= fmin) & (freq <= fmax) & np.isfinite(psd) & (psd >= 0)
@@ -264,7 +262,7 @@ def _compute_band_rms(freq: np.ndarray, psd: np.ndarray, fmin: float, fmax: floa
 def _compute_post_slew_stats(
     time: np.ndarray, values: np.ndarray, slew_duration_s: float
 ) -> Tuple[float, float]:
-    """Compute RMS and peak for post-slew window (or full if unavailable)."""
+    """Compute RMS and peak for post slew window (or full if unavailable)."""
     if len(time) == 0 or len(values) == 0:
         return float("nan"), float("nan")
     mask = time >= slew_duration_s
@@ -278,7 +276,7 @@ def _plot_post_slew_pointing_box_from_csv(
     out_dir: str,
     threshold_arcsec: float = POST_SLEW_POINTING_LIMIT_ARCSEC,
 ) -> Optional[str]:
-    """Create post-slew RMS pointing box plot from existing Monte Carlo CSV."""
+    """Create post slew RMS pointing box plot from existing Monte Carlo CSV."""
     csv_path = os.path.join(out_dir, "monte_carlo_runs.csv")
     if not os.path.isfile(csv_path):
         print(f"Post-slew box plot skipped, missing CSV: {csv_path}")
@@ -429,7 +427,7 @@ def _plot_post_slew_vibration_box_from_csv(
     out_dir: str,
     threshold_mm: float = POST_SLEW_VIBRATION_LIMIT_MM,
 ) -> Optional[str]:
-    """Create post-slew RMS vibration box plot from existing Monte Carlo CSV."""
+    """Create post slew RMS vibration box plot from existing Monte Carlo CSV."""
     csv_path = os.path.join(out_dir, "monte_carlo_runs.csv")
     if not os.path.isfile(csv_path):
         print(f"Post-slew vibration box plot skipped, missing CSV: {csv_path}")
@@ -579,7 +577,7 @@ def _plot_post_slew_acceleration_box_from_csv(
     out_dir: str,
     threshold_mm_s2: float = POST_SLEW_ACCEL_LIMIT_MM_S2,
 ) -> Optional[str]:
-    """Create post-slew RMS modal acceleration box plot from existing Monte Carlo CSV."""
+    """Create post slew RMS modal acceleration box plot from existing Monte Carlo CSV."""
     csv_path = os.path.join(out_dir, "monte_carlo_runs.csv")
     if not os.path.isfile(csv_path):
         print(f"Post-slew acceleration box plot skipped, missing CSV: {csv_path}")
@@ -752,7 +750,7 @@ def _plot_post_slew_pointing_factor_histograms_from_csv(
     out_dir: str,
     seed: int = 42,
 ) -> List[str]:
-    """Plot histogram-based parameter impact views for post-slew RMS pointing error."""
+    """Plot histogram based parameter impact views for post slew RMS pointing error."""
     csv_path = os.path.join(out_dir, "monte_carlo_runs.csv")
     if not os.path.isfile(csv_path):
         print(f"Pointing factor histogram skipped, missing CSV: {csv_path}")
@@ -979,7 +977,7 @@ def _update_progress(
     min_interval_s: float = 0.5,
     width: int = 32,
 ) -> float:
-    """Render a single-line progress bar with ETA."""
+    """Render a single line progress bar with ETA."""
     now = time_module.time()
     if current < total and (now - last_update) < min_interval_s:
         return last_update
@@ -1041,6 +1039,7 @@ def _run_vizard_demo_batch(
 
 # --- Error handling helpers ---------------------------------------------------
 def _format_subprocess_failure(exc: BaseException) -> str:
+    """Format a subprocess exception into a readable diagnostic message."""
     cmd = getattr(exc, "cmd", "")
     if isinstance(cmd, (list, tuple)):
         cmd_str = " ".join(str(part) for part in cmd)
@@ -1062,6 +1061,7 @@ def _format_subprocess_failure(exc: BaseException) -> str:
 
 
 def _write_mc_failure_log(run_id: int, exc: BaseException, output_dir: str) -> str:
+    """Write a failure log for a Monte Carlo run that raised an exception."""
     _ensure_dir(output_dir)
     log_path = os.path.join(output_dir, f"mc_fail_run_{run_id:04d}.log")
     with open(log_path, "w", encoding="utf-8") as f:
@@ -1071,7 +1071,7 @@ def _write_mc_failure_log(run_id: int, exc: BaseException, output_dir: str) -> s
 
 
 # ============================================================================
-# PLAN-COMPLIANT RUNNER (validation_mc.md)
+# PLAN COMPLIANT RUNNER (validation_mc.md)
 # ============================================================================
 
 PLAN_THRESHOLDS = {
@@ -1083,6 +1083,7 @@ PLAN_THRESHOLDS = {
 
 
 def _load_csv_as_dict(path: str, key_field: str) -> Dict[str, Dict[str, str]]:
+    """Load a CSV file into a dict keyed by the specified field."""
     if not os.path.isfile(path):
         return {}
     rows = {}
@@ -1115,6 +1116,7 @@ class PlanCompliantRunner:
     # VERIFICATION (Section 1)
     # ------------------------------------------------------------------
     def run_verification(self) -> List[VerificationResult]:
+        """Execute all verification checks and save the report."""
         results: List[VerificationResult] = []
         tests = [
             self._verify_trajectory_consistency,
@@ -1133,6 +1135,7 @@ class PlanCompliantRunner:
         return results
 
     def _verify_trajectory_consistency(self) -> VerificationResult:
+        """Verify feedforward trajectory consistency across shaping methods."""
         details: Dict[str, Any] = {}
         issues: List[str] = []
         axis = _normalize_axis(self.config.rotation_axis)
@@ -1228,6 +1231,7 @@ class PlanCompliantRunner:
         return VerificationResult("trajectory_consistency", passed, message, details)
 
     def _verify_controller_implementation(self) -> VerificationResult:
+        """Verify feedback controller gain assignment and stability margins."""
         details: Dict[str, Any] = {}
         issues: List[str] = []
         try:
@@ -1296,6 +1300,7 @@ class PlanCompliantRunner:
         return VerificationResult("controller_implementation", passed, message, details)
 
     def _verify_logging_integrity(self) -> VerificationResult:
+        """Verify NPZ log files contain required keys with consistent array lengths."""
         details = {}
         issues = []
         required_keys = ["time", "sigma", "omega", "fb_torque", "total_torque", "rw_torque", "mode1", "mode2"]
@@ -1363,6 +1368,7 @@ class PlanCompliantRunner:
         return VerificationResult("logging_integrity", passed, message, details)
 
     def _verify_psd_computations(self) -> VerificationResult:
+        """Verify PSD parameter selection and decibel conversion correctness."""
         details: Dict[str, Any] = {}
         issues: List[str] = []
         # Use mission_simulation PSD parameter chooser for consistency
@@ -1406,6 +1412,7 @@ class PlanCompliantRunner:
         return VerificationResult("psd_computations", passed, message, details)
 
     def _save_verification_report(self, results: List[VerificationResult]) -> None:
+        """Write verification results to a JSON report file."""
         report_path = os.path.join(self.out_dir, "verification_report.json")
         report = {
             "timestamp": datetime.now().isoformat(),
@@ -1431,6 +1438,7 @@ class PlanCompliantRunner:
     # VALIDATION (Section 2)
     # ------------------------------------------------------------------
     def run_validation(self) -> List[ValidationResult]:
+        """Execute all validation checks with baseline simulation and reporting."""
         results: List[ValidationResult] = []
         steps = [
             ("Baseline simulation", None),
@@ -1466,6 +1474,7 @@ class PlanCompliantRunner:
         return results
 
     def _collect_pointing_rms(self, data_dir: str, label_suffix: str = "") -> Dict[str, float]:
+        """Collect post slew RMS pointing error for each method/controller pair."""
         metrics: Dict[str, float] = {}
         pointing_data = ms._load_all_pointing_data(
             data_dir, config=self.config, generate_if_missing=False
@@ -1485,6 +1494,7 @@ class PlanCompliantRunner:
         return metrics
 
     def _validate_tracking(self) -> ValidationResult:
+        """Check closed loop tracking against pointing error thresholds."""
         issues = []
         metrics = {}
         plots = [os.path.join(self.out_dir, "mission_tracking_response.png"),
@@ -1516,6 +1526,7 @@ class PlanCompliantRunner:
         return ValidationResult("tracking", passed, message, metrics, plots)
 
     def _validate_disturbance_rejection(self) -> ValidationResult:
+        """Measure pointing degradation under external disturbance torques."""
         issues: List[str] = []
         metrics: Dict[str, float] = {}
         plots = [
@@ -1565,6 +1576,7 @@ class PlanCompliantRunner:
         return ValidationResult("disturbance_rejection", passed, message, metrics, plots)
 
     def _validate_noise_rejection(self) -> ValidationResult:
+        """Measure pointing degradation under sensor noise injection."""
         issues: List[str] = []
         metrics: Dict[str, float] = {}
         plots = [os.path.join(self.out_dir, "mission_noise_to_torque.png")]
@@ -1611,6 +1623,7 @@ class PlanCompliantRunner:
         return ValidationResult("noise_rejection", passed, message, metrics, plots)
 
     def _validate_vibration_suppression(self) -> ValidationResult:
+        """Validate modal vibration suppression and PSD reduction at resonance."""
         issues = []
         metrics = {}
         summary_path = os.path.join(self.out_dir, "mission_summary.csv")
@@ -1664,6 +1677,7 @@ class PlanCompliantRunner:
         return ValidationResult("vibration_suppression", passed, message, metrics, [])
 
     def _validate_torque_limits(self) -> ValidationResult:
+        """Validate peak torque and reaction wheel saturation against limits."""
         issues = []
         metrics = {}
         metrics_path = os.path.join(self.out_dir, "torque_command_metrics.csv")
@@ -1697,6 +1711,7 @@ class PlanCompliantRunner:
         return ValidationResult("torque_limits", passed, message, metrics, [])
 
     def _save_validation_report(self, results: List[ValidationResult]) -> None:
+        """Write validation results and aggregated metrics to JSON and CSV."""
         report_path = os.path.join(self.out_dir, "validation_report.json")
         all_metrics = {}
         for r in results:
@@ -1728,6 +1743,7 @@ class PlanCompliantRunner:
         _write_csv(csv_path, ["metric", "value"], rows)
 
     def _validate_deliverables(self) -> ValidationResult:
+        """Check that all required output plots and CSV files were generated."""
         plots = [
             "mission_tracking_response.png",
             "mission_tracking_tf.png",
@@ -1761,6 +1777,7 @@ class PlanCompliantRunner:
     # MONTE CARLO (Section 3)
     # ------------------------------------------------------------------
     def run_monte_carlo(self, n_runs: int = 500) -> MonteCarloSummary:
+        """Delegate Monte Carlo execution to PlanMonteCarloRunner."""
         mc_runner = PlanMonteCarloRunner(
             self.config,
             self.out_dir,
@@ -1813,6 +1830,7 @@ class PlanMonteCarloRunner:
         _reset_dir(self.mc_work_dir)
 
     def _copy_config(self) -> ms.MissionConfig:
+        """Deep copy the base mission config to avoid mutating the original."""
         cfg = ms.MissionConfig(**asdict(self.base_config))
         cfg.inertia = np.array(cfg.inertia, dtype=float)
         cfg.rotation_axis = np.array(cfg.rotation_axis, dtype=float)
@@ -1825,6 +1843,7 @@ class PlanMonteCarloRunner:
         return cfg
 
     def _perturb(self) -> Tuple[ms.MissionConfig, Dict[str, float], Dict[str, object]]:
+        """Apply random perturbations and return the config, scale factors, and overrides."""
         cfg = self._copy_config()
         perturb: Dict[str, float] = {}
 
@@ -1882,6 +1901,7 @@ class PlanMonteCarloRunner:
         feedback_vibration: Dict[str, Dict[str, object]],
         pointing_data: Dict[str, Dict[str, object]],
     ) -> Dict[str, float]:
+        """Compute pointing, vibration, torque, and saturation metrics from run data."""
         metrics: Dict[str, float] = {}
 
         rms_list: List[float] = []
@@ -1965,6 +1985,7 @@ class PlanMonteCarloRunner:
         return metrics
 
     def _empty_metrics(self) -> Dict[str, float]:
+        """Return a metrics dict filled with NaN for failed runs."""
         metrics: Dict[str, float] = {}
         for method in METHODS:
             for controller in CONTROLLERS:
@@ -1981,6 +2002,7 @@ class PlanMonteCarloRunner:
         return metrics
 
     def _evaluate_run(self, metrics: Dict[str, float]) -> Tuple[bool, List[str]]:
+        """Evaluate a single run's metrics against pass/fail thresholds."""
         reasons: List[str] = []
         for key in self.SUMMARY_METRICS:
             val = metrics.get(key, float("nan"))
@@ -1997,6 +2019,7 @@ class PlanMonteCarloRunner:
         return len(reasons) == 0, reasons
 
     def run(self) -> MonteCarloSummary:
+        """Execute all Monte Carlo iterations with progress tracking and output generation."""
         runs: List[MonteCarloRun] = []
         start = time_module.time()
         last = start
@@ -2054,6 +2077,7 @@ class PlanMonteCarloRunner:
         return summary
 
     def _compute_summary(self, runs: List[MonteCarloRun]) -> MonteCarloSummary:
+        """Aggregate per run results into percentile statistics and histograms."""
         n_passed = sum(1 for r in runs if r.passed)
         pass_rate = n_passed / len(runs) if runs else 0.0
 
@@ -2085,6 +2109,7 @@ class PlanMonteCarloRunner:
         )
 
     def _save_results(self, summary: MonteCarloSummary, runs: List[MonteCarloRun]) -> None:
+        """Write Monte Carlo report JSON, per run CSV, and percentile CSV."""
         report_path = os.path.join(self.out_dir, "monte_carlo_report.json")
 
         criteria = {
@@ -2146,6 +2171,7 @@ class PlanMonteCarloRunner:
         _write_csv(pct_path, ["metric", "P50", "P95", "P99", "mean", "std", "min", "max"], pct_rows)
 
     def _plot_histograms(self, summary: MonteCarloSummary) -> None:
+        """Plot summary metric histograms with percentile markers."""
         metric_names = list(summary.histograms.keys())
         if not metric_names:
             return
@@ -2180,7 +2206,7 @@ class PlanMonteCarloRunner:
         plt.close()
 
     def _plot_comparison_boxes(self, runs: List[MonteCarloRun]) -> None:
-        """Plot per-combination metric boxplots from Monte Carlo runs."""
+        """Plot per combination metric boxplots from Monte Carlo runs."""
         if not runs:
             return
 
@@ -2295,7 +2321,7 @@ class VerificationSuite:
         details = {}
         issues = []
 
-        # Check fourth-order trajectory file
+        # Check fourth order trajectory file
         traj_path = os.path.join(basilisk_dir, "data", "trajectories", "spacecraft_trajectory_4th_180deg_30s.npz")
         if not os.path.isfile(traj_path):
             issues.append("Fourth-order trajectory file not found")
@@ -2515,7 +2541,7 @@ class VerificationSuite:
         )
 
     def _verify_psd_computations(self) -> VerificationResult:
-        """1.4 Verify frequency-domain computations."""
+        """1.4 Verify frequency domain computations."""
         print("\n[V1.4] PSD Computations...")
 
         details = {}
@@ -2766,7 +2792,7 @@ class ValidationSuite:
             return None
 
     def _validate_tracking(self) -> ValidationResult:
-        """2.1 Closed-loop tracking validation."""
+        """2.1 Closed loop tracking validation."""
         print("\n[V2.1] Tracking Validation...")
 
         metrics = {}
@@ -2818,7 +2844,7 @@ class ValidationSuite:
                         sigma_error.append(0)
                 sigma_error = np.degrees(np.array(sigma_error))
 
-                # Post-slew metrics
+                # Post slew metrics
                 post_slew_mask = time > slew_duration
                 if np.any(post_slew_mask):
                     post_slew_error = sigma_error[post_slew_mask]
@@ -2906,7 +2932,7 @@ class ValidationSuite:
                 # Combine modes
                 total_vib = np.sqrt(mode1**2 + mode2**2) * 1000  # mm
 
-                # Post-slew metrics
+                # Post slew metrics
                 post_slew_mask = time > slew_duration
                 if np.any(post_slew_mask):
                     post_slew_vib = total_vib[post_slew_mask]
@@ -2934,7 +2960,7 @@ class ValidationSuite:
         for ax in axes[n_cases:]:
             ax.axis("off")
 
-        # Compare baselines vs fourth-order
+        # Compare baselines vs fourth order
         for controller in CONTROLLERS:
             fourth_key = f"fourth_{controller}_rms_vibration_mm"
             for baseline_method in [m for m in METHODS if m != "fourth"]:
@@ -3122,7 +3148,7 @@ class ValidationSuite:
             den = np.atleast_1d(den)
             ctrl_resp = np.polyval(num, s) / np.polyval(den, s)
 
-            # Open-loop
+            # Open loop
             L = plant_rigid * ctrl_resp
 
             # Compute margins
@@ -3319,7 +3345,7 @@ class ValidationSuite:
         plt.close()
         plots.append(plot_path)
 
-        # High frequency roll-off comparison
+        # High frequency roll off comparison
         hf_idx = freqs > 1.0
         if np.any(hf_idx):
             hf_std = np.mean(20 * np.log10(np.abs(N_std[hf_idx])))
@@ -3511,7 +3537,7 @@ class MonteCarloRunner:
         """Run a single Monte Carlo iteration."""
         config, perturbations = self._perturb_config(run_id)
 
-        # Simulate closed-loop response with perturbed parameters
+        # Simulate closed loop response with perturbed parameters
         metrics = self._simulate_response(config)
 
         # Check pass/fail
@@ -3537,7 +3563,7 @@ class MonteCarloRunner:
         )
 
     def _simulate_response(self, config: ValidationConfig) -> Dict[str, float]:
-        """Simulate closed-loop response and compute metrics."""
+        """Simulate closed loop response and compute metrics."""
         from basilisk_sim.feedback_control import FilteredDerivativeController
 
         # Time array
@@ -3556,7 +3582,7 @@ class MonteCarloRunner:
         K = sigma_scale * I_axis * omega_bw**2
         P = 2 * config.control_damping_ratio * I_axis * omega_bw * 1.5
 
-        # Simplified closed-loop simulation
+        # Simplified closed loop simulation
         # State: [sigma, omega]
         sigma = np.zeros(n)
         omega_arr = np.zeros(n)
@@ -3564,9 +3590,9 @@ class MonteCarloRunner:
 
         # Target
         target_angle = np.radians(config.slew_angle_deg)
-        target_sigma = np.tan(target_angle / 4)  # Scalar for single-axis
+        target_sigma = np.tan(target_angle / 4)  # Scalar for single axis
 
-        # Simple feedforward profile (quintic S-curve, rest-to-rest)
+        # Simple feedforward profile (quintic S curve, rest to rest)
         T_slew = float(config.slew_duration_s)
 
         for i in range(1, n):
@@ -3631,7 +3657,7 @@ class MonteCarloRunner:
         saturation_count = np.sum(np.abs(torque_arr) >= config.rw_max_torque_nm * 0.99)
         saturation_pct = saturation_count / n * 100
 
-        # Vibration (simplified - use high-freq component of post-slew position error)
+        # Vibration (simplified - use high freq component of post slew position error)
         # In real sim, this would come from modal states
         if np.any(post_slew_mask):
             vib_mm = _compute_rms(pointing_error[post_slew_mask]) * 1000  # Simplified proxy

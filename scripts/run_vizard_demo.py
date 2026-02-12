@@ -1,8 +1,15 @@
 """
-Vizard 3D Visualization Demo - Comet Photography Mission.
+Vizard 3D Visualization Demo: Comet Photography Mission
 
-This version uses the FlexibleSpacecraft class directly, matching the setup
-in test_gravity_effect.py and check_rotation.py which both achieve ~179.7 deg.
+Drives a Basilisk simulation of a flexible spacecraft performing a
+180 degree yaw slew while a comet is framed in a body fixed camera.
+The simulation integrates feedforward torque profiles (S curve or
+fourth order spectral nulling) with feedback controllers (PD,
+filtered PD, notch, trajectory tracking) and records attitude,
+modal vibration, and torque histories for analysis.
+
+Usage:
+    python run_vizard_demo.py fourth --controller filtered_pd --mode combined
 """
 
 from __future__ import annotations
@@ -54,7 +61,7 @@ ARCSEC_PER_RAD = 180.0 / np.pi * 3600.0
 
 
 def _skew(vec: np.ndarray) -> np.ndarray:
-    """Return the skew-symmetric matrix for a 3-vector."""
+    """Return the 3x3 skew symmetric matrix for a 3 vector."""
     x, y, z = vec
     return np.array([
         [0.0, -z, y],
@@ -64,7 +71,7 @@ def _skew(vec: np.ndarray) -> np.ndarray:
 
 
 def _mrp_to_dcm(sigma: np.ndarray) -> np.ndarray:
-    """Convert MRP to DCM (C_BN maps inertial to body)."""
+    """Convert MRP to direction cosine matrix (body from inertial)."""
     sigma = np.array(sigma, dtype=float).reshape(3)
     s2 = float(np.dot(sigma, sigma))
     s_tilde = _skew(sigma)
@@ -73,7 +80,13 @@ def _mrp_to_dcm(sigma: np.ndarray) -> np.ndarray:
 
 
 class CometPhotographyDemo:
-    """Demonstrates comet photography with input shaping - uses FlexibleSpacecraft class."""
+    """Demonstrates comet photography with input shaping.
+
+    Uses the FlexibleSpacecraft class directly to assemble Basilisk
+    dynamics (rigid hub, reaction wheels, linear spring mass damper
+    flex modes, gravity, simpleNav) and drives a yaw slew with
+    simultaneous feedforward and feedback torques.
+    """
 
     def __init__(self, shaping_method='fourth', controller='standard_pd', run_mode='combined',
                  use_trajectory_tracking=True, jitter_lever_arm=4.0, pixel_scale_arcsec=2.0,
@@ -122,27 +135,28 @@ class CometPhotographyDemo:
         self.run_mode = run_mode
         self.viz_preset = str(viz_preset)
         self.use_trajectory_tracking = use_trajectory_tracking or (controller == "trajectory_tracking")
-        self.dt = 0.01
-        self.slew_duration = 30.0
-        self.settling_window = 60.0  # Increased from 30s for better convergence
-        self.slew_angle_deg = 180.0
+        self.dt = 0.01               # Simulation time step (seconds)
+        self.slew_duration = 30.0    # Nominal slew time (seconds)
+        self.settling_window = 60.0  # Post slew observation window
+        self.slew_angle_deg = 180.0  # Yaw slew magnitude
         self.slew_angle = np.radians(self.slew_angle_deg)
-        self.camera_body = np.array([0.0, -1.0, 0.0])
-        self.comet_direction = None
-        self.jitter_lever_arm = float(jitter_lever_arm)
-        self.pixel_scale_arcsec = float(pixel_scale_arcsec)
+        self.camera_body = np.array([0.0, -1.0, 0.0])  # Camera boresight in body frame
+        self.comet_direction = None  # Filled after orbit/attitude setup
+        self.jitter_lever_arm = float(jitter_lever_arm)   # Camera moment arm (m)
+        self.pixel_scale_arcsec = float(pixel_scale_arcsec)  # Plate scale
 
-        # Create spacecraft model (SAME CLASS as check_rotation.py)
+        # Create spacecraft model (same class as check_rotation.py)
         self.sc = FlexibleSpacecraft()
 
-        # Feedback controller tuning targets
-        # Use bandwidth at first_mode/2.5 to preserve margin and avoid mode excitation
+        # Feedback controller tuning: place the closed loop bandwidth at
+        # first_mode_hz / 2.5 so the gain rolls off well below the first
+        # flexible mode, preserving stability margin.
         first_mode_hz = self.sc.array_modes[0]['frequency']
         self.control_bandwidth_hz = first_mode_hz / 2.5
         self.control_damping_ratio = 0.90
-        self.mrp_K = None
-        self.mrp_P = None
-        self.mrp_Ki = -1.0
+        self.mrp_K = None   # Proportional gain (computed later)
+        self.mrp_P = None   # Derivative gain (computed later)
+        self.mrp_Ki = -1.0  # Integral gain (disabled)
 
         # Feedback controller options
         self.use_filtered_pd = controller == "filtered_pd"
@@ -324,7 +338,13 @@ class CometPhotographyDemo:
         self.target_sigma = [0.0, 0.0, float(np.tan(self.slew_angle / 4.0))]
 
     def build_simulation(self):
-        """Build simulation using FlexibleSpacecraft class."""
+        """Build Basilisk simulation using the FlexibleSpacecraft class.
+
+        Creates dynamics and FSW processes, instantiates the spacecraft,
+        reaction wheels, flex modes, navigation, gravity, orbit, and
+        both feedforward and feedback controllers.  Also configures
+        the Vizard 3D visualisation.
+        """
         self.scSim = SimulationBaseClass.SimBaseClass()
 
         simulationTimeStep = macros.sec2nano(self.dt)
@@ -405,22 +425,26 @@ class CometPhotographyDemo:
         print(f"  Comet: {comet_offset/1000:.1f} km in camera target direction")
 
         # =====================================================
-        # FEEDFORWARD CONTROLLER (same as check_rotation.py)
+        # FEEDFORWARD CONTROLLER
         # =====================================================
         hub_inertia = np.array(self.sc.hub_inertia)
         ff_inertia = self.sc.compute_effective_inertia(include_flex=True)
-        self.inertia_for_control = ff_inertia
-        self.inertia_feedforward = ff_inertia
+        self.inertia_for_control = ff_inertia   # Used by feedback gains
+        self.inertia_feedforward = ff_inertia    # Used by FF torque computation
 
+        # Compute PD gains from desired bandwidth and damping.
+        # K (proportional) = sigma_scale * omega_n^2 * I_zz
+        # P (derivative)   = 2 * zeta * omega_n * I_zz
         if self.mrp_K is None or self.mrp_P is None:
-            I_control = self.inertia_for_control[2, 2]
+            I_control = self.inertia_for_control[2, 2]  # Yaw axis inertia
             omega_n = 2 * np.pi * self.control_bandwidth_hz
-            sigma_scale = 4.0
+            sigma_scale = 4.0  # MRP linearisation factor
             self.mrp_K = sigma_scale * omega_n**2 * I_control
             self.mrp_P = 2 * self.control_damping_ratio * I_control * omega_n
 
         if self.use_filtered_pd:
-            # Retune filtered PD damping to offset filter attenuation near modes.
+            # Increase derivative gain to offset the attenuation that the
+            # low pass filter introduces near the modal frequencies.
             self.mrp_P *= 1.5
 
         if self.filter_cutoff_hz is None:
@@ -433,6 +457,7 @@ class CometPhotographyDemo:
         print(f"  Control gains: K={self.mrp_K:.1f}, P={self.mrp_P:.1f}")
         print(f"  Target bandwidth: {self.control_bandwidth_hz:.2f} Hz, filter cutoff: {self.filter_cutoff_hz:.2f} Hz")
 
+        # Reaction wheel torque distribution matrix (3 wheel pyramid)
         self.Gs_matrix = np.array([
             [np.sqrt(2)/2, -np.sqrt(2)/2, 0.0],
             [np.sqrt(2)/2,  np.sqrt(2)/2, 0.0],
@@ -484,7 +509,7 @@ class CometPhotographyDemo:
         print(f"  Feedforward: {self.method}, duration {self.actual_duration:.1f}s")
 
         # =====================================================
-        # FEEDBACK CONTROLLER (for post slew fine pointing)
+        # FEEDBACK CONTROLLER (fine pointing after slew)
         # =====================================================
         inertial3DObj = inertial3D.inertial3D()
         inertial3DObj.ModelTag = "inertial3D"
@@ -516,17 +541,16 @@ class CometPhotographyDemo:
         self.mrpControlObj = mrpControlObj
 
         # =====================================================
-        # FEEDBACK CONTROLLER SETUP
+        # FEEDBACK CONTROLLER TYPE SELECTION
         # =====================================================
         modal_freqs = [mode['frequency'] for mode in self.sc.array_modes]
         modal_damping = [mode['damping'] for mode in self.sc.array_modes]
         rotation_axis = np.array([0.0, 0.0, 1.0])
 
-        # Determine which controller type to use
+        # Choose between trajectory tracking (recommended) and legacy
+        # controllers.  Trajectory tracking prevents the feedback loop
+        # from fighting the feedforward torque during the slew.
         if self.use_trajectory_tracking:
-            # RECOMMENDED: Use trajectory tracking controller
-            # This tracks the instantaneous FF reference, not the final target
-            # Prevents feedback from fighting the feedforward trajectory
             if self.use_filtered_pd:
                 ctrl_type = 'filtered_pd'
             elif self.use_notch:
@@ -624,7 +648,7 @@ class CometPhotographyDemo:
         return self.scSim
 
     def _setup_vizard(self):
-        """Setup Vizard visualization."""
+        """Configure Vizard 3D visualisation settings and cameras."""
         def _make_storage(label: str, units: str, color, max_value: float):
             storage = vizInterface.GenericStorage()
             storage.label = label
@@ -790,7 +814,11 @@ class CometPhotographyDemo:
         print(f"  Vizard output: {viz_root_dir / '_VizFiles' / f'viz_demo_{self.method}_UnityViz.bin'}")
 
     def _configure_live_motion_blur(self, viz):
-        """Create a camera config stream to drive live post-processing blur in Vizard."""
+        """Create a camera config stream for live depth of field blur in Vizard.
+
+        Maps instantaneous modal jitter to a variable aperture so that
+        larger vibration produces more visible defocus in the 3D view.
+        """
         aperture0 = float(np.clip(self.live_blur_aperture_max, 0.05, 32.0))
         f_length = float(np.clip(self.live_blur_focal_length_m, 0.001, 0.3))
         payload, msg = vizSupport.createCameraConfigMsg(
@@ -818,7 +846,12 @@ class CometPhotographyDemo:
         )
 
     def _update_live_motion_blur(self, mode1_signed: float, mode2_signed: float) -> None:
-        """Update Vizard post-processing parameters from instantaneous modal jitter."""
+        """Update Vizard depth of field parameters from instantaneous modal jitter.
+
+        The vibration magnitude is converted to angular jitter in arcseconds
+        and then normalised against the full scale value.  The normalised
+        quantity drives the aperture linearly between the min and max bounds.
+        """
         if self._live_blur_payload is None or self._live_blur_msg is None:
             return
 
@@ -841,7 +874,12 @@ class CometPhotographyDemo:
         self._live_blur_msg.write(self._live_blur_payload)
 
     def run(self):
-        """Execute simulation."""
+        """Execute the simulation loop.
+
+        Steps through the combined feedforward + feedback control
+        architecture at each dt, logs attitude, modal state, and
+        torque histories, then analyses and saves results.
+        """
         print(f"\n{'='*60}")
         print(f"Running {self.method.upper()}")
         print(f"{'='*60}")
@@ -893,9 +931,9 @@ class CometPhotographyDemo:
         for step in range(n_steps):
             current_time = step * self.dt
 
-            # CORRECTED CONTROL ARCHITECTURE:
-            # Feedforward and feedback work TOGETHER continuously
-            # FF provides the trajectory, FB tracks it and rejects disturbances
+            # Feedforward and feedback torques are applied simultaneously.
+            # FF provides the planned trajectory torque during the slew
+            # while FB corrects tracking errors and suppresses disturbances.
             
             fb_torque = np.zeros(3)
             fb_label = "FB(OFF)"
@@ -923,7 +961,8 @@ class CometPhotographyDemo:
                     else:
                         control_mode = "FF(0)"
 
-            # COMBINED control: FF + FB (+ disturbance)
+            # Sum FF + FB (+ optional external disturbance) to form the
+            # total body torque command, then distribute to reaction wheels.
             body_torque = ff_torque + fb_torque
             if self.disturbance_type == "sine" and self.disturbance_amplitude_nm > 0:
                 disturbance_vec = (
@@ -1049,7 +1088,7 @@ class CometPhotographyDemo:
             self._generate_camera_sidecar(npz_path)
 
     def _analyze_results(self):
-        """Analyze results."""
+        """Print summary metrics after the simulation completes."""
         sigma = np.array(self.sigma_log)
         time = np.array(self.time_log)
 
@@ -1091,7 +1130,11 @@ class CometPhotographyDemo:
             print(f"    Blur: {blur_px:.1f} px (scale: {self.pixel_scale_arcsec:.1f} arcsec/px)")
 
     def _save_results(self):
-        """Save results."""
+        """Save simulation results to an NPZ file.
+
+        The file name encodes the method, controller, and run mode.
+        Returns the path to the saved file.
+        """
         # Save to output directory (use provided dir or default to output/cache)
         if self.output_dir:
             cache_dir = self.output_dir
@@ -1173,7 +1216,12 @@ class CometPhotographyDemo:
         return output
 
     def _generate_camera_sidecar(self, npz_path: str) -> None:
-        """Render synchronized synthetic camera frames using saved mission history."""
+        """Render synchronized synthetic camera frames from the saved history.
+
+        Uses the comet camera simulator module to produce a frame
+        sequence with motion blur derived from the modal displacement
+        data in the NPZ file.
+        """
         from basilisk_sim.comet_camera_simulator import render_camera_sidecar_frames_from_npz
 
         sidecar_dir = os.path.join(os.path.dirname(npz_path), "camera_sidecar")
