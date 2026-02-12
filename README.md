@@ -1,6 +1,7 @@
 # Setpoint Shaping and Pointing Control for Satellite Repositioning
 >*Inspired by Mars Reconnaissance Orbiter's observation of comet 3I/ATLAS*
 
+
 https://github.com/user-attachments/assets/1fa069d6-fafc-4ed7-aaca-9640928969a5
 
 
@@ -87,7 +88,7 @@ In a 500 run Monte Carlo analysis with ±20% parameter variations, the fourth or
 | **Peak Torque (Mean)** | 16.9 Nm | **18.9 Nm** | *~1.2x higher* |
 
 </div>
-
+*Note: pass rate is determined based on the satisfaction of mission requirements.*
 ---
 
 ## 📂 Repository Structure
@@ -138,6 +139,7 @@ basilisk_simulation/
 | NumPy, SciPy, Matplotlib | Installed automatically via `pip` |
 | **Vizard** *(optional)* | For interactive 3-D mission visualisation |
 
+</div>
 
 
 ### 1. Clone the repository
