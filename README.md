@@ -88,7 +88,7 @@ In a 500 run Monte Carlo analysis with ±20% parameter variations, the fourth or
 | **Peak Torque (Mean)** | 16.9 Nm | **18.9 Nm** | *~1.2x higher* |
 
 </div>
-
+*Note: pass rate is determined based on the satisfaction of mission requirements.*
 ---
 
 ## 📂 Repository Structure
