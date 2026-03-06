@@ -145,7 +145,7 @@ basilisk_simulation/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/TheControlEngineer/spacecraft_input_shaping.git
+git clone https://github.com/TheControlEngineer/spacecraft-setpoint-shaping.git
 cd spacecraft_input_shaping/basilisk_simulation
 ```
 
