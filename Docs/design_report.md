@@ -989,7 +989,7 @@ That already tells us a lot about the closed loop behavior. But for a safety cri
 - if the gyro rate measurement has noise (or drift,ripple), how much pointing error does that create?
 
 
-I’m asking these because the requirement in Section 1 is stated in time domain terms where we need pointing stability < 5 arcsec within 5 seconds. By quantifying how disturbances and sensor noise map into pointing error and commanded torque, we can directly check whether the design is consistent with that requirement and see what the real margins are !.
+I’m asking these because the requirement in Section 1 is stated in time domain terms where we need pointing stability < 7 arcsec within 60 seconds. By quantifying how disturbances and sensor noise map into pointing error and commanded torque, we can directly check whether the design is consistent with that requirement and see what the real margins are !.
 
 
 To understand how input disturbance torques map into pointing error, we look at the closed-loop transfer function $`G(j\omega)S(j\omega)`$, shown below:
