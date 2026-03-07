@@ -146,7 +146,6 @@ basilisk_simulation/
 
 ```bash
 git clone https://github.com/TheControlEngineer/spacecraft-setpoint-shaping.git
-cd spacecraft_input_shaping/basilisk_simulation
 ```
 
 ### 2. Create and activate a virtual environment
