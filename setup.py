@@ -21,7 +21,7 @@ setup(
     description="Spacecraft input shaping simulation with Basilisk",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/TheControlEngineer/spacecraft_input_shaping",
+    url="https://github.com/TheControlEngineer/spacecraft-setpoint-shaping",
 
     # All importable packages are located inside the src/ directory.
     package_dir={"": "src"},
